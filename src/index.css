@@ -1,0 +1,326 @@
+/* ─────────────────────────────────────────────────────────────────
+   Typography pairing — distinctive + technical
+   Fraunces  : variable serif, optical sizes, expressive  (display)
+   Manrope   : geometric semi-rounded sans                (body)
+   JetBrains : programmer mono                             (telemetry)
+   ────────────────────────────────────────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..900;1,9..144,300..900&family=Manrope:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* default Underworld values — overridden at runtime by themes/index.ts */
+:root {
+  --bg-primary:    #06040c;
+  --bg-secondary:  #0c0918;
+  --bg-tertiary:   #141027;
+  --bg-quaternary: #1d1638;
+  --bg-glass:      rgba(14,10,28,0.55);
+  --bg-glass-strong: rgba(20,16,42,0.78);
+  --border:        rgba(214,53,106,0.18);
+  --border-bright: rgba(214,53,106,0.55);
+  --border-glass:  rgba(255,255,255,0.06);
+  --accent:        #d6356a;
+  --accent-hover:  #ef4d83;
+  --accent-mid:    #7a1d52;
+  --accent-deep:   #3a0a2c;
+  --accent-dim:    rgba(214,53,106,0.14);
+  --accent-glow:   rgba(214,53,106,0.45);
+  --holo:          #7df9ff;
+  --holo-dim:      rgba(125,249,255,0.18);
+  --gold:          #f0c060;
+  --gold-dim:      rgba(240,192,96,0.18);
+  --text-primary:  #f5ecff;
+  --text-secondary:#b9a4dc;
+  --text-muted:    #675683;
+  --orb-color-1:   #d6356a;
+  --orb-color-2:   #3a0a6b;
+  --orb-color-3:   #7df9ff;
+  --user-bubble:   linear-gradient(135deg, rgba(214,53,106,0.22), rgba(58,10,44,0.55));
+  --ai-bubble:     linear-gradient(140deg, rgba(20,16,40,0.92), rgba(12,9,24,0.96));
+  --thinking-bg:   linear-gradient(135deg, rgba(125,249,255,0.06), rgba(74,15,107,0.18));
+  --shadow-soft:   0 1px 0 rgba(255,255,255,0.04) inset, 0 12px 32px -16px rgba(0,0,0,0.8);
+  --shadow-deep:   0 1px 0 rgba(255,255,255,0.05) inset, 0 30px 60px -28px rgba(0,0,0,0.9), 0 8px 24px -12px rgba(214,53,106,0.18);
+  --shadow-glow:   0 0 0 1px rgba(214,53,106,0.35), 0 0 40px -8px rgba(214,53,106,0.55), 0 0 80px -20px rgba(125,249,255,0.25);
+  --scrollbar:     rgba(214,53,106,0.35);
+
+  /* motion easing */
+  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-spring:    cubic-bezier(0.5, 1.5, 0.5, 1);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+
+body {
+  font-family: 'Manrope', system-ui, sans-serif;
+  font-feature-settings: 'ss01', 'cv11';
+  color: var(--text-primary);
+  background: var(--bg-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  letter-spacing: -0.005em;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   Atmospheric layers — grain + aurora + vignette
+   These sit fixed under the app shell.
+   ────────────────────────────────────────────────────────────────── */
+.atmos {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* SVG grain texture (data-uri, ≈1KB) */
+.atmos-grain {
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='200' height='200'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.5 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)' opacity='0.6'/></svg>");
+  background-size: 200px 200px;
+  opacity: 0.18;
+  mix-blend-mode: overlay;
+}
+
+/* Conic-gradient aurora — slowly drifting */
+.atmos-aurora {
+  background:
+    radial-gradient(ellipse 80% 50% at 20% 30%, var(--accent-glow), transparent 60%),
+    radial-gradient(ellipse 70% 40% at 80% 20%, var(--holo-dim), transparent 55%),
+    radial-gradient(ellipse 60% 50% at 60% 90%, var(--gold-dim), transparent 65%);
+  opacity: 0.55;
+  filter: blur(40px) saturate(140%);
+  animation: aurora-drift 22s ease-in-out infinite alternate;
+}
+
+@keyframes aurora-drift {
+  0%   { transform: translate3d(0, 0, 0) scale(1); }
+  50%  { transform: translate3d(-3%, 2%, 0) scale(1.05); }
+  100% { transform: translate3d(2%, -2%, 0) scale(1.08); }
+}
+
+/* Subtle vignette to lock in depth */
+.atmos-vignette {
+  background:
+    radial-gradient(ellipse 90% 70% at 50% 50%, transparent 40%, var(--bg-primary) 100%);
+  opacity: 0.65;
+}
+
+/* ─────────────────────────────────────────────────────────────────
+   Scrollbars — thin, accent-coloured, fade-on-hover
+   ────────────────────────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar);
+  border-radius: 100px;
+  border: 1px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--border-bright); background-clip: padding-box; }
+
+select option { background: var(--bg-secondary); color: var(--text-primary); }
+input[type='range'] { -webkit-appearance: none; appearance: none; }
+
+/* ─────────────────────────────────────────────────────────────────
+   Prose / markdown overrides
+   ────────────────────────────────────────────────────────────────── */
+.prose { color: var(--text-primary); max-width: 100%; font-family: 'Manrope', sans-serif; }
+.prose p { margin: 0.45em 0; }
+.prose pre {
+  background: rgba(0,0,0,0.45);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow-soft);
+}
+.prose code {
+  color: var(--accent-hover);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.85em;
+  background: var(--accent-dim);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+}
+.prose pre code { color: var(--text-primary); background: transparent; padding: 0; }
+.prose h1, .prose h2, .prose h3 {
+  color: var(--text-primary);
+  font-family: 'Fraunces', Georgia, serif;
+  font-optical-sizing: auto;
+  font-variation-settings: 'opsz' 144;
+  letter-spacing: -0.015em;
+}
+.prose a { color: var(--accent-hover); text-decoration: underline; text-decoration-color: var(--accent-dim); text-underline-offset: 3px; }
+.prose blockquote { border-left: 2px solid var(--accent); color: var(--text-secondary); padding-left: 0.9em; }
+.prose hr { border-color: var(--border); }
+.prose table { border-color: var(--border); }
+.prose thead { background: var(--bg-tertiary); }
+.prose td, .prose th { border-color: var(--border); padding: 0.4em 0.8em; }
+
+/* ─────────────────────────────────────────────────────────────────
+   Reusable utility classes
+   ────────────────────────────────────────────────────────────────── */
+
+/* Liquid glass surface — used for sidebar/right-panel/chat shell */
+.glass {
+  position: relative;
+  background: var(--bg-glass);
+  backdrop-filter: blur(20px) saturate(160%);
+  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  border: 1px solid var(--border-glass);
+  box-shadow: var(--shadow-deep);
+}
+.glass-strong {
+  background: var(--bg-glass-strong);
+  backdrop-filter: blur(28px) saturate(180%);
+  -webkit-backdrop-filter: blur(28px) saturate(180%);
+}
+
+/* Hairline highlight along the top edge of any glass surface */
+.glass::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(180deg, rgba(255,255,255,0.18), transparent 40%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  pointer-events: none;
+}
+
+/* Gradient border (animated holographic shimmer on hover) */
+.gradient-border {
+  position: relative;
+  background: var(--bg-secondary);
+  border-radius: inherit;
+}
+.gradient-border::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  padding: 1px;
+  background: linear-gradient(135deg, var(--accent) 0%, var(--holo) 50%, var(--accent-deep) 100%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+          mask-composite: exclude;
+  opacity: 0.45;
+  transition: opacity 0.4s var(--ease-out-quint);
+  pointer-events: none;
+}
+.gradient-border:hover::after { opacity: 1; }
+
+/* Display heading */
+.font-display {
+  font-family: 'Fraunces', Georgia, serif;
+  font-optical-sizing: auto;
+  font-variation-settings: 'opsz' 144;
+  letter-spacing: -0.02em;
+}
+.font-display-italic {
+  font-family: 'Fraunces', Georgia, serif;
+  font-style: italic;
+  font-variation-settings: 'opsz' 144;
+}
+.font-mono { font-family: 'JetBrains Mono', monospace; font-feature-settings: 'ss02', 'cv02'; }
+
+/* Glow halo around an element */
+.glow-accent { box-shadow: var(--shadow-glow); }
+
+/* ─────────────────────────────────────────────────────────────────
+   Animations
+   ────────────────────────────────────────────────────────────────── */
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-8px); }
+}
+.animate-float { animation: float 6s ease-in-out infinite; }
+
+@keyframes shimmer {
+  0%   { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+
+@keyframes pulse-ring {
+  0%   { box-shadow: 0 0 0 0   rgba(214,53,106,0.6); }
+  70%  { box-shadow: 0 0 0 14px rgba(214,53,106,0); }
+  100% { box-shadow: 0 0 0 0   rgba(214,53,106,0); }
+}
+.animate-pulse-ring { animation: pulse-ring 2.4s ease-out infinite; }
+
+@keyframes rise {
+  0% { transform: translateY(8px); opacity: 0; }
+  100% { transform: translateY(0);  opacity: 1; }
+}
+.animate-rise { animation: rise 0.5s var(--ease-out-quint) both; }
+
+/* ─────────────────────────────────────────────────────────────────
+   Rich markdown decorations (used by chat + research reports)
+   ────────────────────────────────────────────────────────────────── */
+.rich-md { color: var(--text-primary); }
+
+/* Drop cap on the first paragraph of a research report */
+.rich-md__lede::first-letter {
+  font-family: 'Fraunces', Georgia, serif;
+  font-variation-settings: 'opsz' 144;
+  font-weight: 600;
+  font-size: 3.4em;
+  line-height: 0.9;
+  float: left;
+  margin: 0.05em 0.12em 0 0;
+  background: linear-gradient(135deg, var(--accent), var(--holo));
+  -webkit-background-clip: text;
+          background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Numbered ordered-list items — circular badge instead of "1." */
+.rich-md__ol { counter-reset: rich-num; }
+.rich-md__ol > li { counter-increment: rich-num; }
+.rich-md__num {
+  position: absolute;
+  left: 0;
+  top: 0.15em;
+  width: 1.5em;
+  height: 1.5em;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.7em;
+  font-weight: 600;
+  color: white;
+  background: linear-gradient(135deg, var(--accent), var(--accent-deep));
+  box-shadow:
+    inset 0 1px 0 rgba(255,255,255,0.25),
+    0 0 8px var(--accent-glow);
+}
+.rich-md__num::before { content: counter(rich-num); }
+
+/* Report variant gets a slightly more generous rhythm */
+.rich-md--report p,
+.rich-md--report li {
+  font-size: 14.5px;
+  line-height: 1.7;
+}
+
+/* Mermaid SVG inherits theme — make sure text is readable */
+.rich-md .mermaid svg { max-width: 100%; height: auto; }
+.rich-md .mermaid text { fill: var(--text-primary) !important; font-family: 'Manrope', sans-serif !important; }
+
+/* Selection */
+::selection { background: var(--accent); color: white; }
+
+/* Focus ring (accessible, theme-aware) */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}

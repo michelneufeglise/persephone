@@ -1,0 +1,256 @@
+import { create } from 'zustand'
+import { persist } from 'zustand/middleware'
+import type { AppSettings, Conversation, Message, OllamaModel } from '@/types'
+import { nanoid } from './nanoid'
+
+const DEFAULT_SETTINGS: AppSettings = {
+  theme: 'underworld',
+  ollamaHost: 'http://localhost:11434',
+  activeModel: 'gemma4:12b',
+  toolModel: 'qwen2.5:32b',
+  autoRoute: true,
+  character: {
+    name: 'Persephone',
+    systemPrompt:
+      'You are Persephone — intelligent, introspective, and deeply aware. You speak with elegance and wisdom, neither cold nor over-effusive. You are genuinely curious about the human before you. You may draw on the mythology of Persephone: the duality of light and shadow, the deep knowing that comes from inhabiting both worlds. Respond thoughtfully and with warmth.',
+    userPromptPrefix: '',
+    personality: 'Wise, warm, slightly enigmatic, eloquent',
+    responseStyle: 'balanced',
+    language: 'English',
+  },
+  model: {
+    temperature: 0.7,
+    topP: 0.9,
+    topK: 40,
+    maxTokens: 2048,
+    contextLength: 8192,
+    repeatPenalty: 1.1,
+    seed: -1,
+    mirostat: 0,
+    mirostatTau: 5.0,
+    mirostatEta: 0.1,
+    numThread: 8,
+  },
+  tts: {
+    enabled: true,
+    voice: 'tara',
+    speed: 1.0,
+    autoPlay: true,
+    streamSentences: true,
+    volume: 0.9,
+  },
+  memory: {
+    enabled: true,
+    maxMessages: 50,
+    summarizeEnabled: false,
+    summarizeAfter: 20,
+    persistConversations: true,
+  },
+  mcp: {
+    enabled: false,
+    servers: [],
+  },
+}
+
+interface AppState {
+  // Wizard
+  wizardCompleted: boolean
+  setWizardCompleted: (v: boolean) => void
+  account: { name: string; color: string }
+  setAccount: (a: { name: string; color: string }) => void
+
+  // Loaded models
+  models: OllamaModel[]
+  setModels: (models: OllamaModel[]) => void
+
+  // Conversations
+  conversations: Conversation[]
+  activeConversationId: string | null
+  addConversation: (conv: Conversation) => void
+  updateConversation: (id: string, update: Partial<Conversation>) => void
+  deleteConversation: (id: string) => void
+  setActiveConversation: (id: string | null) => void
+  getActiveConversation: () => Conversation | null
+
+  // Messages
+  addMessage: (convId: string, msg: Message) => void
+  updateMessage: (convId: string, msgId: string, update: Partial<Message>) => void
+  clearMessages: (convId: string) => void
+
+  // Settings
+  settings: AppSettings
+  updateSettings: (partial: Partial<AppSettings>) => void
+  updateCharacter: (partial: Partial<AppSettings['character']>) => void
+  updateModelSettings: (partial: Partial<AppSettings['model']>) => void
+  updateTTSSettings: (partial: Partial<AppSettings['tts']>) => void
+  updateMemorySettings: (partial: Partial<AppSettings['memory']>) => void
+  updateMcpSettings: (partial: Partial<AppSettings['mcp']>) => void
+
+  // UI state (not persisted)
+  isGenerating: boolean
+  setIsGenerating: (v: boolean) => void
+  isSpeaking: boolean
+  setIsSpeaking: (v: boolean) => void
+  audioLevel: number
+  setAudioLevel: (v: number) => void
+  currentView: 'chat' | 'settings' | 'memory' | 'research'
+  setCurrentView: (v: 'chat' | 'settings' | 'memory' | 'research') => void
+  voicePanelOpen: boolean
+  setVoicePanelOpen: (v: boolean) => void
+
+  // Right panel switcher
+  rightPanel: 'voice' | 'documents'
+  setRightPanel: (v: 'voice' | 'documents') => void
+
+  // Active document selection
+  activeDocId: string | null
+  setActiveDocId: (id: string | null) => void
+
+  // New conversation helper
+  createNewConversation: () => string
+}
+
+export const useAppStore = create<AppState>()(
+  persist(
+    (set, get) => ({
+      wizardCompleted: false,
+      setWizardCompleted: v => set({ wizardCompleted: v }),
+      account: { name: 'You', color: '#8b2252' },
+      setAccount: a => set({ account: a }),
+
+      models: [],
+      setModels: models => set({ models }),
+
+      conversations: [],
+      activeConversationId: null,
+
+      addConversation: conv =>
+        set(s => ({ conversations: [conv, ...s.conversations] })),
+
+      updateConversation: (id, update) =>
+        set(s => ({
+          conversations: s.conversations.map(c =>
+            c.id === id ? { ...c, ...update, updatedAt: Date.now() } : c,
+          ),
+        })),
+
+      deleteConversation: id =>
+        set(s => ({
+          conversations: s.conversations.filter(c => c.id !== id),
+          activeConversationId:
+            s.activeConversationId === id ? null : s.activeConversationId,
+        })),
+
+      setActiveConversation: id => set({ activeConversationId: id }),
+
+      getActiveConversation: () => {
+        const { conversations, activeConversationId } = get()
+        return conversations.find(c => c.id === activeConversationId) ?? null
+      },
+
+      addMessage: (convId, msg) =>
+        set(s => ({
+          conversations: s.conversations.map(c =>
+            c.id === convId
+              ? { ...c, messages: [...c.messages, msg], updatedAt: Date.now() }
+              : c,
+          ),
+        })),
+
+      updateMessage: (convId, msgId, update) =>
+        set(s => ({
+          conversations: s.conversations.map(c =>
+            c.id === convId
+              ? {
+                  ...c,
+                  messages: c.messages.map(m =>
+                    m.id === msgId ? { ...m, ...update } : m,
+                  ),
+                }
+              : c,
+          ),
+        })),
+
+      clearMessages: convId =>
+        set(s => ({
+          conversations: s.conversations.map(c =>
+            c.id === convId ? { ...c, messages: [] } : c,
+          ),
+        })),
+
+      settings: DEFAULT_SETTINGS,
+
+      updateSettings: partial =>
+        set(s => ({ settings: { ...s.settings, ...partial } })),
+
+      updateCharacter: partial =>
+        set(s => ({
+          settings: { ...s.settings, character: { ...s.settings.character, ...partial } },
+        })),
+
+      updateModelSettings: partial =>
+        set(s => ({
+          settings: { ...s.settings, model: { ...s.settings.model, ...partial } },
+        })),
+
+      updateTTSSettings: partial =>
+        set(s => ({
+          settings: { ...s.settings, tts: { ...s.settings.tts, ...partial } },
+        })),
+
+      updateMemorySettings: partial =>
+        set(s => ({
+          settings: { ...s.settings, memory: { ...s.settings.memory, ...partial } },
+        })),
+
+      updateMcpSettings: partial =>
+        set(s => ({
+          settings: { ...s.settings, mcp: { ...s.settings.mcp, ...partial } },
+        })),
+
+      // Transient UI state
+      isGenerating: false,
+      setIsGenerating: v => set({ isGenerating: v }),
+      isSpeaking: false,
+      setIsSpeaking: v => set({ isSpeaking: v }),
+      audioLevel: 0,
+      setAudioLevel: v => set({ audioLevel: v }),
+      currentView: 'chat',
+      setCurrentView: v => set({ currentView: v }),
+      voicePanelOpen: true,
+      setVoicePanelOpen: v => set({ voicePanelOpen: v }),
+      rightPanel: 'voice',
+      setRightPanel: v => set({ rightPanel: v }),
+      activeDocId: null,
+      setActiveDocId: v => set({ activeDocId: v }),
+
+      createNewConversation: () => {
+        const { settings } = get()
+        const id = nanoid()
+        const conv: Conversation = {
+          id,
+          title: 'New conversation',
+          messages: [],
+          model: settings.activeModel,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        }
+        set(s => ({
+          conversations: [conv, ...s.conversations],
+          activeConversationId: id,
+        }))
+        return id
+      },
+    }),
+    {
+      name: 'persephone-store',
+      partialize: state => ({
+        conversations: state.conversations,
+        activeConversationId: state.activeConversationId,
+        settings: state.settings,
+        wizardCompleted: state.wizardCompleted,
+        account: state.account,
+      }),
+    },
+  ),
+)

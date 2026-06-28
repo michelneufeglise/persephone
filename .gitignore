@@ -1,0 +1,10 @@
+node_modules
+dist
+dist-electron
+.python-cache
+build-resources
+server/__pycache__
+server/persephone.db
+server/uploads
+.DS_Store
+*.log

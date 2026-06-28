@@ -1,0 +1,130 @@
+{
+  "name": "persephone",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local-first AI chat — Persephone, queen of the underworld",
+  "author": {
+    "name": "Michel Neufeglise"
+  },
+  "main": "electron/main.cjs",
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "server": "python3 server/main.py",
+    "setup": "python3 server/download_models.py",
+    "icon": "node scripts/generate-icon.mjs",
+    "bundle:python": "node scripts/bundle-python.mjs",
+    "electron:dev": "node scripts/electron-dev.mjs",
+    "electron:build": "npm run icon && npm run build && electron-builder",
+    "dmg": "npm run icon && npm run build && npm run bundle:python && electron-builder --mac dmg"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.62.3",
+    "clsx": "^2.1.1",
+    "framer-motion": "^11.11.11",
+    "idb-keyval": "^6.2.1",
+    "lucide-react": "^0.460.0",
+    "mermaid": "^11.16.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^9.0.1",
+    "remark-gfm": "^4.0.0",
+    "roughjs": "^4.6.6",
+    "tailwind-merge": "^2.5.4",
+    "zustand": "^5.0.1"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.2",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "concurrently": "^9.1.0",
+    "cors": "^2.8.5",
+    "electron": "^33.4.11",
+    "electron-builder": "^25.1.8",
+    "express": "^4.21.1",
+    "postcss": "^8.4.49",
+    "sharp": "^0.33.5",
+    "tailwindcss": "^3.4.15",
+    "typescript": "^5.6.3",
+    "vite": "^6.0.1",
+    "wait-on": "^8.0.5"
+  },
+  "build": {
+    "appId": "io.persephone.app",
+    "productName": "Persephone",
+    "asar": true,
+    "files": [
+      "electron/**/*.cjs",
+      "dist/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "build-resources/python-${arch}/python",
+        "to": "python"
+      },
+      {
+        "from": "server",
+        "to": "server",
+        "filter": [
+          "**/*",
+          "!__pycache__/**",
+          "!*.db",
+          "!uploads/**"
+        ]
+      }
+    ],
+    "directories": {
+      "buildResources": "build",
+      "output": "dist-electron"
+    },
+    "mac": {
+      "category": "public.app-category.productivity",
+      "icon": "build/icon.icns",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false,
+      "darkModeSupport": true,
+      "minimumSystemVersion": "11.0.0",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Persephone uses your microphone for optional voice input.",
+        "NSCameraUsageDescription": "Persephone does not use the camera. (declared for completeness)"
+      }
+    },
+    "dmg": {
+      "title": "Persephone ${version}",
+      "icon": "build/icon.icns",
+      "iconSize": 120,
+      "background": null,
+      "window": {
+        "width": 660,
+        "height": 420
+      },
+      "contents": [
+        {
+          "x": 180,
+          "y": 200,
+          "type": "file"
+        },
+        {
+          "x": 480,
+          "y": 200,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    }
+  }
+}
