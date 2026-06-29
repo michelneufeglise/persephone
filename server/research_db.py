@@ -20,7 +20,6 @@ import json
 import logging
 import sqlite3
 import time
-from pathlib import Path
 from typing import Any
 
 try:
@@ -30,10 +29,13 @@ except Exception:
     _HAS_VEC = False
 
 from embeddings import to_blob, EMBED_DIM
+from paths import db_path
 
 log = logging.getLogger("research_db")
 
-DB_PATH = Path(__file__).parent / "persephone.db"
+# Shared with db.py — both modules point at the same SQLite file so research
+# tables live alongside conversations and config (single backup, single move).
+DB_PATH = db_path()
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS research_runs (

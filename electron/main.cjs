@@ -31,6 +31,10 @@ let mainWindow      = null
 let pythonProc      = null
 let chosenPort      = 0
 let pythonStartedAt = 0
+/** Ring buffer of recent Python stderr lines for surfacing in the failure dialog. */
+const pyLogTail     = []
+const PY_LOG_TAIL_MAX = 80
+let pyLogPath       = null   // set in startPython
 
 /* ───────────────────────────────────────────────────────────────── */
 /* Single instance lock                                              */
@@ -119,6 +123,11 @@ function startPython(port) {
     env.DYLD_LIBRARY_PATH = `${libDir}:${env.DYLD_LIBRARY_PATH ?? ''}`
   }
 
+  // Persist a rolling log file the user can find via Help → Open data directory
+  pyLogPath = path.join(userDataPath(), 'persephone-backend.log')
+  let logFd
+  try { logFd = fs.openSync(pyLogPath, 'w') } catch (e) { logFd = null }
+
   pythonStartedAt = Date.now()
   const proc = spawn(cmd, [...args, script], {
     cwd:   path.dirname(script),
@@ -126,23 +135,45 @@ function startPython(port) {
     stdio: ['ignore', 'pipe', 'pipe'],
   })
 
-  proc.stdout.on('data', d => process.stdout.write(`[py] ${d}`))
-  proc.stderr.on('data', d => process.stderr.write(`[py] ${d}`))
+  const captureLine = (stream, prefix) => (data) => {
+    const text = data.toString()
+    if (logFd != null) {
+      try { fs.writeSync(logFd, text) } catch {}
+    }
+    stream.write(`[py] ${text}`)
+    // Split incoming buffer into lines and push into the tail.
+    for (const ln of text.split('\n')) {
+      if (!ln) continue
+      pyLogTail.push(`${prefix}${ln}`)
+      if (pyLogTail.length > PY_LOG_TAIL_MAX) pyLogTail.shift()
+    }
+  }
+  proc.stdout.on('data', captureLine(process.stdout, ''))
+  proc.stderr.on('data', captureLine(process.stderr, ''))
+
   proc.on('exit', (code, signal) => {
     console.log(`[py] exited code=${code} signal=${signal}`)
     pythonProc = null
-    // If python died before the window opened, show the user.
+    if (logFd != null) { try { fs.closeSync(logFd) } catch {} }
     if (!mainWindow || mainWindow.isDestroyed()) {
-      dialog.showErrorBox(
-        'Persephone backend failed to start',
-        `The local server exited unexpectedly (code ${code}, signal ${signal}).` +
-        `\n\nCheck Console.app for "[py]" log lines.`,
-      )
+      showStartupFailure(code, signal)
       app.quit()
     }
   })
 
   return proc
+}
+
+function showStartupFailure(code, signal) {
+  const tail = pyLogTail.length
+    ? pyLogTail.slice(-30).join('\n')
+    : '(no Python output captured — interpreter never started)'
+  const logHint = pyLogPath ? `\n\nFull log: ${pyLogPath}` : ''
+  dialog.showErrorBox(
+    'Persephone backend failed to start',
+    `The local server exited unexpectedly (code ${code}, signal ${signal}).\n\n` +
+    `─── last Python output ───\n${tail}${logHint}`,
+  )
 }
 
 function waitForServer(port, timeoutMs = 30_000) {
@@ -232,10 +263,14 @@ app.whenReady().then(async () => {
     }
   } catch (err) {
     console.error('[main] startup failed:', err)
+    const tail = pyLogTail.length
+      ? `\n\n─── last Python output ───\n${pyLogTail.slice(-30).join('\n')}`
+      : ''
+    const logHint = pyLogPath ? `\n\nFull log: ${pyLogPath}` : ''
     dialog.showErrorBox(
       'Persephone could not start',
       String(err?.message ?? err) +
-      `\n\nIf this is your first launch, the bundled Python may need a moment to extract.`,
+      `\n\nIf this is your first launch, the bundled Python may need a moment to extract.${tail}${logHint}`,
     )
     app.quit()
   }

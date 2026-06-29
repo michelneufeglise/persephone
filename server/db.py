@@ -13,9 +13,13 @@ from typing import Any
 
 import aiosqlite
 
+from paths import db_path
+
 log = logging.getLogger("db")
 
-DB_PATH = Path(__file__).parent / "persephone.db"
+# Resolves to PERSEPHONE_DATA_DIR/persephone.db in packaged builds (writable),
+# otherwise next to this script for dev convenience.
+DB_PATH = db_path()
 
 _CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS app_config (

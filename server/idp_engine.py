@@ -92,9 +92,9 @@ async def find_installed_vision_model() -> str:
     visions.sort(key=_estimate_params_b)
     return visions[0]
 
-# Storage root — kept simple, on local disk.
-STORAGE_DIR = Path(__file__).parent / "uploads"
-STORAGE_DIR.mkdir(exist_ok=True)
+# Storage root — writable per Electron app data dir in production builds.
+from paths import uploads_dir
+STORAGE_DIR = uploads_dir()
 
 
 # ── Document model & registry ──────────────────────────────────────────────────
