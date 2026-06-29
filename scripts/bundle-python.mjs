@@ -39,16 +39,18 @@ const CACHE     = path.join(ROOT, '.python-cache')
 const OUT_ROOT  = path.join(ROOT, 'build-resources')
 const REQS      = path.join(ROOT, 'server', 'requirements.txt')
 
-// Pin one known release so builds are reproducible.
-// python-build-standalone tags are date-based: YYYYMMDD.
-const PBS_RELEASE = '20250529'      // mid-2025 release with cpython 3.11.13
-const PY_VERSION  = '3.11.13'
+// Known-good fallback (used only if the GitHub API can't be reached).
+// At runtime we query the API for the *actual* latest release so we don't
+// have to chase the constantly-shifting tag/version combos manually.
+const FALLBACK_RELEASE = '20260623'
+const FALLBACK_VERSION = '3.11.15'
 
-// "install_only" archives keep just the runtime — no test suite, no dev hdrs.
-const ARCH_MAP = {
-  arm64: `cpython-${PY_VERSION}+${PBS_RELEASE}-aarch64-apple-darwin-install_only.tar.gz`,
-  x64:   `cpython-${PY_VERSION}+${PBS_RELEASE}-x86_64-apple-darwin-install_only.tar.gz`,
+const ARCH_TO_PBS = {
+  arm64: 'aarch64-apple-darwin',
+  x64:   'x86_64-apple-darwin',
 }
+
+const GH_API = 'https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest'
 
 const C = {
   reset: '\x1b[0m', dim: '\x1b[2m', bold: '\x1b[1m',
@@ -58,20 +60,65 @@ const C = {
 const log = (msg) => process.stdout.write(`${msg}\n`)
 const sub = (msg) => process.stdout.write(`  ${C.dim}${msg}${C.reset}\n`)
 
+function fallbackUrl(release, version, arch) {
+  return `https://github.com/astral-sh/python-build-standalone/releases/download/${release}/cpython-${version}+${release}-${ARCH_TO_PBS[arch]}-install_only.tar.gz`
+}
+
+/**
+ * Hit GitHub's releases API to discover the latest tag + the asset URLs
+ * for both arches. Falls back to FALLBACK_* if anything goes wrong.
+ * Also honours PBS_RELEASE / PBS_VERSION env vars for pinning.
+ */
+async function discoverRelease() {
+  // Env override → use as-is (no API call)
+  if (process.env.PBS_RELEASE && process.env.PBS_VERSION) {
+    const r = process.env.PBS_RELEASE, v = process.env.PBS_VERSION
+    log(`${C.dim}using env-pinned PBS release ${r} / cpython ${v}${C.reset}`)
+    return {
+      release: r, version: v,
+      urls: { arm64: fallbackUrl(r, v, 'arm64'), x64: fallbackUrl(r, v, 'x64') },
+    }
+  }
+
+  try {
+    const res = await fetch(GH_API, { headers: { 'User-Agent': 'persephone-bundler' } })
+    if (!res.ok) throw new Error(`gh api ${res.status}`)
+    const data = await res.json()
+    const tag  = data.tag_name
+    const find = (arch) => {
+      const re = new RegExp(`cpython-3\\.11\\.\\d+\\+${tag}-${ARCH_TO_PBS[arch]}-install_only\\.tar\\.gz$`)
+      const a = (data.assets || []).find((a) => re.test(a.name))
+      return a ? a.browser_download_url : null
+    }
+    const arm64 = find('arm64')
+    const x64   = find('x64')
+    if (!arm64 || !x64) throw new Error('no install_only asset found in release')
+    const vMatch = arm64.match(/cpython-(\d+\.\d+\.\d+)\+/)
+    const version = vMatch ? vMatch[1] : 'unknown'
+    log(`${C.dim}discovered PBS release ${tag} / cpython ${version}${C.reset}`)
+    return { release: tag, version, urls: { arm64, x64 } }
+  } catch (err) {
+    log(`${C.yellow}!${C.reset} GitHub API unreachable (${err.message}) — using pinned fallback ${FALLBACK_RELEASE}`)
+    return {
+      release: FALLBACK_RELEASE,
+      version: FALLBACK_VERSION,
+      urls: {
+        arm64: fallbackUrl(FALLBACK_RELEASE, FALLBACK_VERSION, 'arm64'),
+        x64:   fallbackUrl(FALLBACK_RELEASE, FALLBACK_VERSION, 'x64'),
+      },
+    }
+  }
+}
+
 function parseArchArg() {
   const arg = process.argv.find(a => a.startsWith('--arch='))
   if (!arg) return ['arm64', 'x64']
   const v = arg.split('=')[1]
-  if (!(v in ARCH_MAP)) {
+  if (!(v in ARCH_TO_PBS)) {
     log(`${C.red}unknown arch '${v}' — expected arm64 or x64${C.reset}`)
     process.exit(2)
   }
   return [v]
-}
-
-function urlFor(arch) {
-  const file = ARCH_MAP[arch]
-  return `https://github.com/astral-sh/python-build-standalone/releases/download/${PBS_RELEASE}/${file}`
 }
 
 /* ─── download with progress ───────────────────────────────────── */
@@ -120,20 +167,21 @@ function run(cmd, args, opts = {}) {
 }
 
 /* ─── per-arch bundle ──────────────────────────────────────────── */
-async function bundleArch(arch) {
+async function bundleArch(arch, info) {
   log(`\n${C.bold}${C.cyan}▸ ${arch}${C.reset}`)
   await mkdir(CACHE, { recursive: true })
   await mkdir(OUT_ROOT, { recursive: true })
 
-  const archive = path.join(CACHE, ARCH_MAP[arch])
-  const outDir  = path.join(OUT_ROOT, `python-${arch}`)
-  const pyDir   = outDir                              // tarball top-level is "python/"
-  const pyBin   = path.join(pyDir, 'python', 'bin', 'python3')
+  const url      = info.urls[arch]
+  const fileName = path.basename(new URL(url).pathname)
+  const archive  = path.join(CACHE, fileName)
+  const outDir   = path.join(OUT_ROOT, `python-${arch}`)
+  const pyBin    = path.join(outDir, 'python', 'bin', 'python3')
 
   // 1. Download archive (cached)
   if (!existsSync(archive)) {
-    log(`  downloading python-${PY_VERSION} (${arch})…`)
-    await download(urlFor(arch), archive)
+    log(`  downloading python-${info.version} (${arch})…`)
+    await download(url, archive)
   } else {
     sub(`archive cached at ${path.relative(ROOT, archive)}`)
   }
@@ -144,8 +192,7 @@ async function bundleArch(arch) {
   await mkdir(outDir, { recursive: true })
   run('tar', ['-xzf', archive, '-C', outDir])
 
-  // The tarball lays out as outDir/python/{bin,lib,include,…}
-  // We rename it to outDir/<everything> so the final shape is just `python/bin/...`
+  // Tarball layout: outDir/python/{bin,lib,include,…}
   const inner = path.join(outDir, 'python')
   if (!existsSync(pyBin)) {
     throw new Error(`expected ${pyBin} after extraction — archive layout changed?`)
@@ -154,7 +201,6 @@ async function bundleArch(arch) {
 
   // 3. pip install requirements into the bundled interpreter
   log('  pip install -r server/requirements.txt (this may take a minute)…')
-  // --no-warn-script-location keeps output clean; --no-input prevents hangs
   run(pyBin, ['-m', 'pip', 'install', '--upgrade', 'pip', 'wheel'])
   run(pyBin, [
     '-m', 'pip', 'install',
@@ -167,8 +213,8 @@ async function bundleArch(arch) {
   await writeFile(
     path.join(outDir, 'BUNDLE_INFO.json'),
     JSON.stringify({
-      python: PY_VERSION,
-      release: PBS_RELEASE,
+      python:   info.version,
+      release:  info.release,
       arch,
       built_at: new Date().toISOString(),
     }, null, 2),
@@ -188,15 +234,17 @@ async function dirSize(dir) {
 /* ─── main ─────────────────────────────────────────────────────── */
 async function main() {
   log(`${C.bold}🐍 Persephone Python bundler${C.reset}`)
-  log(`${C.dim}python-build-standalone ${PBS_RELEASE} · cpython ${PY_VERSION}${C.reset}`)
 
   if (!existsSync(REQS)) {
     log(`${C.red}server/requirements.txt not found at ${REQS}${C.reset}`)
     process.exit(2)
   }
 
+  const info = await discoverRelease()
+  log(`${C.dim}python-build-standalone ${info.release} · cpython ${info.version}${C.reset}`)
+
   const arches = parseArchArg()
-  for (const a of arches) await bundleArch(a)
+  for (const a of arches) await bundleArch(a, info)
 
   log(`\n${C.bold}${C.green}done.${C.reset} run "${C.bold}npm run dmg${C.reset}" to package.`)
 }
