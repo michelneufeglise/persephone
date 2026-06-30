@@ -45,6 +45,11 @@ function waitForUrl(url, timeoutMs = 30_000) {
 async function main() {
   console.log(`${C.bold}⚘ Persephone (electron dev)${C.reset}\n`)
 
+  // Defensive self-heal: on some Windows machines electron's own postinstall
+  // silently fails to extract its binary (see scripts/ensure-electron.mjs).
+  // Cheap no-op if it's already installed correctly.
+  await import('./ensure-electron.mjs')
+
   // Reuse the existing dev orchestrator — it handles port cleanup + spawning
   const dev = spawn(process.execPath, [path.join(ROOT, 'scripts', 'dev.mjs')], {
     stdio: 'inherit',

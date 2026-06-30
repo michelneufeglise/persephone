@@ -1,5 +1,12 @@
 # Changes
 
+## 2026-07-01 — Fix missing python-multipart and Windows Electron startup
+- `server/requirements.txt` — added `python-multipart`, required by FastAPI's `UploadFile`/`File()` form parsing (`/api/idp/upload`); was missing, causing `ERROR fastapi Form data requires "python-multipart" to be installed.` at runtime.
+- `scripts/ensure-electron.mjs` (new) — verifies `node_modules/electron`'s binary actually exists. Root-caused on this machine: Electron's own postinstall (`extract-zip`-based) silently stops after extracting only the first entry of the downloaded zip — exit code 0, no error, but `electron.exe` never gets written, so launching crashes with "Electron failed to install correctly". The cached zip itself is valid (confirmed via PowerShell's `Expand-Archive`), so on Windows this re-extracts it that way instead. Wired in as the root `postinstall` script and run defensively before `electron:dev` so already-broken installs self-heal too.
+- `README.md` — added a Troubleshooting section under "Run from source" documenting both errors and their fixes.
+
+Verified end-to-end on this machine: broke the electron install on purpose, confirmed `npm run electron:dev` now self-repairs and the app actually launches (window opens, renderer loads, FastAPI backend comes up).
+
 ## 2026-06-30 — Fix CPU thread count hardcoded for Apple Silicon
 Found while investigating slow token generation on Windows: every Ollama
 request (`num_thread`) defaulted to a flat constant tuned for M1 Pro/Max
