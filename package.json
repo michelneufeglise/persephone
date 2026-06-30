@@ -12,13 +12,14 @@
     "dev": "node scripts/dev.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "server": "python3 server/main.py",
-    "setup": "python3 server/download_models.py",
+    "server": "node scripts/run-python.mjs server/main.py",
+    "setup": "node scripts/run-python.mjs server/download_models.py",
     "icon": "node scripts/generate-icon.mjs",
     "bundle:python": "node scripts/bundle-python.mjs",
     "electron:dev": "node scripts/electron-dev.mjs",
     "electron:build": "npm run icon && npm run build && electron-builder",
-    "dmg": "npm run icon && npm run build && npm run bundle:python && electron-builder --mac dmg"
+    "dmg": "npm run icon && npm run build && npm run bundle:python && electron-builder --mac dmg",
+    "exe": "npm run icon && npm run build && npm run bundle:python -- --platform=win && electron-builder --win nsis"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.62.3",
@@ -64,10 +65,6 @@
     ],
     "extraResources": [
       {
-        "from": "build-resources/python-${arch}/python",
-        "to": "python"
-      },
-      {
         "from": "server",
         "to": "server",
         "filter": [
@@ -101,7 +98,36 @@
       "extendInfo": {
         "NSMicrophoneUsageDescription": "Persephone uses your microphone for optional voice input.",
         "NSCameraUsageDescription": "Persephone does not use the camera. (declared for completeness)"
-      }
+      },
+      "extraResources": [
+        {
+          "from": "build-resources/python-${arch}/python",
+          "to": "python"
+        }
+      ]
+    },
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "extraResources": [
+        {
+          "from": "build-resources/python-win-${arch}/python",
+          "to": "python"
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
     },
     "dmg": {
       "title": "Persephone ${version}",

@@ -26,6 +26,8 @@ from typing import Any, Iterable
 
 import httpx
 
+import hardware as _hw
+
 log = logging.getLogger("idp_engine")
 
 OLLAMA_BASE = os.getenv("OLLAMA_HOST", "http://localhost:11434")
@@ -373,7 +375,7 @@ async def _ollama_vision_call(
         "options": {
             "temperature": 0.2,
             "num_predict": num_predict,
-            "num_thread":  10,
+            "num_thread":  _hw.recommended_num_thread(),
         },
     }
 
@@ -421,7 +423,7 @@ async def _ollama_text_call(
                 f"{OLLAMA_BASE}/api/generate",
                 json={
                     "model": model, "prompt": prompt, "stream": False,
-                    "options": {"temperature": 0.3, "num_predict": num_predict, "num_thread": 10},
+                    "options": {"temperature": 0.3, "num_predict": num_predict, "num_thread": _hw.recommended_num_thread()},
                 },
             )
             if r.status_code >= 400:

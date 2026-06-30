@@ -51,7 +51,9 @@ export async function* streamChat(
     ...messages.map(m => ({ role: m.role, content: m.content })),
   ]
 
-  // M1-optimised options merged with user settings
+  // Hardware-tuned options merged with user settings. `numThread <= 0` means
+  // "auto" — omit it so the backend fills in a default sized to the host's
+  // actual CPU core count instead of a one-size-fits-all guess.
   const options = {
     temperature:    modelSettings.temperature,
     top_p:          modelSettings.topP,
@@ -59,10 +61,10 @@ export async function* streamChat(
     num_predict:    modelSettings.maxTokens,
     num_ctx:        modelSettings.contextLength,
     repeat_penalty: modelSettings.repeatPenalty,
-    num_thread:     modelSettings.numThread,
     num_batch:      512,
     f16_kv:         true,
     use_mmap:       true,
+    ...(modelSettings.numThread > 0 ? { num_thread: modelSettings.numThread } : {}),
     ...(modelSettings.seed >= 0 ? { seed: modelSettings.seed } : {}),
     ...(modelSettings.mirostat > 0
       ? {

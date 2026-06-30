@@ -43,9 +43,9 @@ log = logging.getLogger("persephone")
 OLLAMA_BASE = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 DIST_DIR    = Path(__file__).parent.parent / "dist"
 
-# ── M1-optimised Ollama defaults ──────────────────────────────────────────────
+# ── Hardware-tuned Ollama defaults ────────────────────────────────────────────
 OLLAMA_DEFAULTS = {
-    "num_thread":     10,      # M1 Pro/Max: 10 perf cores
+    "num_thread":     _hw.recommended_num_thread(),  # matches the host's actual core count
     "num_batch":      512,     # larger batch = faster prompt processing
     # 8K is enough now that we stopped listing every MCP tool in the system
     # prompt (tools schemas still go via the `tools` array). Doubling KV cache
@@ -1421,6 +1421,45 @@ async def setup_complete(req: WizardCompleteRequest):
 async def setup_reset():
     await _db.set_config("wizard_completed", "0")
     return {"ok": True}
+
+
+# ── /api/models/roles — post-setup model reassignment ────────────────────────
+# The wizard's per-function model choices (main chat, auto-router judge,
+# vision, code, OCR, …) all live in `app_config` as plain key/value pairs.
+# These two endpoints let the UI read and update them after onboarding, so
+# users can pick newly-pulled Ollama models without re-running the wizard.
+_MODEL_ROLE_KEYS = [
+    "active_model", "judge_model", "vision_model", "code_model",
+    "ocr_model", "docs_model", "handwriting_model", "tables_model",
+]
+
+
+@app.get("/api/models/roles")
+async def get_model_roles():
+    return {k: (await _db.get_config(k)) or "" for k in _MODEL_ROLE_KEYS}
+
+
+class ModelRolesUpdate(BaseModel):
+    active_model:      str | None = None
+    judge_model:        str | None = None
+    vision_model:        str | None = None
+    code_model:          str | None = None
+    ocr_model:           str | None = None
+    docs_model:          str | None = None
+    handwriting_model:   str | None = None
+    tables_model:        str | None = None
+
+
+@app.post("/api/models/roles")
+async def update_model_roles(req: ModelRolesUpdate):
+    updates = req.model_dump(exclude_unset=True)
+    for k, v in updates.items():
+        await _db.set_config(k, v or "")
+    # judge_model also drives background fact-extraction; keep both in sync
+    # (mirrors the wizard's own setup_complete behaviour).
+    if "judge_model" in updates:
+        await _db.set_config("memory_model", updates["judge_model"] or "")
+    return {"ok": True, "updated": list(updates.keys())}
 
 
 # ── /api/models/pull — stream Ollama model download ──────────────────────────

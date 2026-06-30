@@ -25,7 +25,7 @@ Persephone wraps the speed of local Ollama models in a thoughtful, beautifully d
 - 📄 **Intelligent document processing.** OCR, handwriting, tables, summarise, Q&A, redact, translate — local-only.
 - 🎨 **Liquid Obsidian design system.** Five thoughtfully crafted themes (Underworld, Spring, Pomegranate, Elysian, Obsidian) with conic gradients, atmospheric grain, holographic accents, and ornamental SVG dividers.
 - 🖼 **Editorial rich-markdown rendering.** Drop caps, pull-quotes, numbered orbs, hand-drawn rough.js borders on code blocks, auto-rendered Mermaid diagrams, generative SVG covers — every response feels designed.
-- 📦 **Native macOS app.** Ships as a code-signable Electron + bundled Python `.dmg` — zero-config first launch.
+- 📦 **Native macOS & Windows apps.** Ships as a code-signable Electron + bundled Python `.dmg`/`.exe` — zero-config first launch.
 
 ---
 
@@ -151,7 +151,9 @@ graph TB
 
 ## Installation
 
-### Option 1 — Build the macOS `.dmg` (recommended for users)
+### Option 1 — Build a native app (recommended for users)
+
+**macOS (`.dmg`)**
 
 ```bash
 git clone https://github.com/<you>/persephone
@@ -161,20 +163,30 @@ npm run dmg
 # Output: dist-electron/Persephone-1.0.0-arm64.dmg
 ```
 
-The `.dmg` bundles:
+**Windows (`.exe` installer)** — run on a Windows machine:
+
+```powershell
+git clone https://github.com/<you>/persephone
+cd persephone
+npm install
+npm run exe
+# Output: dist-electron\Persephone Setup 1.0.0.exe
+```
+
+Both bundle:
 - A portable **Python 3.11** (via [`python-build-standalone`](https://github.com/astral-sh/python-build-standalone)) with all dependencies pre-installed
 - The **FastAPI backend**, **SQLite database** template, and **MCP catalog**
 - The compiled **React frontend**
 
 First launch is zero-config — you'll still need Ollama installed separately (the in-app wizard guides you).
 
-> The current build is **unsigned**. On first open, right-click the app → Open → Open to bypass Gatekeeper. To distribute publicly, set your Apple Developer ID in `package.json` `build.mac` and flip `hardenedRuntime: true`.
+> The current build is **unsigned**. On macOS, right-click the app → Open → Open to bypass Gatekeeper; to distribute publicly, set your Apple Developer ID in `package.json` `build.mac` and flip `hardenedRuntime: true`. On Windows, SmartScreen will warn on first run ("More info" → "Run anyway") until the installer is code-signed.
 
 ### Option 2 — Run from source (developers)
 
 Prerequisites:
 - Node 20+
-- Python 3.11+
+- Python 3.11+ (on Windows, make sure `python` is on `PATH` — the installer's "Add python.exe to PATH" checkbox)
 - [Ollama](https://ollama.com/download) running locally
 
 ```bash
@@ -191,6 +203,8 @@ npm run electron:dev
 # Or web-only (no Electron wrapper)
 npm run dev   # opens http://localhost:5173
 ```
+
+Works the same way on Windows (PowerShell or cmd) — `npm run dev` and `npm run electron:dev` auto-detect the platform and shell out to `python`/`python3` accordingly.
 
 ---
 
@@ -466,7 +480,7 @@ This is a personal project I work on in the open. PRs welcome for:
 - New router rules for under-served domains
 - Better-tuned model recommendations per hardware tier
 - Localisation
-- A Windows / Linux build path
+- A Linux build path
 
 ---
 

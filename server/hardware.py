@@ -142,6 +142,22 @@ def get_hardware() -> dict:
     return info
 
 
+@lru_cache(maxsize=1)
+def recommended_num_thread() -> int:
+    """
+    CPU thread count to hand Ollama for `num_thread`.
+
+    Previously this was a flat constant (10) tuned for M1 Pro/Max and used
+    everywhere regardless of host — fine on the machine it was tuned for,
+    but it silently under-utilises bigger CPUs (e.g. a 12-core Windows
+    laptop only ever got 10 threads) and over-subscribes smaller ones.
+    Use the actual detected physical core count instead, with the old
+    constant as a sane fallback when detection fails.
+    """
+    cores = get_hardware()["cores"]
+    return cores if cores > 0 else 10
+
+
 def _tier(ram_gb: int, apple_silicon: bool, gpu_vram_gb: int = 0) -> str:
     """
     Performance tier accounting for the fact that:

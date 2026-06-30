@@ -3,30 +3,32 @@
  * Persephone — portable Python bundler
  *
  * Downloads a portable Python (astral-sh/python-build-standalone "install_only"
- * tarball) for the requested arch(es), pip-installs server/requirements.txt
- * into it, and writes the result to:
+ * tarball) for the requested platform/arch(es), pip-installs
+ * server/requirements.txt into it, and writes the result to:
  *
- *   build-resources/python-<arch>/
+ *   build-resources/python-<arch>/        (macOS)
+ *   build-resources/python-win-<arch>/    (Windows)
  *
- * electron-builder picks one of those up per --arch via `extraResources`
- * mappings declared in package.json:
- *
- *   "extraResources": [
- *     { "from": "build-resources/python-${arch}", "to": "python" },
- *     { "from": "server",                          "to": "server" }
- *   ]
+ * electron-builder picks one of those up via the per-platform `extraResources`
+ * mappings declared in package.json (build.mac.extraResources /
+ * build.win.extraResources).
  *
  * Repeated runs are incremental — the archive and the extracted runtime are
  * cached and only re-extracted if missing.
  *
+ * pip-installing native deps (torch, etc.) requires actually *running* the
+ * target interpreter, so this script must be run on the matching host OS:
+ * macOS bundles on macOS, Windows bundles on Windows.
+ *
  * Run with:
- *   node scripts/bundle-python.mjs               # both arches (default)
- *   node scripts/bundle-python.mjs --arch=arm64  # just arm64
- *   node scripts/bundle-python.mjs --arch=x64    # just intel
+ *   node scripts/bundle-python.mjs                       # both mac arches (default on macOS)
+ *   node scripts/bundle-python.mjs --arch=arm64           # just arm64
+ *   node scripts/bundle-python.mjs --arch=x64              # just intel
+ *   node scripts/bundle-python.mjs --platform=win --arch=x64   # Windows (run on Windows)
  */
 
 import { spawnSync } from 'node:child_process'
-import { mkdir, rm, stat, writeFile, readFile } from 'node:fs/promises'
+import { mkdir, rm, stat, writeFile, readFile, readdir } from 'node:fs/promises'
 import { existsSync, createWriteStream } from 'node:fs'
 import { pipeline } from 'node:stream/promises'
 import path from 'node:path'
@@ -45,9 +47,21 @@ const REQS      = path.join(ROOT, 'server', 'requirements.txt')
 const FALLBACK_RELEASE = '20260623'
 const FALLBACK_VERSION = '3.11.15'
 
-const ARCH_TO_PBS = {
-  arm64: 'aarch64-apple-darwin',
-  x64:   'x86_64-apple-darwin',
+// python-build-standalone target triples, keyed by our own platform/arch names.
+const PBS_TARGETS = {
+  mac: {
+    arm64: 'aarch64-apple-darwin',
+    x64:   'x86_64-apple-darwin',
+  },
+  win: {
+    x64:   'x86_64-pc-windows-msvc',
+  },
+}
+
+function pbsTarget(platform, arch) {
+  const t = PBS_TARGETS[platform]?.[arch]
+  if (!t) throw new Error(`no python-build-standalone target for ${platform}/${arch}`)
+  return t
 }
 
 const GH_API = 'https://api.github.com/repos/astral-sh/python-build-standalone/releases/latest'
@@ -60,24 +74,23 @@ const C = {
 const log = (msg) => process.stdout.write(`${msg}\n`)
 const sub = (msg) => process.stdout.write(`  ${C.dim}${msg}${C.reset}\n`)
 
-function fallbackUrl(release, version, arch) {
-  return `https://github.com/astral-sh/python-build-standalone/releases/download/${release}/cpython-${version}+${release}-${ARCH_TO_PBS[arch]}-install_only.tar.gz`
+function fallbackUrl(release, version, platform, arch) {
+  return `https://github.com/astral-sh/python-build-standalone/releases/download/${release}/cpython-${version}+${release}-${pbsTarget(platform, arch)}-install_only.tar.gz`
 }
 
 /**
  * Hit GitHub's releases API to discover the latest tag + the asset URLs
- * for both arches. Falls back to FALLBACK_* if anything goes wrong.
+ * for each requested arch. Falls back to FALLBACK_* if anything goes wrong.
  * Also honours PBS_RELEASE / PBS_VERSION env vars for pinning.
  */
-async function discoverRelease() {
+async function discoverRelease(platform, arches) {
   // Env override → use as-is (no API call)
   if (process.env.PBS_RELEASE && process.env.PBS_VERSION) {
     const r = process.env.PBS_RELEASE, v = process.env.PBS_VERSION
     log(`${C.dim}using env-pinned PBS release ${r} / cpython ${v}${C.reset}`)
-    return {
-      release: r, version: v,
-      urls: { arm64: fallbackUrl(r, v, 'arm64'), x64: fallbackUrl(r, v, 'x64') },
-    }
+    const urls = {}
+    for (const a of arches) urls[a] = fallbackUrl(r, v, platform, a)
+    return { release: r, version: v, urls }
   }
 
   try {
@@ -86,39 +99,50 @@ async function discoverRelease() {
     const data = await res.json()
     const tag  = data.tag_name
     const find = (arch) => {
-      const re = new RegExp(`cpython-3\\.11\\.\\d+\\+${tag}-${ARCH_TO_PBS[arch]}-install_only\\.tar\\.gz$`)
+      const re = new RegExp(`cpython-3\\.11\\.\\d+\\+${tag}-${pbsTarget(platform, arch)}-install_only\\.tar\\.gz$`)
       const a = (data.assets || []).find((a) => re.test(a.name))
       return a ? a.browser_download_url : null
     }
-    const arm64 = find('arm64')
-    const x64   = find('x64')
-    if (!arm64 || !x64) throw new Error('no install_only asset found in release')
-    const vMatch = arm64.match(/cpython-(\d+\.\d+\.\d+)\+/)
+    const urls = {}
+    for (const a of arches) urls[a] = find(a)
+    const missing = arches.filter(a => !urls[a])
+    if (missing.length) throw new Error(`no install_only asset found for ${missing.join(', ')} in release`)
+    const first = urls[arches[0]]
+    const vMatch = first.match(/cpython-(\d+\.\d+\.\d+)\+/)
     const version = vMatch ? vMatch[1] : 'unknown'
     log(`${C.dim}discovered PBS release ${tag} / cpython ${version}${C.reset}`)
-    return { release: tag, version, urls: { arm64, x64 } }
+    return { release: tag, version, urls }
   } catch (err) {
     log(`${C.yellow}!${C.reset} GitHub API unreachable (${err.message}) — using pinned fallback ${FALLBACK_RELEASE}`)
-    return {
-      release: FALLBACK_RELEASE,
-      version: FALLBACK_VERSION,
-      urls: {
-        arm64: fallbackUrl(FALLBACK_RELEASE, FALLBACK_VERSION, 'arm64'),
-        x64:   fallbackUrl(FALLBACK_RELEASE, FALLBACK_VERSION, 'x64'),
-      },
-    }
+    const urls = {}
+    for (const a of arches) urls[a] = fallbackUrl(FALLBACK_RELEASE, FALLBACK_VERSION, platform, a)
+    return { release: FALLBACK_RELEASE, version: FALLBACK_VERSION, urls }
   }
 }
 
-function parseArchArg() {
-  const arg = process.argv.find(a => a.startsWith('--arch='))
-  if (!arg) return ['arm64', 'x64']
-  const v = arg.split('=')[1]
-  if (!(v in ARCH_TO_PBS)) {
-    log(`${C.red}unknown arch '${v}' — expected arm64 or x64${C.reset}`)
+function flagValue(name) {
+  const arg = process.argv.find(a => a.startsWith(`--${name}=`))
+  return arg ? arg.split('=')[1] : null
+}
+
+function parsePlatformArg() {
+  const v = flagValue('platform') ?? (process.platform === 'win32' ? 'win' : 'mac')
+  if (!(v in PBS_TARGETS)) {
+    log(`${C.red}unknown platform '${v}' — expected mac or win${C.reset}`)
     process.exit(2)
   }
-  return [v]
+  return v
+}
+
+function parseArchArg(platform) {
+  const arg = flagValue('arch')
+  const valid = Object.keys(PBS_TARGETS[platform])
+  if (!arg) return platform === 'mac' ? ['arm64', 'x64'] : valid
+  if (!valid.includes(arg)) {
+    log(`${C.red}unknown arch '${arg}' for ${platform} — expected ${valid.join(' or ')}${C.reset}`)
+    process.exit(2)
+  }
+  return [arg]
 }
 
 /* ─── download with progress ───────────────────────────────────── */
@@ -167,20 +191,22 @@ function run(cmd, args, opts = {}) {
 }
 
 /* ─── per-arch bundle ──────────────────────────────────────────── */
-async function bundleArch(arch, info) {
-  log(`\n${C.bold}${C.cyan}▸ ${arch}${C.reset}`)
+async function bundleArch(platform, arch, info) {
+  log(`\n${C.bold}${C.cyan}▸ ${platform}/${arch}${C.reset}`)
   await mkdir(CACHE, { recursive: true })
   await mkdir(OUT_ROOT, { recursive: true })
 
   const url      = info.urls[arch]
   const fileName = path.basename(new URL(url).pathname)
   const archive  = path.join(CACHE, fileName)
-  const outDir   = path.join(OUT_ROOT, `python-${arch}`)
-  const pyBin    = path.join(outDir, 'python', 'bin', 'python3')
+  const outDir   = path.join(OUT_ROOT, platform === 'win' ? `python-win-${arch}` : `python-${arch}`)
+  const pyBin    = platform === 'win'
+    ? path.join(outDir, 'python', 'python.exe')
+    : path.join(outDir, 'python', 'bin', 'python3')
 
   // 1. Download archive (cached)
   if (!existsSync(archive)) {
-    log(`  downloading python-${info.version} (${arch})…`)
+    log(`  downloading python-${info.version} (${platform}/${arch})…`)
     await download(url, archive)
   } else {
     sub(`archive cached at ${path.relative(ROOT, archive)}`)
@@ -192,14 +218,17 @@ async function bundleArch(arch, info) {
   await mkdir(outDir, { recursive: true })
   run('tar', ['-xzf', archive, '-C', outDir])
 
-  // Tarball layout: outDir/python/{bin,lib,include,…}
+  // Tarball layout: outDir/python/{bin,lib,include,…} (mac/linux) or
+  // outDir/python/{python.exe,Lib,Scripts,…} (Windows)
   const inner = path.join(outDir, 'python')
   if (!existsSync(pyBin)) {
     throw new Error(`expected ${pyBin} after extraction — archive layout changed?`)
   }
   sub(`extracted to ${path.relative(ROOT, inner)}`)
 
-  // 3. pip install requirements into the bundled interpreter
+  // 3. pip install requirements into the bundled interpreter. This only
+  // works when the host OS can execute pyBin natively — i.e. mac bundles
+  // must be built on macOS, Windows bundles on Windows.
   log('  pip install -r server/requirements.txt (this may take a minute)…')
   run(pyBin, ['-m', 'pip', 'install', '--upgrade', 'pip', 'wheel'])
   run(pyBin, [
@@ -215,20 +244,33 @@ async function bundleArch(arch, info) {
     JSON.stringify({
       python:   info.version,
       release:  info.release,
+      platform,
       arch,
       built_at: new Date().toISOString(),
     }, null, 2),
   )
 
   const sz = await dirSize(outDir)
-  log(`${C.green}  ✓ ${arch} bundle ready · ${(sz / 1e6).toFixed(0)}MB${C.reset}`)
+  log(`${C.green}  ✓ ${platform}/${arch} bundle ready · ${(sz / 1e6).toFixed(0)}MB${C.reset}`)
 }
 
 async function dirSize(dir) {
-  // cheap implementation — `du -s` is more reliable here than walking JS-side
-  const r = spawnSync('du', ['-sk', dir], { encoding: 'utf8' })
-  if (r.status !== 0) return 0
-  return Number(r.stdout.split(/\s+/)[0]) * 1024
+  // `du -s` is unavailable on Windows — fall back to a JS-side walk there.
+  if (process.platform !== 'win32') {
+    const r = spawnSync('du', ['-sk', dir], { encoding: 'utf8' })
+    if (r.status === 0) return Number(r.stdout.split(/\s+/)[0]) * 1024
+  }
+  return jsDirSize(dir)
+}
+
+async function jsDirSize(dir) {
+  let total = 0
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name)
+    if (entry.isDirectory()) total += await jsDirSize(full)
+    else if (entry.isFile()) total += (await stat(full)).size
+  }
+  return total
 }
 
 /* ─── main ─────────────────────────────────────────────────────── */
@@ -240,13 +282,22 @@ async function main() {
     process.exit(2)
   }
 
-  const info = await discoverRelease()
+  const platform = parsePlatformArg()
+  const hostOk = platform === 'win' ? process.platform === 'win32' : process.platform === 'darwin'
+  if (!hostOk) {
+    log(`${C.red}refusing to bundle '${platform}' python from host platform '${process.platform}'${C.reset}`)
+    log(`${C.dim}pip needs to execute the target interpreter, so this must run on a matching ${platform === 'win' ? 'Windows' : 'macOS'} machine.${C.reset}`)
+    process.exit(2)
+  }
+
+  const arches = parseArchArg(platform)
+  const info   = await discoverRelease(platform, arches)
   log(`${C.dim}python-build-standalone ${info.release} · cpython ${info.version}${C.reset}`)
 
-  const arches = parseArchArg()
-  for (const a of arches) await bundleArch(a, info)
+  for (const a of arches) await bundleArch(platform, a, info)
 
-  log(`\n${C.bold}${C.green}done.${C.reset} run "${C.bold}npm run dmg${C.reset}" to package.`)
+  const pkgCmd = platform === 'win' ? 'npm run exe' : 'npm run dmg'
+  log(`\n${C.bold}${C.green}done.${C.reset} run "${C.bold}${pkgCmd}${C.reset}" to package.`)
 }
 
 main().catch(err => {

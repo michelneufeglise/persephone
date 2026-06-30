@@ -12,6 +12,8 @@
 
 import { spawn, execSync, spawnSync } from 'node:child_process'
 import net from 'node:net'
+import path from 'node:path'
+import { existsSync } from 'node:fs'
 
 const API_PORT  = 8000
 const VITE_PORT = 5173
@@ -118,12 +120,19 @@ async function main() {
     env: { ...process.env, PYTHONUNBUFFERED: '1' },
   })
 
-  // Use `npx vite` so we don't require a global install. On Windows, npx is a .cmd
-  const vite = spawn(
-    process.platform === 'win32' ? 'npx.cmd' : 'npx',
-    ['vite'],
-    { stdio: ['ignore', 'pipe', 'pipe'] },
-  )
+  // Run Vite's own CLI script directly with the current Node binary instead
+  // of shelling out to `npx`/`npx.cmd`. This sidesteps the Windows quirk
+  // where Node can't spawn a .cmd shim without `shell: true` (which in turn
+  // makes Ctrl+C process-tree cleanup unreliable), and works identically on
+  // every platform since it's always "node <script>".
+  const viteBin = path.join(process.cwd(), 'node_modules', 'vite', 'bin', 'vite.js')
+  const vite = existsSync(viteBin)
+    ? spawn(process.execPath, [viteBin], { stdio: ['ignore', 'pipe', 'pipe'] })
+    : spawn(
+        process.platform === 'win32' ? 'npx.cmd' : 'npx',
+        ['vite'],
+        { stdio: ['ignore', 'pipe', 'pipe'], shell: process.platform === 'win32' },
+      )
 
   api.stdout.on('data', tagWriter('api',  C.cyan))
   api.stderr.on('data', tagWriter('api',  C.cyan))

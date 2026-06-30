@@ -22,6 +22,8 @@ os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
 import numpy as np
 import torch
 
+import hardware as _hw
+
 log = logging.getLogger("tts_engine")
 
 OLLAMA_BASE   = os.getenv("OLLAMA_HOST", "http://localhost:11434")
@@ -191,7 +193,7 @@ async def synthesize(text: str, voice: str = "tara", speed: float = 1.0) -> byte
                     "top_p":          0.9,
                     "repeat_penalty": 1.1,
                     "num_predict":    8192,
-                    "num_thread":     10,
+                    "num_thread":     _hw.recommended_num_thread(),
                 },
             },
         )

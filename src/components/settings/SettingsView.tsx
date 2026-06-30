@@ -1,24 +1,26 @@
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
-  User, Cpu, Brain, Database, Wrench, Palette, Volume2
+  User, Cpu, Boxes, Brain, Database, Wrench, Palette, Volume2
 } from 'lucide-react'
 import { CharacterSection } from './sections/CharacterSection'
 import { ModelSection } from './sections/ModelSection'
+import { ModelRolesSection } from './sections/ModelRolesSection'
 import { MemorySection } from './sections/MemorySection'
 import { McpSection } from './sections/McpSection'
 import { ThemeSection } from './sections/ThemeSection'
 import { VoiceSection } from './sections/VoiceSection'
 
-type Tab = 'character' | 'model' | 'voice' | 'memory' | 'mcp' | 'theme'
+type Tab = 'character' | 'modelRoles' | 'model' | 'voice' | 'memory' | 'mcp' | 'theme'
 
 const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
-  { id: 'character', label: 'Character', icon: User },
-  { id: 'model',     label: 'Model',     icon: Cpu },
-  { id: 'voice',     label: 'Voice',     icon: Volume2 },
-  { id: 'memory',    label: 'Memory',    icon: Brain },
-  { id: 'mcp',       label: 'Tools',     icon: Wrench },
-  { id: 'theme',     label: 'Theme',     icon: Palette },
+  { id: 'character',   label: 'Character',  icon: User },
+  { id: 'modelRoles',  label: 'Models',     icon: Boxes },
+  { id: 'model',       label: 'Generation', icon: Cpu },
+  { id: 'voice',       label: 'Voice',      icon: Volume2 },
+  { id: 'memory',      label: 'Memory',     icon: Brain },
+  { id: 'mcp',         label: 'Tools',      icon: Wrench },
+  { id: 'theme',       label: 'Theme',      icon: Palette },
 ]
 
 export function SettingsView() {
@@ -61,12 +63,13 @@ export function SettingsView() {
             exit={{ opacity: 0, x: -10 }}
             transition={{ duration: 0.2 }}
           >
-            {activeTab === 'character' && <CharacterSection />}
-            {activeTab === 'model'     && <ModelSection />}
-            {activeTab === 'voice'     && <VoiceSection />}
-            {activeTab === 'memory'    && <MemorySection />}
-            {activeTab === 'mcp'       && <McpSection />}
-            {activeTab === 'theme'     && <ThemeSection />}
+            {activeTab === 'character'  && <CharacterSection />}
+            {activeTab === 'modelRoles' && <ModelRolesSection />}
+            {activeTab === 'model'      && <ModelSection />}
+            {activeTab === 'voice'      && <VoiceSection />}
+            {activeTab === 'memory'     && <MemorySection />}
+            {activeTab === 'mcp'        && <McpSection />}
+            {activeTab === 'theme'      && <ThemeSection />}
           </motion.div>
         </AnimatePresence>
       </div>

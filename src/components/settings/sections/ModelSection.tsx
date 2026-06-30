@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react'
 import { useAppStore } from '@/store/appStore'
 import { Slider } from '@/components/ui/Slider'
 import { Input } from '@/components/ui/Input'
@@ -7,6 +8,14 @@ import { Panel } from '@/components/ui/Panel'
 export function ModelSection() {
   const { settings, updateModelSettings, updateSettings } = useAppStore()
   const ms = settings.model
+  const [detectedCores, setDetectedCores] = useState(0)
+
+  useEffect(() => {
+    fetch('/api/setup/hardware')
+      .then(r => r.json())
+      .then(d => setDetectedCores(d.cores ?? 0))
+      .catch(() => {})
+  }, [])
 
   return (
     <div className="space-y-6 max-w-2xl">
@@ -72,12 +81,16 @@ export function ModelSection() {
             min={-1}
           />
           <Input
-            label="CPU Threads"
+            label="CPU Threads (0 = auto)"
             type="number"
             value={ms.numThread}
-            onChange={e => updateModelSettings({ numThread: Number(e.target.value) })}
-            min={1} max={16}
-            hint="M1 Pro: 10, M1 Max: 10"
+            onChange={e => updateModelSettings({ numThread: Math.max(0, Number(e.target.value)) })}
+            min={0} max={64}
+            hint={
+              detectedCores > 0
+                ? `0 = auto-detect — this machine has ${detectedCores} cores`
+                : '0 = auto-detect based on your CPU'
+            }
           />
         </div>
       </Panel>

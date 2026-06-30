@@ -9,10 +9,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const app = express()
 const OLLAMA_BASE = process.env.OLLAMA_HOST || 'http://localhost:11434'
 
-// Resolve python3 path at startup
-let PYTHON3 = 'python3'
+// Resolve python path at startup
+let PYTHON3 = process.platform === 'win32' ? 'python' : 'python3'
 try {
-  PYTHON3 = execSync('which python3').toString().trim()
+  const whichCmd = process.platform === 'win32' ? 'where' : 'which'
+  PYTHON3 = execSync(`${whichCmd} ${PYTHON3}`).toString().split(/\r?\n/)[0].trim()
 } catch {}
 console.log(`[tts] using python: ${PYTHON3}`)
 

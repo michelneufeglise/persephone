@@ -75,16 +75,23 @@ function resourcesPath() {
 }
 
 function bundledPythonPath() {
-  // resources/python/bin/python3 inside the .app bundle
-  return path.join(resourcesPath(), 'python', 'bin', 'python3')
+  // resources/python/bin/python3 inside the .app bundle (mac/linux);
+  // resources/python/python.exe next to the .exe on Windows.
+  return process.platform === 'win32'
+    ? path.join(resourcesPath(), 'python', 'python.exe')
+    : path.join(resourcesPath(), 'python', 'bin', 'python3')
+}
+
+function systemPythonCmd() {
+  return process.platform === 'win32' ? 'python' : 'python3'
 }
 
 function resolvePythonCmd() {
-  if (isDev) return { cmd: 'python3', args: [] }
+  if (isDev) return { cmd: systemPythonCmd(), args: [] }
   const bundled = bundledPythonPath()
   if (fs.existsSync(bundled)) return { cmd: bundled, args: [] }
   // Fallback to system python so we can still ship if the bundler skipped
-  return { cmd: 'python3', args: [] }
+  return { cmd: systemPythonCmd(), args: [] }
 }
 
 function serverScriptPath() {
@@ -116,11 +123,16 @@ function startPython(port) {
     // survive app deletes? Keep default for now; revisit if disk pressure.
   }
 
-  // When using the bundled python, set up its dyld path so torch + snac
-  // can find their bundled .dylibs.
+  // When using the bundled python, point it at its own shared libs so torch +
+  // snac can find them. Windows DLLs are resolved next to python.exe/in
+  // site-packages automatically, so only mac (dyld) and Linux (ld.so) need this.
   if (cmd.startsWith(path.join(resourcesPath(), 'python'))) {
     const libDir = path.join(resourcesPath(), 'python', 'lib')
-    env.DYLD_LIBRARY_PATH = `${libDir}:${env.DYLD_LIBRARY_PATH ?? ''}`
+    if (process.platform === 'darwin') {
+      env.DYLD_LIBRARY_PATH = `${libDir}:${env.DYLD_LIBRARY_PATH ?? ''}`
+    } else if (process.platform === 'linux') {
+      env.LD_LIBRARY_PATH = `${libDir}:${env.LD_LIBRARY_PATH ?? ''}`
+    }
   }
 
   // Persist a rolling log file the user can find via Help → Open data directory

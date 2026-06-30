@@ -29,7 +29,9 @@ const DEFAULT_SETTINGS: AppSettings = {
     mirostat: 0,
     mirostatTau: 5.0,
     mirostatEta: 0.1,
-    numThread: 8,
+    // 0 = auto: let the backend pick a thread count from the host's actual
+    // CPU core count instead of a one-size-fits-all guess.
+    numThread: 0,
   },
   tts: {
     enabled: true,
@@ -251,6 +253,18 @@ export const useAppStore = create<AppState>()(
         wizardCompleted: state.wizardCompleted,
         account: state.account,
       }),
+      version: 1,
+      migrate: (persisted, version) => {
+        const state = persisted as { settings?: { model?: { numThread?: number } } }
+        if (version < 1 && state?.settings?.model?.numThread === 8) {
+          // 8 was the old hardcoded (Mac-tuned) default. Reset it to "auto"
+          // so it picks up the host's real core count instead of silently
+          // under-using a bigger CPU. Deliberately-chosen values other than
+          // the old default are left untouched.
+          state.settings.model.numThread = 0
+        }
+        return state
+      },
     },
   ),
 )
