@@ -967,10 +967,24 @@ async def _stream_one_round(
     Stream one /api/chat request. Yields (raw_line, parsed_chunk) per token.
     Caller decides whether to forward raw_line to the SSE response.
     """
+    # Detect whether we're synthesising after a tool call. On that round we
+    #   - disable native thinking (otherwise the model spends its whole
+    #     num_predict budget re-thinking about the tool result and truncates
+    #     the visible answer with done_reason=length)
+    #   - bump num_predict to at least 3072 so even a big DDG result has
+    #     room to be summarised in full
+    is_tool_synthesis = any(m.get("role") == "tool" for m in messages)
+    round_options = options
+    if is_tool_synthesis:
+        round_options = {
+            **options,
+            "num_predict": max(int(options.get("num_predict", 2048) or 2048), 3072),
+        }
+
     payload: dict = {
         "model":   model,
         "messages": messages,
-        "options": options,
+        "options": round_options,
         "stream":  True,
         # Keep the chat model resident for 10 minutes so back-to-back turns
         # skip the 1-5s reload. -1 (forever) sounds nice but on M-series with
@@ -980,7 +994,12 @@ async def _stream_one_round(
     }
     if tools:
         payload["tools"] = tools
-    if _supports_native_thinking(model):
+
+    if is_tool_synthesis:
+        # Force thinking off on the synthesis round regardless of model
+        # capability — user still gets the answer, doesn't burn budget.
+        payload["think"] = False
+    elif _supports_native_thinking(model):
         # Tells Ollama to expose chain-of-thought tokens in `message.thinking`
         # rather than mixing them into `message.content`.
         payload["think"] = True

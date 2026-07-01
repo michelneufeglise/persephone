@@ -1,4 +1,4 @@
-import { useRef, useEffect, useCallback } from 'react'
+import { useRef, useEffect, useCallback, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { Plus, Trash2 } from 'lucide-react'
 import { useAppStore } from '@/store/appStore'
@@ -35,13 +35,51 @@ export function ChatWindow() {
     createNewConversation, clearMessages, setIsSpeaking, setAudioLevel,
   } = useAppStore()
 
-  const abortRef = useRef<AbortController | null>(null)
-  const bottomRef = useRef<HTMLDivElement>(null)
+  const abortRef       = useRef<AbortController | null>(null)
+  const bottomRef      = useRef<HTMLDivElement>(null)
+  const scrollerRef    = useRef<HTMLDivElement>(null)
+  // "Stick to bottom" — true while the user is at (or near) the bottom of
+  // the transcript. Auto-scroll only fires when this is true; the moment
+  // the user scrolls up we release, so we don't yank them back down while
+  // they're reading an older part of the conversation.
+  const [stickBottom, setStickBottom] = useState(true)
+
   const conv = getActiveConversation()
+  const lastMsg = conv?.messages[conv.messages.length - 1]
+
+  // Compute a cheap dependency that ticks every time the tail of the
+  // conversation grows — number of messages, plus the length of the last
+  // message's content + thinkingContent + toolCalls. Streaming updates
+  // change these but the reference to conv doesn't.
+  const streamDep =
+    (conv?.messages.length ?? 0) + ':' +
+    (lastMsg?.content?.length ?? 0)   + ':' +
+    (lastMsg?.thinkingContent?.length ?? 0) + ':' +
+    (lastMsg?.toolCalls?.length ?? 0)
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [conv?.messages.length])
+    if (!stickBottom) return
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+  }, [streamDep, stickBottom])
+
+  // Track the user's scroll position. If they're within ~120px of the
+  // bottom, we consider them "sticky"; anywhere higher and we release.
+  useEffect(() => {
+    const el = scrollerRef.current
+    if (!el) return
+    const onScroll = () => {
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+      setStickBottom(distanceFromBottom < 120)
+    }
+    el.addEventListener('scroll', onScroll, { passive: true })
+    return () => el.removeEventListener('scroll', onScroll)
+  }, [])
+
+  // When the user switches conversations, snap to bottom instantly.
+  useEffect(() => {
+    setStickBottom(true)
+    bottomRef.current?.scrollIntoView({ block: 'end' })
+  }, [activeConversationId])
 
   useEffect(() => {
     if (!activeConversationId) createNewConversation()
@@ -286,6 +324,7 @@ export function ChatWindow() {
 
       {/* Messages */}
       <div
+        ref={scrollerRef}
         className="relative flex-1 overflow-y-auto px-5 py-5 space-y-1"
         style={{ scrollbarWidth: 'thin', scrollbarColor: 'var(--scrollbar) transparent' }}
       >
@@ -300,6 +339,26 @@ export function ChatWindow() {
           ))}
         </AnimatePresence>
         <div ref={bottomRef} />
+
+        {/* "Jump to latest" pill — visible when the user has scrolled up while
+            new tokens are still arriving. Clicking re-engages sticky-bottom. */}
+        {!stickBottom && (isGenerating || (lastMsg?.isStreaming ?? false)) && (
+          <button
+            onClick={() => {
+              setStickBottom(true)
+              bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
+            }}
+            className="sticky bottom-2 left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-3 py-1.5
+              rounded-full text-[10px] font-mono uppercase tracking-wider text-white
+              transition-all hover:scale-105 active:scale-95 z-10"
+            style={{
+              background: 'linear-gradient(135deg, var(--accent), var(--accent-deep))',
+              boxShadow: '0 8px 22px -6px var(--accent-glow), 0 0 20px -4px var(--accent-glow)',
+            }}
+          >
+            ↓ jump to latest
+          </button>
+        )}
       </div>
 
       <ChatInput onSend={handleSend} onStop={handleStop} />
