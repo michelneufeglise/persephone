@@ -47,7 +47,7 @@ export function SetupWizard() {
   const [handwritingModel, setHandwritingModel] = useState('')
   const [tablesModel, setTablesModel]           = useState('')
   const [judgeModel, setJudgeModel]             = useState('qwen2.5:1.5b')
-  const [ttsVoice, setTtsVoice]         = useState('tara')
+  const [ttsVoice, setTtsVoice]         = useState('af_heart')
   const [ttsSpeed, setTtsSpeed]         = useState(1.0)
   const [selectedTheme, setTheme]       = useState('underworld')
   const [mcpServers, setMcpServers]     = useState<string[]>(['fetch', 'duckduckgo-search', 'time', 'sequential-thinking'])

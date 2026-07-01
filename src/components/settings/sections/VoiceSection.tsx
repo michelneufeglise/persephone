@@ -11,14 +11,20 @@ interface Voice {
   id: string
   name: string
   gender: string
+  accent?: string
   description: string
 }
 
 export function VoiceSection() {
   const { settings, updateTTSSettings } = useAppStore()
   const tts = settings.tts
-  const [voices, setVoices] = useState<Voice[]>([])
-  const [testing, setTesting] = useState(false)
+  const [voices, setVoices]           = useState<Voice[]>([])
+  const [testing, setTesting]         = useState(false)
+  const [accentFilter, setAccentFilter] = useState<'all' | 'US' | 'UK'>('all')
+
+  const filtered = voices.filter(v =>
+    accentFilter === 'all' || v.accent === accentFilter,
+  )
 
   useEffect(() => {
     fetch('/api/tts/voices')
@@ -49,7 +55,7 @@ export function VoiceSection() {
       <div>
         <h3 className="font-serif text-xl text-[var(--text-primary)] mb-1">Voice & TTS</h3>
         <p className="text-sm text-[var(--text-muted)]">
-          Powered by Orpheus 3B — a locally-running neural TTS model.
+          Powered by Kokoro-82M — a locally-running neural TTS at 24kHz, ~10× real-time.
         </p>
       </div>
 
@@ -58,7 +64,7 @@ export function VoiceSection() {
           checked={tts.enabled}
           onChange={v => updateTTSSettings({ enabled: v })}
           label="Enable Voice"
-          description="Generate speech for AI responses using Orpheus TTS"
+          description="Generate speech for AI responses using Kokoro TTS"
         />
         <Toggle
           checked={tts.autoPlay}
@@ -68,12 +74,29 @@ export function VoiceSection() {
         />
       </Panel>
 
-      <div className="space-y-2">
-        <label className="text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wide">
-          Voice Character
-        </label>
+      <div className="space-y-3">
+        <div className="flex items-center justify-between">
+          <label className="text-xs font-medium text-[var(--text-secondary)] uppercase tracking-wide">
+            Voice Character
+          </label>
+          <div className="flex gap-1.5">
+            {(['all', 'US', 'UK'] as const).map(f => (
+              <button
+                key={f}
+                onClick={() => setAccentFilter(f)}
+                className={`px-2.5 py-1 rounded-full text-[10px] font-mono uppercase tracking-wider border transition-all ${
+                  accentFilter === f
+                    ? 'border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--accent)]'
+                    : 'border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--border-bright)]'
+                }`}
+              >
+                {f === 'all' ? 'all' : f === 'US' ? '🇺🇸 us' : '🇬🇧 uk'}
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="grid grid-cols-2 gap-2">
-          {voices.map(v => (
+          {filtered.map(v => (
             <button
               key={v.id}
               onClick={() => updateTTSSettings({ voice: v.id })}
@@ -83,8 +106,15 @@ export function VoiceSection() {
                   : 'border-[var(--border)] bg-[var(--bg-secondary)] hover:border-[var(--border-bright)]'
               }`}
             >
-              <div className="flex items-center justify-between mb-1">
-                <span className="text-sm font-medium text-[var(--text-primary)]">{v.name}</span>
+              <div className="flex items-center justify-between mb-1 flex-wrap gap-1">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-sm font-medium text-[var(--text-primary)]">{v.name}</span>
+                  {v.accent && (
+                    <span className="text-[9px] font-mono uppercase tracking-wider px-1 py-px rounded border border-[var(--border)] text-[var(--text-muted)]">
+                      {v.accent}
+                    </span>
+                  )}
+                </div>
                 <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${
                   v.gender === 'female'
                     ? 'bg-pink-500/20 text-pink-300'

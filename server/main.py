@@ -442,7 +442,37 @@ def _supports_native_thinking(model: str) -> bool:
         or lower.startswith("nemotron")
         or "thinking" in lower
         or "reasoning" in lower
+        or "agentworld" in lower  # community fine-tune of qwen3.6 MoE
     )
+
+
+# num_predict floors: reasoning models spend thousands of tokens on <think>
+# before the visible answer starts. The user-supplied max_tokens (default 2048)
+# is a hard cap that truncates the answer mid-word on complex tasks. We floor
+# it up to a sensible minimum per model family so complex reasoning has room
+# to finish. This is a floor, not a target — models that don't need it stop
+# naturally with done_reason=stop.
+_EXTENDED_PREDICT_FLOOR = 8192       # qwen3, deepseek-r1, gpt-oss, nemotron, gemma4-thinking
+_MOE_REASONING_FLOOR    = 16384      # qwen3.6, agentworld, nemotron-3-nano — MoEs with deep chains
+
+
+def _predict_floor(model: str) -> int:
+    """Minimum num_predict this model should get, regardless of user setting."""
+    if not model:
+        return 0
+    lower = model.lower()
+    # MoE reasoning MODELS — the longest chains-of-thought we've seen
+    if (
+        lower.startswith("qwen3.6")
+        or lower.startswith("nemotron-3-nano")
+        or "agentworld" in lower
+        or "moe" in lower and ("qwen3" in lower or "reasoning" in lower)
+    ):
+        return _MOE_REASONING_FLOOR
+    # Regular native-thinking models
+    if _supports_native_thinking(model):
+        return _EXTENDED_PREDICT_FLOOR
+    return 0
 
 
 _VISUAL_HINT = (
@@ -958,6 +988,60 @@ async def _augment_messages(model: str, messages: list[dict]) -> list[dict]:
 
 _MAX_TOOL_ITERATIONS = 5
 
+_FALLBACK_SYNTH_PREF = [
+    "qwen2.5:7b", "qwen2.5:14b", "gemma4:12b",
+    "llama3.1:8b", "hermes3:8b", "qwen2.5:32b",
+]
+
+
+async def _stream_fallback_synthesis(
+    client: httpx.AsyncClient, messages: list[dict], options: dict,
+) -> AsyncIterator[str]:
+    """Silent retry when a reasoning model's tool-synthesis round emits only
+    thinking with no visible content. Pick a fast non-thinking model and
+    stream a proper answer using the same conversation + tool results.
+
+    Yields raw SSE frames (data: ... \\n\\n) ready to forward to the client.
+    """
+    try:
+        installed = await _installed_models()
+        fallback = next(
+            (p for p in _FALLBACK_SYNTH_PREF
+             if p in installed or any(x.startswith(p + ":") for x in installed)),
+            None,
+        )
+        if not fallback:
+            return
+
+        log.info("empty tool-synth from reasoning model → retry with %s", fallback)
+        # Nudge the fallback to acknowledge that the tool has already been
+        # invoked and to just write the answer.
+        nudged = list(messages) + [{
+            "role": "user",
+            "content": (
+                "The search results above are already available — use them to "
+                "answer the question in a clear, well-organised markdown reply "
+                "with inline [N] citations that reference each source URL."
+            ),
+        }]
+
+        async for raw_line, chunk in _stream_one_round(
+            client, fallback, nudged, options, None,
+        ):
+            # Rewrite the model name in the raw payload so the UI badge reads
+            # the *originally chosen* model. The fallback is an implementation
+            # detail; the user asked to talk to model X, not model Y.
+            try:
+                obj = json.loads(raw_line)
+                if isinstance(obj, dict) and "message" in obj:
+                    yield f"data: {json.dumps(obj)}\n\n"
+                    continue
+            except Exception:
+                pass
+            yield f"data: {raw_line}\n\n"
+    except Exception as exc:
+        log.warning("fallback synthesis failed: %s", exc)
+
 
 async def _stream_one_round(
     client: httpx.AsyncClient, model: str, messages: list[dict],
@@ -974,12 +1058,38 @@ async def _stream_one_round(
     #   - bump num_predict to at least 3072 so even a big DDG result has
     #     room to be summarised in full
     is_tool_synthesis = any(m.get("role") == "tool" for m in messages)
-    round_options = options
-    if is_tool_synthesis:
-        round_options = {
-            **options,
-            "num_predict": max(int(options.get("num_predict", 2048) or 2048), 3072),
-        }
+
+    # Reasoning-model num_predict floor. Long-chain thinkers (qwen3, qwen3.6,
+    # AgentWorld, deepseek-r1, nemotron-3-nano, gpt-oss) burn thousands of
+    # tokens on <think> before the answer starts; the frontend default of
+    # 2048 truncates them mid-answer with done_reason=length. We floor it up
+    # to a per-family minimum so complex tasks have room to finish.
+    user_predict     = int(options.get("num_predict", 2048) or 2048)
+    reasoning_floor  = _predict_floor(model)
+    round_options    = dict(options)  # shallow copy — we may add/override keys
+    effective_floor  = max(3072 if is_tool_synthesis else 0, reasoning_floor)
+    if effective_floor > user_predict:
+        round_options["num_predict"] = effective_floor
+        log.info(
+            "raised num_predict %d → %d for %s (tool_synth=%s reasoning=%s)",
+            user_predict, effective_floor, model,
+            is_tool_synthesis, reasoning_floor > 0,
+        )
+
+    # Reasoning-model tool-synthesis context bump. When a reasoning model
+    # summarises a tool result, the prompt already carries: system + memory +
+    # MCP policy + character prompt + user turn + assistant tool_call +
+    # role:tool result (often 500-2000 tokens). Add ≥8K of <think> tokens on
+    # top and the default 8192 num_ctx is exceeded → Ollama silently
+    # truncates the input, leaving the model with a partial tool result and
+    # confused output. Raise num_ctx to 32K so the whole conversation +
+    # thinking has room.
+    if is_tool_synthesis and reasoning_floor > 0:
+        cur_ctx = int(round_options.get("num_ctx", 8192) or 8192)
+        if cur_ctx < 32768:
+            round_options["num_ctx"] = 32768
+            log.info("raised num_ctx %d → 32768 for %s (reasoning tool synth)",
+                     cur_ctx, model)
 
     payload: dict = {
         "model":   model,
@@ -995,13 +1105,18 @@ async def _stream_one_round(
     if tools:
         payload["tools"] = tools
 
-    if is_tool_synthesis:
-        # Force thinking off on the synthesis round regardless of model
-        # capability — user still gets the answer, doesn't burn budget.
+    # `think` policy:
+    #   - Casual thinkers (gemma4, etc — no reasoning_floor) burn their token
+    #     budget on <think> after seeing a tool result → force think:false on
+    #     the tool-synthesis round so they emit the actual answer.
+    #   - Reasoning-trained models (qwen3, qwen3.6/AgentWorld, deepseek-r1,
+    #     nemotron*) are TRAINED to always think first. Forcing think:false on
+    #     them makes them emit a few confused tokens and stop. Keep think:true
+    #     for them — the reasoning_floor above (8-16K) gives plenty of room.
+    is_reasoning_model = reasoning_floor > 0
+    if is_tool_synthesis and not is_reasoning_model:
         payload["think"] = False
     elif _supports_native_thinking(model):
-        # Tells Ollama to expose chain-of-thought tokens in `message.thinking`
-        # rather than mixing them into `message.content`.
         payload["think"] = True
 
     async with client.stream("POST", f"{OLLAMA_BASE}/api/chat", json=payload) as resp:
@@ -1147,6 +1262,33 @@ async def _stream_ollama_chat(
                     # active model so the user gets a proper streamed answer.
                     delegate = False
                     continue
+
+                # Reasoning-model tool-synthesis failure mode: the model spent
+                # its whole budget on <think> and never emitted visible content.
+                # The user sees an empty bubble even though the tool call
+                # succeeded. Silently retry the synthesis on a fast non-
+                # thinking model so a real answer arrives.
+                had_tool_msg = any(m.get("role") == "tool" for m in messages)
+                if (
+                    saw_done and had_tool_msg
+                    and not assistant_content.strip()
+                    and _predict_floor(round_model) > 0   # was a reasoning model
+                ):
+                    async for line in _stream_fallback_synthesis(
+                        client, messages, merged_opts,
+                    ):
+                        # Track the fallback's content too so background
+                        # fact extraction still has a useful sample.
+                        try:
+                            payload = json.loads(line[len("data: "):]) if line.startswith("data: ") else None
+                            if isinstance(payload, dict):
+                                delta = (payload.get("message") or {}).get("content", "")
+                                if delta:
+                                    assistant_content += delta
+                        except Exception:
+                            pass
+                        yield line
+
                 if saw_done:
                     final_assistant_text = assistant_content
                     yield "data: [DONE]\n\n"

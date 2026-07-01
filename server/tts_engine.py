@@ -1,163 +1,145 @@
 """
-Orpheus TTS engine — loads SNAC once at startup, stays in-process forever.
-Fully offline after first HuggingFace cache population.
+Kokoro-82M TTS engine (ONNX runtime).
 
-Audio pipeline: SNAC decode → DC removal → silence trim → peak-norm 0.85 → int16 WAV
+Loads once at startup, stays in-process. Produces 24kHz mono float32 audio
+natively, ~10× real-time on M-series. Total model weight: ~360MB.
+
+Model + voice pack are downloaded on first launch to the writable data dir
+so builds don't need to bake them in.
+
+Public API:
+  VOICES              — curated list of voice dicts (id/name/gender/description)
+  VALID_VOICES        — set of valid voice IDs
+  preload_pipeline()  — warms the ONNX session (call at startup)
+  synthesize(text, voice, speed) → WAV bytes
 """
 
 from __future__ import annotations
 
+import asyncio
 import io
-import os
-import re
-import wave
 import logging
+import wave
 from pathlib import Path
-
-# ── Block ALL HuggingFace network calls ───────────────────────────────────────
-os.environ.setdefault("HF_HUB_OFFLINE",      "1")
-os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-os.environ.setdefault("HF_DATASETS_OFFLINE", "1")
+from typing import Any
+from urllib.request import urlretrieve
 
 import numpy as np
-import torch
 
-import hardware as _hw
+from paths import data_dir
 
 log = logging.getLogger("tts_engine")
 
-OLLAMA_BASE   = os.getenv("OLLAMA_HOST", "http://localhost:11434")
-ORPHEUS_MODEL = "legraphista/Orpheus:3b-ft-q4_k_m"
-SAMPLE_RATE   = 24_000
+SAMPLE_RATE  = 24_000
+DEFAULT_VOICE = "af_heart"
 
-# Token frame structure (7 tokens / SNAC frame, 1:2:4 codebook ratio)
-# Frame positions: [c0, c1_a, c2_a, c2_b, c1_b, c2_c, c2_d]
-#
-# From the official Canopy Labs Orpheus reference:
-#   codebook_index = raw_token - 10 - ((index % 7) * 4096)
-# → per-position offsets are: 10, 4106, 8202, 12298, 16394, 20490, 24586
-# Each subtraction maps the raw token into the SNAC codebook range [0, 4095].
-_OFFSETS = (10, 4106, 8202, 12298, 16394, 20490, 24586)
-
+# ── Curated voice catalog ─────────────────────────────────────────────────────
+# All included in the standard Kokoro v1.0 voice pack — no extra downloads.
+# Prefix legend: af/am = American female/male, bf/bm = British female/male
 VOICES = [
-    {"id": "tara",  "name": "Tara",  "gender": "female", "description": "Warm & inviting"},
-    {"id": "leo",   "name": "Leo",   "gender": "male",   "description": "Confident & clear"},
-    {"id": "leah",  "name": "Leah",  "gender": "female", "description": "Gentle & soft"},
-    {"id": "jess",  "name": "Jess",  "gender": "female", "description": "Energetic & bright"},
-    {"id": "mia",   "name": "Mia",   "gender": "female", "description": "Smooth & calm"},
-    {"id": "zac",   "name": "Zac",   "gender": "male",   "description": "Deep & resonant"},
-    {"id": "zoe",   "name": "Zoe",   "gender": "female", "description": "Crisp & expressive"},
-    {"id": "zach",  "name": "Zach",  "gender": "male",   "description": "Warm & conversational"},
+    # American female
+    {"id": "af_heart",   "name": "Heart",   "gender": "female", "accent": "US",
+     "description": "Warm, inviting default — richest expressive range"},
+    {"id": "af_bella",   "name": "Bella",   "gender": "female", "accent": "US",
+     "description": "Bright, playful, youthful"},
+    {"id": "af_nicole",  "name": "Nicole",  "gender": "female", "accent": "US",
+     "description": "Clear, articulate, professional"},
+    {"id": "af_sarah",   "name": "Sarah",   "gender": "female", "accent": "US",
+     "description": "Calm, measured, thoughtful"},
+    {"id": "af_sky",     "name": "Sky",     "gender": "female", "accent": "US",
+     "description": "Airy, gentle, dreamlike"},
+    {"id": "af_aoede",   "name": "Aoede",   "gender": "female", "accent": "US",
+     "description": "Melodic, poetic cadence"},
+
+    # American male
+    {"id": "am_adam",    "name": "Adam",    "gender": "male",   "accent": "US",
+     "description": "Deep, grounded, resonant"},
+    {"id": "am_michael", "name": "Michael", "gender": "male",   "accent": "US",
+     "description": "Confident, mid-tone, versatile"},
+    {"id": "am_liam",    "name": "Liam",    "gender": "male",   "accent": "US",
+     "description": "Smooth, conversational"},
+    {"id": "am_puck",    "name": "Puck",    "gender": "male",   "accent": "US",
+     "description": "Playful, mischievous edge"},
+
+    # British female
+    {"id": "bf_emma",    "name": "Emma",    "gender": "female", "accent": "UK",
+     "description": "Refined RP, softly formal"},
+    {"id": "bf_alice",   "name": "Alice",   "gender": "female", "accent": "UK",
+     "description": "Warm British, storyteller tone"},
+    {"id": "bf_isabella","name": "Isabella","gender": "female", "accent": "UK",
+     "description": "Elegant, precise, aristocratic"},
+
+    # British male
+    {"id": "bm_george",  "name": "George",  "gender": "male",   "accent": "UK",
+     "description": "Deep RP, grave & authoritative"},
+    {"id": "bm_daniel",  "name": "Daniel",  "gender": "male",   "accent": "UK",
+     "description": "Professional, news-anchor timbre"},
+    {"id": "bm_fable",   "name": "Fable",   "gender": "male",   "accent": "UK",
+     "description": "Warm, narrative — perfect for stories"},
 ]
 VALID_VOICES = {v["id"] for v in VOICES}
 
-# ── Singleton SNAC model ───────────────────────────────────────────────────────
-_snac = None
 
-def load_snac():
-    global _snac
-    if _snac is not None:
-        return _snac
-    from snac import SNAC
-    log.info("Loading SNAC 24kHz model from local cache …")
-    try:
-        _snac = SNAC.from_pretrained("hubertsiuzdak/snac_24khz").eval()
-    except Exception as exc:
-        log.error("SNAC load failed. Run: python3 server/download_models.py   (%s)", exc)
-        raise
-    log.info("SNAC model loaded ✓  (kept in-process for fast TTS)")
-    return _snac
+# ── Model file locations ──────────────────────────────────────────────────────
+_MODEL_URL   = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx"
+_VOICES_URL  = "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin"
 
 
-# ── Token extraction & frame decoding ─────────────────────────────────────────
-def _extract_tokens(text: str) -> list[int]:
-    return [int(t) for t in re.findall(r"<custom_token_(\d+)>", text)]
+def _kokoro_dir() -> Path:
+    d = data_dir() / "kokoro"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
-def _find_frame_start(tokens: list[int]) -> int:
-    """Find the index of the first valid 7-token SNAC audio frame."""
-    for i in range(len(tokens) - 6):
-        f = tokens[i:i + 7]
-        if all(_OFFSETS[j] <= f[j] <= _OFFSETS[j] + 4095 for j in range(7)):
-            return i
-    return -1
+def _model_path()  -> Path: return _kokoro_dir() / "kokoro-v1.0.onnx"
+def _voices_path() -> Path: return _kokoro_dir() / "voices-v1.0.bin"
 
 
-def _decode_frames(tokens: list[int]) -> tuple[list, list, list]:
-    """Convert raw Orpheus token stream → SNAC (layer0, layer1, layer2) index lists."""
-    # Remove special tokens (0-3 are BOS/EOS/pad; 4,5 are audio header markers)
-    filtered = [t for t in tokens if t >= 4]
-
-    start = _find_frame_start(filtered)
-    if start < 0:
-        return [], [], []
-
-    audio = filtered[start:]
-    l0, l1, l2 = [], [], []
-
-    i = 0
-    while i + 6 < len(audio):
-        f = audio[i:i + 7]
-
-        c0   = f[0] - _OFFSETS[0]
-        c1_a = f[1] - _OFFSETS[1]
-        c2_a = f[2] - _OFFSETS[2]
-        c2_b = f[3] - _OFFSETS[3]
-        c1_b = f[4] - _OFFSETS[4]
-        c2_c = f[5] - _OFFSETS[5]
-        c2_d = f[6] - _OFFSETS[6]
-
-        if all(0 <= v <= 4095 for v in (c0, c1_a, c2_a, c2_b, c1_b, c2_c, c2_d)):
-            l0.append(c0)
-            l1.extend([c1_a, c1_b])
-            l2.extend([c2_a, c2_b, c2_c, c2_d])
-            i += 7
-        else:
-            i += 1          # re-sync past any stray token
-
-    return l0, l1, l2
+def _download_if_missing() -> None:
+    for url, path, label in [
+        (_MODEL_URL,  _model_path(),  "kokoro-v1.0.onnx"),
+        (_VOICES_URL, _voices_path(), "voices-v1.0.bin"),
+    ]:
+        if path.exists() and path.stat().st_size > 1_000_000:
+            continue
+        log.info("Downloading Kokoro %s → %s", label, path)
+        try:
+            urlretrieve(url, path)
+        except Exception as exc:
+            if path.exists():
+                path.unlink(missing_ok=True)
+            log.error("Kokoro download failed for %s: %s", label, exc)
+            raise
 
 
-# ── Audio post-processing (minimal — avoid distortion) ────────────────────────
-def _post_process(pcm: np.ndarray, sr: int = SAMPLE_RATE, speed: float = 1.0) -> np.ndarray:
-    """
-    Clean up SNAC output without introducing artifacts.
-    Deliberately minimal: bad processing is worse than no processing.
-    """
-    if len(pcm) < 64:
-        return pcm
-
-    # 1. Remove DC offset (safe, zero-latency)
-    pcm = pcm - float(pcm.mean())
-
-    # 2. Trim leading/trailing near-silence
-    peak = float(np.abs(pcm).max())
-    if peak > 1e-6:
-        thresh = peak * 0.008          # 0.8% of peak as silence floor
-        nz = np.where(np.abs(pcm) > thresh)[0]
-        if len(nz):
-            margin = int(sr * 0.025)   # 25 ms padding each side
-            s = max(0, nz[0]  - margin)
-            e = min(len(pcm), nz[-1] + margin + 1)
-            pcm = pcm[s:e]
-
-    # 3. Speed via polyphase resampling (quality > linear interp)
-    if abs(speed - 1.0) > 0.02:
-        from scipy.signal import resample_poly
-        from fractions import Fraction
-        frac = Fraction(1, speed).limit_denominator(200)
-        pcm = resample_poly(pcm, frac.numerator, frac.denominator).astype(np.float32)
-
-    # 4. Peak-normalise to 0.85 — stays well below int16 ceiling, zero distortion
-    peak = float(np.abs(pcm).max())
-    if peak > 1e-6:
-        pcm = (pcm / peak * 0.85).astype(np.float32)
-
-    return pcm
+# ── Kokoro singleton ──────────────────────────────────────────────────────────
+_kokoro: Any = None
+_load_lock = asyncio.Lock()
 
 
+def _load_kokoro_sync() -> Any:
+    global _kokoro
+    if _kokoro is not None:
+        return _kokoro
+    _download_if_missing()
+    log.info("Loading Kokoro-82M ONNX runtime…")
+    from kokoro_onnx import Kokoro
+    _kokoro = Kokoro(str(_model_path()), str(_voices_path()))
+    log.info("Kokoro ready ✓  (24kHz, %d voices in pack)", len(VOICES))
+    return _kokoro
+
+
+def preload_pipeline() -> None:
+    """Called by the FastAPI lifespan on startup so the first request is instant."""
+    _load_kokoro_sync()
+
+
+# Backwards-compat alias — main.py still calls load_snac()
+load_snac = preload_pipeline
+
+
+# ── WAV helper ────────────────────────────────────────────────────────────────
 def _to_wav(pcm: np.ndarray, sr: int = SAMPLE_RATE) -> bytes:
-    """Float32 PCM → 16-bit mono WAV bytes."""
     pcm_i16 = (pcm * 32767.0).clip(-32768, 32767).astype(np.int16)
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
@@ -168,61 +150,42 @@ def _to_wav(pcm: np.ndarray, sr: int = SAMPLE_RATE) -> bytes:
     return buf.getvalue()
 
 
-# ── Main public API ────────────────────────────────────────────────────────────
-async def synthesize(text: str, voice: str = "tara", speed: float = 1.0) -> bytes:
-    """
-    Full TTS pipeline: text → Orpheus tokens → SNAC decode → clean → WAV.
-    """
-    import httpx
+def _lang_for_voice(voice_id: str) -> str:
+    """Kokoro's `create()` takes an eSpeak lang code."""
+    if voice_id.startswith(("bf_", "bm_")):
+        return "en-gb"
+    return "en-us"
 
+
+# ── Main public API ───────────────────────────────────────────────────────────
+async def synthesize(text: str, voice: str = DEFAULT_VOICE, speed: float = 1.0) -> bytes:
+    """text → 16-bit mono 24kHz WAV bytes."""
     if voice not in VALID_VOICES:
-        voice = "tara"
+        log.warning("unknown voice %r — falling back to %s", voice, DEFAULT_VOICE)
+        voice = DEFAULT_VOICE
 
-    prompt = f"<|audio|><voice:{voice}>{text}<|eot_id|>"
-    log.info("TTS: voice=%s  len=%d chars", voice, len(text))
+    async with _load_lock:
+        if _kokoro is None:
+            await asyncio.to_thread(_load_kokoro_sync)
+    kokoro = _kokoro
+    assert kokoro is not None
 
-    async with httpx.AsyncClient(timeout=180.0) as client:
-        resp = await client.post(
-            f"{OLLAMA_BASE}/api/generate",
-            json={
-                "model": ORPHEUS_MODEL,
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "temperature":    0.3,      # lower = more stable, fewer artifacts
-                    "top_p":          0.9,
-                    "repeat_penalty": 1.1,
-                    "num_predict":    8192,
-                    "num_thread":     _hw.recommended_num_thread(),
-                },
-            },
-        )
-        resp.raise_for_status()
+    lang = _lang_for_voice(voice)
+    log.info("TTS: voice=%s speed=%.2f  len=%d chars", voice, speed, len(text))
 
-    raw_tokens = _extract_tokens(resp.json().get("response", ""))
-    log.info("TTS: %d tokens from Orpheus", len(raw_tokens))
-    if not raw_tokens:
-        raise RuntimeError("Orpheus returned no audio tokens")
+    def _generate() -> tuple[np.ndarray, int]:
+        return kokoro.create(text=text, voice=voice, speed=speed, lang=lang)
 
-    l0, l1, l2 = _decode_frames(raw_tokens)
-    if not l0:
-        raise RuntimeError("No valid SNAC frames in token stream")
+    pcm, sr = await asyncio.to_thread(_generate)
+    if pcm.size == 0:
+        raise RuntimeError("Kokoro returned no audio")
 
-    log.info("TTS: decoding %d frames via SNAC", len(l0))
-    snac_model = load_snac()
-    codes = [
-        torch.tensor([l0], dtype=torch.long),
-        torch.tensor([l1], dtype=torch.long),
-        torch.tensor([l2], dtype=torch.long),
-    ]
-    with torch.inference_mode():
-        audio_tensor = snac_model.decode(codes)
+    # Peak safety — a few voices come close to clipping on emphatic syllables
+    peak = float(np.abs(pcm).max())
+    if peak > 0.98:
+        pcm = pcm * (0.95 / peak)
 
-    pcm = audio_tensor.squeeze().float().numpy()
-    pcm = _post_process(pcm, SAMPLE_RATE, speed)
-
-    wav = _to_wav(pcm, SAMPLE_RATE)
+    wav = _to_wav(pcm.astype(np.float32, copy=False), sr or SAMPLE_RATE)
     log.info("TTS: %.2fs audio  %d bytes  peak=%.0f%%",
-             len(pcm) / SAMPLE_RATE, len(wav),
-             100 * float(np.abs(pcm).max()))
+             len(pcm) / (sr or SAMPLE_RATE), len(wav), 100 * peak)
     return wav

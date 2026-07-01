@@ -5,14 +5,26 @@ import { Slider } from '@/components/ui/Slider'
 import { speakText, stopTTS } from '@/lib/tts'
 
 const VOICES = [
-  { id: 'tara',  name: 'Tara',  gender: 'female', description: 'Warm & inviting',      sample: 'I dwell between worlds — between light and shadow, spring and winter.' },
-  { id: 'leo',   name: 'Leo',   gender: 'male',   description: 'Confident & clear',     sample: 'The pomegranate binds me, yet gives me a kingdom of my own.' },
-  { id: 'leah',  name: 'Leah',  gender: 'female', description: 'Gentle & soft',         sample: 'Wisdom grows in stillness, like roots drinking from the dark.' },
-  { id: 'jess',  name: 'Jess',  gender: 'female', description: 'Energetic & bright',    sample: 'Every spring is a return. Every autumn, a descent.' },
-  { id: 'mia',   name: 'Mia',   gender: 'female', description: 'Smooth & calm',         sample: 'There is beauty in the underworld if you know how to look.' },
-  { id: 'zac',   name: 'Zac',   gender: 'male',   description: 'Deep & resonant',       sample: 'Six seeds. Six months of shadow. The price of knowledge.' },
-  { id: 'zoe',   name: 'Zoe',   gender: 'female', description: 'Crisp & expressive',    sample: 'Even the dead remember sunlight.' },
-  { id: 'zach',  name: 'Zach',  gender: 'male',   description: 'Warm & conversational', sample: 'I carry both worlds inside me.' },
+  // American female
+  { id: 'af_heart',    name: 'Heart',    gender: 'female', accent: 'US', description: 'Warm, inviting — richest expressive range',   sample: 'I dwell between worlds — between light and shadow, spring and winter.' },
+  { id: 'af_bella',    name: 'Bella',    gender: 'female', accent: 'US', description: 'Bright, playful, youthful',                    sample: 'Every spring is a return. Every autumn, a descent.' },
+  { id: 'af_nicole',   name: 'Nicole',   gender: 'female', accent: 'US', description: 'Clear, articulate, professional',              sample: 'Wisdom grows in stillness, like roots drinking from the dark.' },
+  { id: 'af_sarah',    name: 'Sarah',    gender: 'female', accent: 'US', description: 'Calm, measured, thoughtful',                   sample: 'There is beauty in the underworld if you know how to look.' },
+  { id: 'af_sky',      name: 'Sky',      gender: 'female', accent: 'US', description: 'Airy, gentle, dreamlike',                      sample: 'Even the dead remember sunlight.' },
+  { id: 'af_aoede',    name: 'Aoede',    gender: 'female', accent: 'US', description: 'Melodic, poetic cadence',                      sample: 'I carry both worlds inside me.' },
+  // American male
+  { id: 'am_adam',     name: 'Adam',     gender: 'male',   accent: 'US', description: 'Deep, grounded, resonant',                     sample: 'Six seeds. Six months of shadow. The price of knowledge.' },
+  { id: 'am_michael',  name: 'Michael',  gender: 'male',   accent: 'US', description: 'Confident, mid-tone, versatile',               sample: 'The pomegranate binds me, yet gives me a kingdom of my own.' },
+  { id: 'am_liam',     name: 'Liam',     gender: 'male',   accent: 'US', description: 'Smooth, conversational',                       sample: 'Between light and shadow, there lives a queen.' },
+  { id: 'am_puck',     name: 'Puck',     gender: 'male',   accent: 'US', description: 'Playful, mischievous edge',                    sample: 'What use is spring without knowing winter?' },
+  // British female
+  { id: 'bf_emma',     name: 'Emma',     gender: 'female', accent: 'UK', description: 'Refined RP, softly formal',                    sample: 'I dwell between worlds — between light and shadow, spring and winter.' },
+  { id: 'bf_alice',    name: 'Alice',    gender: 'female', accent: 'UK', description: 'Warm British, storyteller tone',               sample: 'Wisdom grows in stillness, like roots drinking from the dark.' },
+  { id: 'bf_isabella', name: 'Isabella', gender: 'female', accent: 'UK', description: 'Elegant, precise, aristocratic',               sample: 'There is beauty in the underworld if you know how to look.' },
+  // British male
+  { id: 'bm_george',   name: 'George',   gender: 'male',   accent: 'UK', description: 'Deep RP, grave & authoritative',               sample: 'Six seeds. Six months of shadow. The price of knowledge.' },
+  { id: 'bm_daniel',   name: 'Daniel',   gender: 'male',   accent: 'UK', description: 'Professional, news-anchor timbre',             sample: 'The pomegranate binds me, yet gives me a kingdom of my own.' },
+  { id: 'bm_fable',    name: 'Fable',    gender: 'male',   accent: 'UK', description: 'Warm, narrative — perfect for stories',       sample: 'Once, a queen lived between two seasons — she was called Persephone.' },
 ]
 
 interface TTSStepProps {
@@ -25,6 +37,9 @@ interface TTSStepProps {
 export function TTSStep({ voice, speed, onVoiceChange, onSpeedChange }: TTSStepProps) {
   const [playingId, setPlayingId] = useState<string | null>(null)
   const [testedIds, setTestedIds] = useState<Set<string>>(new Set())
+  const [filter, setFilter] = useState<'all' | 'US' | 'UK'>('all')
+
+  const filtered = VOICES.filter(v => filter === 'all' || v.accent === filter)
 
   async function handlePlay(v: typeof VOICES[0]) {
     if (playingId === v.id) {
@@ -56,8 +71,25 @@ export function TTSStep({ voice, speed, onVoiceChange, onSpeedChange }: TTSStepP
       <div>
         <h2 className="font-serif text-2xl text-[var(--text-primary)] mb-1">Voice & TTS</h2>
         <p className="text-sm text-[var(--text-muted)]">
-          Powered by Orpheus 3B — running fully on your machine. Press ▶ to audition each voice.
+          Powered by Kokoro-82M — 24kHz, ~10× real-time on your machine. Press ▶ to audition.
         </p>
+      </div>
+
+      {/* Accent filter */}
+      <div className="flex gap-2">
+        {(['all', 'US', 'UK'] as const).map(f => (
+          <button
+            key={f}
+            onClick={() => setFilter(f)}
+            className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all ${
+              filter === f
+                ? 'border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--accent)] shadow-[0_0_10px_var(--accent-glow)]'
+                : 'border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--border-bright)]'
+            }`}
+          >
+            {f === 'all' ? 'All voices' : f === 'US' ? '🇺🇸 American' : '🇬🇧 British'}
+          </button>
+        ))}
       </div>
 
       {/* Speed control */}
@@ -76,7 +108,7 @@ export function TTSStep({ voice, speed, onVoiceChange, onSpeedChange }: TTSStepP
 
       {/* Voice grid */}
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-        {VOICES.map(v => (
+        {filtered.map(v => (
           <motion.div
             key={v.id}
             initial={{ opacity: 0, y: 4 }}
@@ -96,8 +128,11 @@ export function TTSStep({ voice, speed, onVoiceChange, onSpeedChange }: TTSStepP
             </div>
 
             <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-1.5">
+              <div className="flex items-center gap-1.5 flex-wrap">
                 <span className="text-sm font-medium text-[var(--text-primary)]">{v.name}</span>
+                <span className="text-[9px] font-mono uppercase tracking-wider px-1 py-px rounded border border-[var(--border)] text-[var(--text-muted)]">
+                  {v.accent}
+                </span>
                 {testedIds.has(v.id) && (
                   <CheckCircle className="w-3 h-3 text-green-400 flex-shrink-0" />
                 )}
@@ -150,7 +185,7 @@ export function TTSStep({ voice, speed, onVoiceChange, onSpeedChange }: TTSStepP
 
       <div className="flex items-center gap-2 text-xs text-[var(--text-muted)] px-1">
         <Volume2 className="w-3.5 h-3.5 text-[var(--accent)]" />
-        First sample may take 5–10 seconds to generate as the TTS model warms up.
+        First sample takes ~2 seconds while Kokoro warms up. After that it's near-instant.
       </div>
     </div>
   )

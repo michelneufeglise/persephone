@@ -35,7 +35,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   },
   tts: {
     enabled: true,
-    voice: 'tara',
+    voice: 'af_heart',
     speed: 1.0,
     autoPlay: true,
     streamSentences: true,

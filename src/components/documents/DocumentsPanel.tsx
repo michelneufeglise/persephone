@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   Upload, FileText, Trash2, FileScan, Languages, Sparkles, Quote,
   Table as TableIcon, Tags, MessageCircle, Eye, Shield, Download,
-  ChevronLeft, FilePlus, RefreshCw, FileQuestion, X,
+  ChevronLeft, FilePlus, RefreshCw, FileQuestion, X, Loader2,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useAppStore } from '@/store/appStore'
@@ -374,8 +374,37 @@ function SummarizeTab({ doc }: { doc: IDPDocument }) {
         ))}
       </div>
       <button onClick={go} disabled={busy}
-        className="w-full px-3 py-2 rounded-lg bg-[var(--accent)] text-white text-xs font-medium hover:bg-[var(--accent-hover)] disabled:opacity-50">
-        {busy ? 'Summarizing…' : 'Summarize'}
+        className="relative w-full px-3 py-2 rounded-lg text-white text-xs font-medium
+          transition-all disabled:cursor-not-allowed overflow-hidden flex items-center justify-center gap-2"
+        style={{
+          background: busy
+            ? 'linear-gradient(135deg, var(--accent-deep), var(--accent-mid))'
+            : 'linear-gradient(135deg, var(--accent), var(--accent-deep))',
+          boxShadow: busy
+            ? 'inset 0 1px 0 rgba(255,255,255,0.1)'
+            : '0 6px 18px -6px var(--accent-glow), inset 0 1px 0 rgba(255,255,255,0.2)',
+        }}>
+        {busy ? (
+          <>
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            <span>Summarising…</span>
+            {/* subtle shimmer overlay */}
+            <span
+              className="absolute inset-0 pointer-events-none"
+              style={{
+                background:
+                  'linear-gradient(90deg, transparent, rgba(255,255,255,0.15), transparent)',
+                backgroundSize: '200% 100%',
+                animation: 'shimmer 1.6s linear infinite',
+              }}
+            />
+          </>
+        ) : (
+          <>
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>Summarise</span>
+          </>
+        )}
       </button>
       {result && <ResultBlock text={result.text} model={result.model} />}
     </div>
