@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from 'framer-motion'
-import { MessageCircle, Settings, Plus, Trash2, Pin, Brain, Microscope } from 'lucide-react'
+import { MessageCircle, Settings, Plus, Trash2, Pin, Brain, Microscope, Code2 } from 'lucide-react'
 import { useAppStore } from '@/store/appStore'
 import type { Conversation } from '@/types'
 
@@ -13,6 +13,8 @@ export function Sidebar() {
     createNewConversation,
     currentView,
     setCurrentView,
+    ornithMode,
+    toggleOrnithMode,
   } = useAppStore()
 
   const sortedConvs = [...conversations].sort((a, b) => {
@@ -109,6 +111,42 @@ export function Sidebar() {
           </div>
         </>
       )}
+
+      {/* ── Ornith Coder preset — bottom-left dock ─────────────────── */}
+      <div className="mt-auto px-3 py-3 border-t border-[var(--border)]">
+        <button
+          onClick={() => {
+            if (currentView !== 'chat') setCurrentView('chat')
+            toggleOrnithMode()
+          }}
+          title={ornithMode
+            ? 'Ornith Coder mode is ON — click to restore previous model'
+            : 'Activate Ornith Coder — switches model to ornith:latest with a plan-then-approve coding prompt'
+          }
+          className={`group relative flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-300 text-left overflow-hidden
+            ${ornithMode
+              ? 'text-[var(--text-primary)] bg-[var(--bg-tertiary)] shadow-[var(--shadow-soft)]'
+              : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/40 hover:text-[var(--text-primary)]'
+            }`}
+        >
+          {ornithMode && (
+            <span
+              className="absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-full"
+              style={{
+                background: 'linear-gradient(180deg, var(--accent), var(--holo))',
+                boxShadow: '0 0 12px var(--accent-glow)',
+              }}
+            />
+          )}
+          <Code2 className={`w-4 h-4 flex-shrink-0 transition-colors ${ornithMode ? 'text-[var(--accent)]' : ''}`} />
+          <div className="flex flex-col leading-tight">
+            <span className="tracking-tight">Ornith Coder</span>
+            <span className="font-mono text-[9px] uppercase tracking-[0.22em] text-[var(--text-muted)]">
+              {ornithMode ? 'active · plan → approve' : 'preset · off'}
+            </span>
+          </div>
+        </button>
+      </div>
     </div>
   )
 }

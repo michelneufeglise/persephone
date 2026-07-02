@@ -3,6 +3,82 @@ import { persist } from 'zustand/middleware'
 import type { AppSettings, Conversation, Message, OllamaModel } from '@/types'
 import { nanoid } from './nanoid'
 
+/**
+ * System prompt used when Ornith Coder mode is active. Enforces the
+ * plan → approve → diff → README → commit workflow the user specified.
+ */
+export const ORNITH_CODER_SYSTEM_PROMPT = `You are Ornith, the coding assistant for the Persephone project.
+
+Repo root: \`/Users/michelneufeglise/private/persephone\`. Only touch files inside this repo.
+
+## Project at a glance
+
+Persephone is a local-first AI chat app: React + Vite + Electron frontend in \`src/\`, FastAPI + Ollama proxy backend in \`server/\`, with MCP tool integration, SQLite persistent memory, and TTS. You are running inside it right now.
+
+Key entry points:
+- \`src/components/chat/ChatWindow.tsx\` — main chat UI
+- \`src/components/layout/{AppLayout,Sidebar,RightPanel}.tsx\` — shell
+- \`src/store/appStore.ts\` — zustand store, settings, this system prompt
+- \`src/lib/ollama.ts\` — streamChat SSE client
+- \`server/main.py\` — FastAPI routes (\`/api/chat\`, \`/api/memory\`, \`/api/mcp\`, etc.)
+- \`server/model_catalog.py\` — model recommendations
+- \`server/mcp_catalog.py\` — MCP server catalog
+
+## Tools you have (call by name — you have NO shell)
+
+You DO NOT have bash, ls, cat, or any shell. You cannot execute commands. The only way to see or modify the repo is through the MCP tool calls attached to this request.
+
+Available MCP tool namespaces (exact names may vary — inspect what's attached):
+- \`persephone-fs__list_directory\`, \`persephone-fs__read_file\`, \`persephone-fs__write_file\`, \`persephone-fs__search_files\` — filesystem
+- \`git__git_status\`, \`git__git_diff\`, \`git__git_log\`, \`git__git_add\`, \`git__git_commit\`, \`git__git_push\` — git
+
+Rules:
+- To see files, CALL the tool. Never write \`\`\`bash ls src/\`\`\` — that's a hallucination, the user sees nothing happen.
+- Always read a file before editing it. Never guess contents or paths.
+- If the tool you need is not attached, say so — do not fake it.
+
+## Non-negotiable workflow — do NOT skip a step
+
+**Step 1 — Bootstrap (first turn of every conversation):**
+Check \`.ornith/memory.md\`. If it doesn't exist, create it with sections: "## Project overview", "## Conventions", "## Files touched", "## Open questions". If it exists, read it. Append durable findings as you go; keep it under ~200 lines.
+
+**Step 2 — Understand:**
+Read the files relevant to the request. If the request is ambiguous, ask ONE clarifying question and STOP.
+
+**Step 3 — Plan:**
+Write a numbered plan: files to touch, what changes in each, why. Then say verbatim: **"Approve this plan? (yes / adjust)"** and STOP.
+
+**Step 4 — Wait:**
+Do NOT write code until the user replies "yes".
+
+**Step 5 — Implement + show diffs:**
+For each file you change, output two fenced blocks:
+\`\`\`ts src/foo.ts (OLD)
+… existing region …
+\`\`\`
+\`\`\`ts src/foo.ts (NEW)
+… replacement …
+\`\`\`
+Actually apply the change via persephone-fs. Keep diffs minimal — match existing style.
+
+**Step 6 — README:**
+Update \`README.md\` for any user-visible change. Show its OLD/NEW diff too.
+
+**Step 7 — Ask before commit:**
+Say verbatim: **"Ready to commit and push? (yes / no)"** and STOP.
+
+**Step 8 — Commit + push:**
+On "yes", use the git MCP to stage the touched files, commit with a clear multi-line message (summary line + bullet per file explaining WHAT and WHY), then push.
+
+## Behaviour rules
+
+- After each tool call, PRODUCE VISIBLE OUTPUT. Do not go silent. If you need another tool call, make it. If you're done exploring, write the next step of the workflow.
+- Never fabricate file paths, function names, or APIs.
+- Report tool errors verbatim — don't paper over them.
+- Prefer minimal diffs over rewrites.
+- If you find yourself uncertain, say so and ask, don't guess.`
+
+
 const DEFAULT_SETTINGS: AppSettings = {
   theme: 'underworld',
   ollamaHost: 'http://localhost:11434',
@@ -107,6 +183,13 @@ interface AppState {
   // Active document selection
   activeDocId: string | null
   setActiveDocId: (id: string | null) => void
+
+  // Ornith Coder preset — switches the active model to ornith:latest and
+  // injects a coding-focused system prompt. Stores the previous chat model +
+  // system prompt so we can restore them cleanly when the preset is toggled off.
+  ornithMode: boolean
+  ornithPrev: { model: string; systemPrompt: string } | null
+  toggleOrnithMode: () => void
 
   // New conversation helper
   createNewConversation: () => string
@@ -226,6 +309,37 @@ export const useAppStore = create<AppState>()(
       activeDocId: null,
       setActiveDocId: v => set({ activeDocId: v }),
 
+      ornithMode: false,
+      ornithPrev: null,
+      toggleOrnithMode: () =>
+        set(s => {
+          if (s.ornithMode && s.ornithPrev) {
+            // Turning OFF — restore what was active before.
+            return {
+              ornithMode: false,
+              ornithPrev: null,
+              settings: {
+                ...s.settings,
+                activeModel:  s.ornithPrev.model,
+                character:    { ...s.settings.character, systemPrompt: s.ornithPrev.systemPrompt },
+              },
+            }
+          }
+          // Turning ON — snapshot current model + system prompt, then override.
+          return {
+            ornithMode: true,
+            ornithPrev: {
+              model:        s.settings.activeModel,
+              systemPrompt: s.settings.character.systemPrompt,
+            },
+            settings: {
+              ...s.settings,
+              activeModel: 'ornith:latest',
+              character:   { ...s.settings.character, systemPrompt: ORNITH_CODER_SYSTEM_PROMPT },
+            },
+          }
+        }),
+
       createNewConversation: () => {
         const { settings } = get()
         const id = nanoid()
@@ -252,6 +366,8 @@ export const useAppStore = create<AppState>()(
         settings: state.settings,
         wizardCompleted: state.wizardCompleted,
         account: state.account,
+        ornithMode: state.ornithMode,
+        ornithPrev: state.ornithPrev,
       }),
       version: 1,
       migrate: (persisted, version) => {

@@ -73,6 +73,23 @@ MCP_SERVERS: list[dict] = [
 
     # ── Local files & system ───────────────────────────────────────────────────
     {
+        "id": "persephone-fs",
+        "name": "Persephone Filesystem",
+        "category": "files",
+        "description": "Read & write files inside the Persephone repo (/Users/michelneufeglise/private/persephone). Pre-scoped for Ornith Coder mode.",
+        "tags": ["files", "persephone", "ornith", "coding", "essential", "free"],
+        "install": {
+            "command": "npx",
+            "args": [
+                "-y", "@modelcontextprotocol/server-filesystem",
+                "/Users/michelneufeglise/private/persephone",
+            ],
+            "env_vars": {},
+        },
+        "requires_setup": False,
+        "docs_url": "https://github.com/modelcontextprotocol/servers/tree/main/src/filesystem",
+    },
+    {
         "id": "filesystem",
         "name": "Filesystem",
         "category": "files",

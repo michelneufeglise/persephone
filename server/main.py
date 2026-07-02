@@ -425,6 +425,7 @@ def _wants_thinking(model: str) -> bool:
     return (
         lower.startswith("gemma4")
         or lower.startswith("qwen3")
+        or lower.startswith("ornith")   # Qwen3-based agentic coder
         or "thinking" in lower
         or "reasoning" in lower
     )
@@ -437,6 +438,7 @@ def _supports_native_thinking(model: str) -> bool:
     lower = model.lower()
     return (
         lower.startswith("qwen3")
+        or lower.startswith("ornith")   # Qwen3-based agentic coder (architecture=qwen35)
         or lower.startswith("deepseek-r1")
         or lower.startswith("gpt-oss")
         or lower.startswith("nemotron")
@@ -468,6 +470,11 @@ def _predict_floor(model: str) -> int:
         or "agentworld" in lower
         or "moe" in lower and ("qwen3" in lower or "reasoning" in lower)
     ):
+        return _MOE_REASONING_FLOOR
+    # Ornith is a Qwen3 agentic coder — it thinks + calls tools + reads
+    # tool results (often long directory listings). Needs headroom on par
+    # with the MoE reasoners, otherwise it truncates mid-plan.
+    if lower.startswith("ornith"):
         return _MOE_REASONING_FLOOR
     # Regular native-thinking models
     if _supports_native_thinking(model):
@@ -1091,6 +1098,18 @@ async def _stream_one_round(
             log.info("raised num_ctx %d → 32768 for %s (reasoning tool synth)",
                      cur_ctx, model)
 
+    # Ornith Coder context bump. Ornith is meant to explore a real repo via
+    # persephone-fs — a single `list_directory` on src/ + a system prompt with
+    # the plan/approve workflow can easily be 3-5K tokens BEFORE thinking. The
+    # default 8K num_ctx runs out on the FIRST tool round (not just synthesis),
+    # so we widen it up-front for every Ornith round.
+    if model.lower().startswith("ornith"):
+        cur_ctx = int(round_options.get("num_ctx", 8192) or 8192)
+        if cur_ctx < 32768:
+            round_options["num_ctx"] = 32768
+            log.info("raised num_ctx %d → 32768 for ornith (agentic coder)",
+                     cur_ctx)
+
     payload: dict = {
         "model":   model,
         "messages": messages,
@@ -1169,8 +1188,15 @@ async def _stream_ollama_chat(
     # Only attach tools when the latest user turn looks tool-worthy. Saves
     # 2-3K prompt tokens on conversational turns, which cuts prompt-eval
     # latency proportionally.
-    all_tools = _mcp_mgr.manager.list_tools_for_ollama()
-    tools     = all_tools if (all_tools and _likely_needs_tools(messages)) else []
+    #
+    # EXCEPTION: agentic coders (Ornith) are *designed* to always reach for
+    # tools — filesystem read, git, etc. Their system prompt tells them to
+    # "read files before answering", so gating tools by keyword makes them
+    # hallucinate fake shell blocks when the user just says "summarise this
+    # project". Force tools on for those models.
+    all_tools     = _mcp_mgr.manager.list_tools_for_ollama()
+    force_tools   = model.lower().startswith("ornith")
+    tools         = all_tools if (all_tools and (force_tools or _likely_needs_tools(messages))) else []
 
     # Auto-route: swap `model` for the best installed match before the first
     # round. Routing decision is made *after* tool-gating so the router knows

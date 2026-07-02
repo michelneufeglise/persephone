@@ -8,3 +8,12 @@ server/persephone.db
 server/uploads
 .DS_Store
 *.log
+
+# Ornith Coder's private memory notebook — session-local, not shared.
+.ornith/
+
+# Kokoro TTS model files — auto-downloaded on first TTS call by
+# server/tts_engine.py::_download_if_missing() from the upstream
+# kokoro-onnx GitHub releases. Never version-controlled (325 MB + 28 MB).
+server/kokoro/*.onnx
+server/kokoro/*.bin

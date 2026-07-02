@@ -18,7 +18,8 @@ Persephone wraps the speed of local Ollama models in a thoughtful, beautifully d
 
 - 🧠 **Persistent memory across every model.** Tell her your name once — every model from `qwen2.5:0.5b` to `gemma4:26b` will know it from then on.
 - 🔮 **Smart auto-router.** A two-stage hybrid classifier picks the right model for each turn — `qwen2.5:0.5b` for *"hi"*, `qwen2.5-coder:7b` for *"refactor this function"*, `qwen3:ohm` for deep reasoning, all in milliseconds.
-- 🛠 **MCP tools out of the box.** DuckDuckGo, Brave Search, Fetch, Filesystem, Git, SQLite, Memory, Puppeteer, Sequential Thinking — toggle on with one click; servers spawn automatically.
+- 🛠 **MCP tools out of the box.** DuckDuckGo, Brave Search, Fetch, Filesystem (**incl. a Persephone-scoped filesystem for the repo itself**), Git, SQLite, Memory, Puppeteer, Sequential Thinking — toggle on with one click; servers spawn automatically.
+- 🐦 **Ornith Coder mode.** One-click sidebar preset that switches the active model to `ornith:latest` (Qwen3-based 9B agentic coder, 262K context) and injects a plan → approve → diff → README → commit workflow. Wired to the `persephone-fs` MCP for real repo access.
 - 🔬 **Deep research engine.** Decomposes a question into sub-questions, searches the web, fetches sources, embeds chunks, and synthesises a fully-cited markdown report with a generative SVG cover.
 - 📚 **Persistent knowledge base.** Every research run feeds chunks into a `sqlite-vec` semantic index — search across everything you've ever researched.
 - 🎙 **In-process TTS.** Orpheus / SNAC neural codec for natural-sounding voice playback, with 8 voices.
@@ -282,7 +283,7 @@ Persephone ships with a curated catalog of free MCP servers:
 | Category | Servers |
 |---|---|
 | **Web & Search** | Fetch, DuckDuckGo, Brave Search, Puppeteer |
-| **Files & Local** | Filesystem (Documents/Downloads/Desktop), Git, SQLite |
+| **Files & Local** | **Persephone Filesystem (pre-scoped to the repo, for Ornith Coder mode)**, Filesystem (Documents/Downloads/Desktop), Git, SQLite |
 | **Knowledge** | Memory (knowledge graph), Sequential Thinking, Time |
 | **Developer** | GitHub, GitLab |
 | **Demo** | Everything (reference server) |
@@ -331,7 +332,28 @@ Every model reply is rendered with custom React-Markdown components:
 
 Plus **generative SVG cover art** at the top of research reports — deterministic from the query hash, so the same query always produces the same cover; theme-aware colours.
 
-### 9 · Five themes
+### 9 · Ornith Coder mode
+
+A one-click preset that turns Persephone into a project-aware coding assistant for **this repo**.
+
+Click the **Ornith Coder** button in the bottom-left of the sidebar. Persephone snapshots your current model + system prompt, then swaps in:
+
+- **Model:** `ornith:latest` — a Qwen3-based 9B agentic coder with 262K context and native tools + thinking. Small enough to be snappy, big enough to reason across a whole repo.
+- **System prompt:** a strict *plan → approve → diff → README → commit* workflow. Ornith must:
+  1. Read (or create) `.ornith/memory.md` — its private notebook for durable findings about the project.
+  2. Explore the relevant files via the `persephone-fs` MCP before answering — no guessing, no fake `bash ls` blocks.
+  3. Show a numbered plan and stop with **"Approve this plan? (yes / adjust)"**.
+  4. On approval, show every change as paired `(OLD)` / `(NEW)` fenced blocks per file, apply them via `persephone-fs`, then update `README.md`.
+  5. Stop again with **"Ready to commit and push? (yes / no)"**.
+  6. On approval, use the `git` MCP to stage, commit with a multi-line message explaining what/why, and push.
+
+Backend wiring: Ornith is recognised as a native-thinking Qwen3 model, gets a 16 384-token `num_predict` floor and a 32 K `num_ctx` on every round (a `list_directory src/` + the workflow prompt already blows the 8 K default), and has its MCP tool array **force-attached** — the usual keyword heuristic would gate tools off on requests like *"summarise Persephone"*, which is precisely when an agentic coder needs them most.
+
+Click the button again to restore your previous model and system prompt. State persists across restarts.
+
+Prerequisites: the `persephone-fs` and `git` MCP servers must be enabled in **Settings → Tools**.
+
+### 10 · Five themes
 
 - **Underworld** — Polished obsidian veined with pomegranate fire (default)
 - **Spring Goddess** — Iridescent dawn, light theme
@@ -364,7 +386,7 @@ Switch any time in Settings → Theme. Every accent, shadow, and gradient update
 - **Frontend** — React 18, Vite 6, Tailwind 3, Framer Motion 11, Zustand, React Markdown, Mermaid 11, Rough.js, Sharp (icon gen)
 - **Backend** — FastAPI, Uvicorn, httpx, aiosqlite, sqlite-vec, PyTorch (for SNAC TTS), SNAC, NumPy, SciPy
 - **Desktop** — Electron 33, electron-builder 25
-- **Models** — Any Ollama-compatible: Qwen 2.5 / 3 / 3.6, Gemma 3 / 4, Llama 3.1 / 3.2 / 3.3, Nemotron, Mistral, DeepSeek, Phi-4, Hermes 3, MiniCPM, Granite, etc.
+- **Models** — Any Ollama-compatible: Qwen 2.5 / 3 / 3.6 (incl. AgentWorld), Gemma 3 / 4, Llama 3.1 / 3.2 / 3.3, Nemotron / Nemotron 3 Nano, Mistral, DeepSeek, Phi-4, Hermes 3, MiniCPM-V / MiniCPM-O, Granite, **Ornith** (Qwen3 coder, 262K ctx), **olmOCR 2**, GLM-OCR, etc. Catalog lives in `server/model_catalog.py`.
 - **Embeddings** — `mxbai-embed-large` (1024-dim, MixedBread AI) via Ollama `/api/embed`
 - **Vector store** — `sqlite-vec` virtual table (KNN via `WHERE embedding MATCH ? AND k = ?`)
 - **TTS** — Orpheus 3B + SNAC 24kHz codec, in-process Python (no model swap)

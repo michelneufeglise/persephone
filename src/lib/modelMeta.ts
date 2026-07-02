@@ -289,6 +289,23 @@ const FAMILIES: Record<string, ModelMeta> = {
     tagline: 'Efficient open chat from DeepSeek.',
   },
 
+  // ── Ornith (Qwen3-based agentic coder) ──
+  'ornith': {
+    family: 'ornith',
+    displayName: 'Ornith',
+    type: 'dense',
+    paramsLabel: '9B',
+    contextK: 262,
+    releasedYear: 2026,
+    vendor: 'Community / Qwen3',
+    license: 'MIT',
+    supportsTools: true,
+    supportsThinking: true,
+    strengths: ['Agentic coder — 262K context', 'Native tools + thinking', 'Small enough to run fast'],
+    bestFor: 'Terminal-style coding assistant with tool use.',
+    tagline: 'Persephone\'s terminal coder.',
+  },
+
   // ── Misc ──
   'hermes3': {
     family: 'hermes3',
