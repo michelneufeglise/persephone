@@ -20,7 +20,7 @@ export function VoiceSection() {
   const tts = settings.tts
   const [voices, setVoices]      = useState<Voice[]>([])
   const [testing, setTesting]    = useState(false)
-  const [accentFilter, _setAccentFilter] = useState<'all' | 'US' | 'UK' | 'es'>('all')
+  const [accentFilter, setAccentFilter] = useState<'all' | 'US' | 'UK' | 'es'>('all')
 
   const filtered = voices.filter(v =>
     accentFilter === 'all' || v.accent === accentFilter,

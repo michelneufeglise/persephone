@@ -1195,8 +1195,25 @@ async def _stream_ollama_chat(
     # hallucinate fake shell blocks when the user just says "summarise this
     # project". Force tools on for those models.
     all_tools     = _mcp_mgr.manager.list_tools_for_ollama()
-    force_tools   = model.lower().startswith("ornith")
+    is_ornith     = model.lower().startswith("ornith")
+    force_tools   = is_ornith
     tools         = all_tools if (all_tools and (force_tools or _likely_needs_tools(messages))) else []
+
+    # Ornith scope-lock: agentic coder mode is meant for the Persephone repo
+    # only. If the generic `filesystem` MCP is enabled it exposes writable
+    # paths like ~/Documents, ~/Downloads, ~/Desktop — dropping those into
+    # Ornith's tool array is a footgun (it could rm or edit unrelated files
+    # while thinking it's "cleaning up"). Filter to `persephone-fs__*` for
+    # any filesystem operation. Keep git and the rest untouched.
+    if is_ornith and tools:
+        blocked_prefixes = ("filesystem__",)  # add other broad-scoped fs servers here if any
+        before = len(tools)
+        tools  = [t for t in tools if not t["function"]["name"].startswith(blocked_prefixes)]
+        if len(tools) != before:
+            log.info(
+                "ornith scope-lock: filtered %d filesystem tool(s) — persephone-fs only",
+                before - len(tools),
+            )
 
     # Auto-route: swap `model` for the best installed match before the first
     # round. Routing decision is made *after* tool-gating so the router knows
@@ -1351,10 +1368,23 @@ async def _stream_ollama_chat(
 
                 err   = None
                 value = ""
-                try:
-                    value = await asyncio.wait_for(
-                        _mcp_mgr.manager.call(name, args), timeout=45.0,
+                # Ornith scope-lock (defense in depth): reject any filesystem
+                # tool call that isn't routed through persephone-fs, even if
+                # the model somehow references it. The tool schema was already
+                # filtered above, so this only fires on jailbreak / stale
+                # message-history references.
+                if is_ornith and name.startswith("filesystem__"):
+                    err = (
+                        f"Blocked: {name} is outside the Persephone repo scope. "
+                        f"Use persephone-fs__* tools for any file operation."
                     )
+                    log.warning("ornith scope-lock: rejected tool call %s", name)
+
+                try:
+                    if err is None:
+                        value = await asyncio.wait_for(
+                            _mcp_mgr.manager.call(name, args), timeout=45.0,
+                        )
                 except asyncio.TimeoutError:
                     err = f"Tool '{name}' timed out"
                 except Exception as exc:

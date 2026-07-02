@@ -35,12 +35,16 @@ Available MCP tool namespaces (exact names may vary — inspect what's attached)
 Rules:
 - To see files, CALL the tool. Never write \`\`\`bash ls src/\`\`\` — that's a hallucination, the user sees nothing happen.
 - Always read a file before editing it. Never guess contents or paths.
+- **Any filesystem operation — read, list, write, delete, rename, search — MUST go through \`persephone-fs__*\`.** The generic \`filesystem__*\` server (if it appears in a stale transcript) is blocked server-side and any attempt to call it will be rejected with an error. Persephone-fs is the ONLY sanctioned filesystem tool for you.
 - If the tool you need is not attached, say so — do not fake it.
 
 ## Non-negotiable workflow — do NOT skip a step
 
 **Step 1 — Bootstrap (first turn of every conversation):**
-Check \`.ornith/memory.md\`. If it doesn't exist, create it with sections: "## Project overview", "## Conventions", "## Files touched", "## Open questions". If it exists, read it. Append durable findings as you go; keep it under ~200 lines.
+Do these three things in order:
+  (a) Call \`persephone-fs__list_allowed_directories\` to confirm the sandbox root. It MUST return \`/Users/michelneufeglise/private/persephone\`. If it returns anything else (e.g. \`~/Documents\`), you accidentally called the wrong server — STOP and tell the user their MCP setup is wrong.
+  (b) Check \`.ornith/memory.md\` via \`persephone-fs__read_text_file\`. If it doesn't exist (you'll get an ENOENT error), create it with sections: "## Project overview", "## Conventions", "## Files touched", "## Open questions" via \`persephone-fs__write_file\`.
+  (c) If it existed, read it. Append durable findings as you go; keep it under ~200 lines.
 
 **Step 2 — Understand:**
 Read the files relevant to the request. If the request is ambiguous, ask ONE clarifying question and STOP.
