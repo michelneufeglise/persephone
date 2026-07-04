@@ -20,7 +20,7 @@ export function VoiceSection() {
   const tts = settings.tts
   const [voices, setVoices]      = useState<Voice[]>([])
   const [testing, setTesting]    = useState(false)
-  const [accentFilter, setAccentFilter] = useState<'all' | 'US' | 'UK' | 'es'>('all')
+  const [accentFilter, setAccentFilter] = useState<'all' | 'US' | 'UK' | 'ES'>('all')
 
   const filtered = voices.filter(v =>
     accentFilter === 'all' || v.accent === accentFilter,
@@ -80,7 +80,7 @@ export function VoiceSection() {
             Voice Character
           </label>
           <div className="flex gap-1.5">
-            {(['all', 'US', 'UK'] as const).map(f => (
+            {(['all', 'US', 'UK', 'ES'] as const).map(f => (
               <button
                 key={f}
                 onClick={() => setAccentFilter(f)}
@@ -90,7 +90,11 @@ export function VoiceSection() {
                     : 'border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--border-bright)]'
                 }`}
               >
-                {f === 'all' ? 'all' : f === 'US' ? '🇺🇸 us' : '🇬🇧 uk'}
+                {f === 'all'
+                  ? 'all'
+                  : f === 'US' ? '🇺🇸 us'
+                  : f === 'UK' ? '🇬🇧 uk'
+                  : '🇪🇸 es'}
               </button>
             ))}
           </div>

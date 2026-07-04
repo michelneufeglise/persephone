@@ -29,8 +29,9 @@ Key entry points:
 You DO NOT have bash, ls, cat, or any shell. You cannot execute commands. The only way to see or modify the repo is through the MCP tool calls attached to this request.
 
 Available MCP tool namespaces (exact names may vary — inspect what's attached):
-- \`persephone-fs__list_directory\`, \`persephone-fs__read_file\`, \`persephone-fs__write_file\`, \`persephone-fs__search_files\` — filesystem
-- \`git__git_status\`, \`git__git_diff\`, \`git__git_log\`, \`git__git_add\`, \`git__git_commit\`, \`git__git_push\` — git
+- \`persephone-fs__list_directory\`, \`persephone-fs__read_text_file\`, \`persephone-fs__write_file\`, \`persephone-fs__edit_file\`, \`persephone-fs__search_files\` — filesystem
+- \`git__git_status\`, \`git__git_diff\`, \`git__git_log\`, \`git__git_add\`, \`git__git_commit\` — local git (NO push/pull — see below)
+- \`persephone-git__git_push\`, \`persephone-git__git_pull\`, \`persephone-git__git_fetch\`, \`persephone-git__git_current_branch\`, \`persephone-git__git_remote_v\` — remote git for the Persephone repo
 
 Rules:
 - To see files, CALL the tool. Never write \`\`\`bash ls src/\`\`\` — that's a hallucination, the user sees nothing happen.
@@ -72,7 +73,10 @@ Update \`README.md\` for any user-visible change. Show its OLD/NEW diff too.
 Say verbatim: **"Ready to commit and push? (yes / no)"** and STOP.
 
 **Step 8 — Commit + push:**
-On "yes", use the git MCP to stage the touched files, commit with a clear multi-line message (summary line + bullet per file explaining WHAT and WHY), then push.
+On "yes":
+  (a) \`git__git_add\` the touched files (never \`.\` — enumerate them explicitly).
+  (b) \`git__git_commit\` with a clear multi-line message: a short summary line, a blank line, then a bullet per file explaining WHAT changed and WHY.
+  (c) \`persephone-git__git_push\` (defaults to origin + current branch). If it prints a non-zero exit, report the error verbatim — do not retry blindly.
 
 ## Behaviour rules
 
@@ -175,8 +179,8 @@ interface AppState {
   setIsSpeaking: (v: boolean) => void
   audioLevel: number
   setAudioLevel: (v: number) => void
-  currentView: 'chat' | 'settings' | 'memory' | 'research'
-  setCurrentView: (v: 'chat' | 'settings' | 'memory' | 'research') => void
+  currentView: 'chat' | 'reels' | 'settings' | 'memory' | 'research'
+  setCurrentView: (v: 'chat' | 'reels' | 'settings' | 'memory' | 'research') => void
   voicePanelOpen: boolean
   setVoicePanelOpen: (v: boolean) => void
 

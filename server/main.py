@@ -36,6 +36,8 @@ import ollama_setup as _ollama
 import research as _research
 import research_db as _rdb
 import embeddings as _emb
+import comfy_client as _comfy
+import reels_render as _reels
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(name)s  %(message)s")
 log = logging.getLogger("persephone")
@@ -1467,6 +1469,631 @@ async def tts_voices():
     return {"voices": _tts.VOICES}
 
 
+# ── /api/reels — short-form vertical video studio ────────────────────────────
+# Pipeline stages (built incrementally):
+#   1. plan   : LLM decomposes topic → scenes with script + SD prompt + seconds
+#   2. images : ComfyUI submits a stable-diffusion workflow per scene
+#   3. voice  : Kokoro TTS speaks each scene's script line
+#   4. render : ffmpeg composites 1080×1920 with Ken Burns + captions + music
+# This section ships (1) + (2 status probe). (3) already exists via /api/tts.
+# (4) is the follow-up commit.
+
+COMFY_HOST = os.getenv("COMFY_HOST", "http://127.0.0.1:8188")
+
+_TONE_HINTS = {
+    "informative": "clear, factual, listicle-friendly; front-load the payoff",
+    "energetic":   "punchy openings, short sentences, hook in first 3 seconds",
+    "calm":        "slow deliberate pacing, gentle imagery, breath between beats",
+    "dramatic":    "cinematic tension, escalating stakes, quotable close",
+    "luxury":      "editorial refinement, brand-tier vocabulary, uncluttered visuals",
+}
+
+
+class ReelPlanRequest(BaseModel):
+    topic:    str
+    tone:     str  = "informative"
+    duration: int  = 30       # seconds
+    aspect:   str  = "9:16"
+    voice:    str  = "af_heart"
+
+
+def _scenes_target(duration_s: int) -> int:
+    # ~4s per scene: fast enough for TikTok, slow enough to read.
+    # Clamp so a 15s reel still has 3 scenes and a 60s reel has 12.
+    return max(3, min(12, round(duration_s / 4)))
+
+
+# Preferred models for the reels planner. The task is a small JSON emit —
+# a fast non-thinking model is ideal. Thinking-first models (agentworld,
+# qwen3.6, nemotron-3-nano, ornith, deepseek-r1) burn their whole
+# num_predict budget on <think> before writing JSON and return empty
+# `content`, which is what caused the "empty plan from model" error.
+_PLANNER_PREF = [
+    "qwen2.5:32b", "qwen2.5:14b", "qwen2.5:7b",
+    "hermes3:8b",  "llama3.2:3b", "qwen2.5:1.5b",
+]
+
+
+async def _pick_planner_model() -> str:
+    installed = await _installed_models()
+    for pref in _PLANNER_PREF:
+        if pref in installed or any(x.startswith(pref + ":") for x in installed):
+            return pref
+    # Absolute fallback: whatever's active, and we'll force think:false + big budget.
+    return await _db.get_config("active_model") or "qwen2.5:7b"
+
+
+async def _stream_reels_plan(req: ReelPlanRequest) -> AsyncIterator[str]:
+    n_scenes    = _scenes_target(req.duration)
+    tone_hint   = _TONE_HINTS.get(req.tone, _TONE_HINTS["informative"])
+    planner_model = await _pick_planner_model()
+
+    system = (
+        "You are a short-form video scriptwriter for TikTok / Instagram Reels / "
+        f"YouTube Shorts. Aspect {req.aspect}. Total duration {req.duration}s. "
+        f"Tone: {tone_hint}.\n"
+        f"Output EXACTLY {n_scenes} scenes as strict JSON — no prose, no markdown fences.\n"
+        "Schema: {\"scenes\":[{\"n\":int,\"script\":str,\"imagePrompt\":str,\"seconds\":int}, ...]}\n"
+        "Rules:\n"
+        "  - script: 1 spoken line, 6-18 words, natural read-aloud rhythm.\n"
+        "  - imagePrompt: a vivid Stable-Diffusion prompt for a single still image\n"
+        "    that visualises this scene. Include style tokens (cinematic, 35mm,\n"
+        "    editorial, high-contrast, etc). Never mention 'text', 'letters', or\n"
+        "    'watermark' — the caption is burned in separately.\n"
+        "  - seconds: how long the scene stays on screen. All seconds must sum to "
+        f"{req.duration}.\n"
+        "  - Scene 1 must be a hook that stops the scroll in the first 2 seconds."
+    )
+    user = f"Topic: {req.topic.strip()}"
+
+    payload = {
+        "model":    planner_model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user",   "content": user},
+        ],
+        "format":   "json",
+        "stream":   False,
+        # Belt-and-braces: even if the picked model is thinking-capable, force
+        # native thinking off. And give plenty of predict headroom so a big
+        # scene plan (12 scenes at 60s) doesn't get truncated.
+        "think":    False,
+        "options":  {
+            **OLLAMA_DEFAULTS,
+            "num_ctx":     8192,
+            "num_predict": 4096,
+            "temperature": 0.7,
+        },
+        "keep_alive": "5m",
+    }
+
+    log.info("reels plan: model=%s scenes=%d duration=%ds", planner_model, n_scenes, req.duration)
+
+    try:
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            r = await client.post(f"{OLLAMA_BASE}/api/chat", json=payload)
+            if r.status_code != 200:
+                body = r.text
+                yield f"data: {json.dumps({'error': f'planner {r.status_code}: {body[:200]}'})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            data = r.json()
+            msg = data.get("message") or {}
+            content  = (msg.get("content") or "").strip()
+            thinking = (msg.get("thinking") or "").strip()
+            if not content:
+                # Diagnostic: some servers emit the JSON in `thinking` when
+                # think:false was ignored. Try to salvage it.
+                salvage = thinking
+                log.warning(
+                    "reels plan: empty content from %s (thinking=%d chars, done_reason=%r)",
+                    planner_model, len(thinking), data.get("done_reason"),
+                )
+                if salvage and salvage.lstrip().startswith("{"):
+                    content = salvage
+                else:
+                    yield f"data: {json.dumps({'error': f'empty plan from {planner_model} — try switching your active model to qwen2.5:7b or qwen2.5:14b, or pick one from Settings.'})}\n\n"
+                    yield "data: [DONE]\n\n"
+                    return
+
+            try:
+                parsed = json.loads(content)
+            except json.JSONDecodeError as exc:
+                yield f"data: {json.dumps({'error': f'invalid JSON from planner: {exc}'})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            scenes = parsed.get("scenes") if isinstance(parsed, dict) else None
+            if not isinstance(scenes, list) or not scenes:
+                yield f"data: {json.dumps({'error': 'planner returned no scenes'})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+            # Stream one scene at a time so the UI feels alive.
+            for i, s in enumerate(scenes, start=1):
+                if not isinstance(s, dict):
+                    continue
+                scene = {
+                    "n":           int(s.get("n", i)),
+                    "script":      str(s.get("script", "")).strip(),
+                    "imagePrompt": str(s.get("imagePrompt") or s.get("image_prompt") or "").strip(),
+                    "seconds":     int(s.get("seconds", max(3, req.duration // len(scenes)))),
+                }
+                yield f"data: {json.dumps({'scene': scene})}\n\n"
+                await asyncio.sleep(0.05)  # tiny stagger for the reveal animation
+    except Exception as exc:
+        log.error("reels plan error: %s", exc, exc_info=True)
+        yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+    finally:
+        yield "data: [DONE]\n\n"
+
+
+@app.post("/api/reels/plan")
+async def reels_plan(req: ReelPlanRequest):
+    return StreamingResponse(
+        _stream_reels_plan(req),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+class ReelImageRequest(BaseModel):
+    prompt:     str
+    checkpoint: str
+    width:      int   = 1024
+    height:     int   = 1024
+    steps:      int   = 20
+    seed:       int   = -1
+    cfg:        float = 6.5
+
+
+@app.post("/api/reels/image")
+async def reels_image(req: ReelImageRequest):
+    """Generate one still via ComfyUI. Returns raw PNG bytes."""
+    if not req.prompt.strip():
+        raise HTTPException(400, "prompt is required")
+    if not req.checkpoint:
+        raise HTTPException(400, "checkpoint is required — see /api/reels/comfy/checkpoints")
+    try:
+        png = await _comfy.generate(
+            req.prompt.strip(),
+            checkpoint=req.checkpoint,
+            width=req.width, height=req.height,
+            steps=req.steps, seed=req.seed, cfg=req.cfg,
+        )
+    except Exception as exc:
+        log.error("comfy generate failed: %s", exc, exc_info=True)
+        raise HTTPException(502, f"comfy: {exc}")
+    return Response(content=png, media_type="image/png")
+
+
+@app.get("/api/reels/comfy/checkpoints")
+async def reels_comfy_checkpoints():
+    """List installed SD checkpoints so the UI can populate a dropdown."""
+    return {"checkpoints": await _comfy.list_checkpoints()}
+
+
+class ReelScene(BaseModel):
+    n:           int
+    script:      str
+    imagePrompt: str
+    seconds:     int
+
+
+class ReelRenderRequest(BaseModel):
+    plan:         dict  # topic, tone, aspect, voice, duration, scenes[]
+    checkpoint:   str
+    musicPath:    str | None = None
+    musicVolume:  float = 0.18
+    voiceover:    bool  = True
+    captions:     bool  = True
+    captionMode:  str   = "script"    # "script" | "transcript"
+    translate:    bool  = False       # only when captionMode == "transcript"
+
+
+async def _stream_reel_render(req: ReelRenderRequest) -> AsyncIterator[str]:
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def emit(evt: dict):
+        await queue.put(evt)
+
+    async def run():
+        try:
+            await _reels.render_reel(
+                plan=req.plan,
+                checkpoint=req.checkpoint,
+                on_progress=emit,
+                music_path=(Path(req.musicPath) if req.musicPath else None),
+                music_volume=req.musicVolume,
+                voiceover=req.voiceover,
+                captions=req.captions,
+                caption_mode=req.captionMode,
+                translate=req.translate,
+            )
+        except Exception as exc:
+            log.error("reels render failed: %s", exc, exc_info=True)
+            await emit({"stage": "error", "error": str(exc)})
+        finally:
+            await emit({"__end": True})
+
+    task = asyncio.create_task(run())
+    try:
+        while True:
+            evt = await queue.get()
+            if evt.get("__end"):
+                break
+            yield f"data: {json.dumps(evt)}\n\n"
+    finally:
+        if not task.done():
+            task.cancel()
+        yield "data: [DONE]\n\n"
+
+
+@app.post("/api/reels/render")
+async def reels_render(req: ReelRenderRequest):
+    return StreamingResponse(
+        _stream_reel_render(req),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+_REELS_ASSET_KINDS   = {"music", "scene_image", "scene_video"}
+_REELS_MUSIC_MIMES   = {"audio/mpeg", "audio/mp3", "audio/wav", "audio/x-wav", "audio/aac", "audio/mp4", "audio/ogg", "audio/flac"}
+_REELS_IMAGE_MIMES   = {"image/png", "image/jpeg", "image/webp", "image/gif"}
+_REELS_VIDEO_MIMES   = {"video/mp4", "video/quicktime", "video/webm", "video/x-matroska",
+                        "video/x-m4v", "video/mpeg"}
+# Per-kind size caps. Videos get much more headroom than images/music.
+_REELS_ASSET_MAX_MB  = {"music": 40, "scene_image": 40, "scene_video": 300}
+
+
+def _reels_assets_dir() -> Path:
+    from paths import data_dir as _dd
+    p = _dd() / "reels" / "assets"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+async def _probe_video(path: Path) -> dict:
+    """Return {container, video_codec, audio_codec, has_audio} for the given file."""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=format_name:stream=codec_name,codec_type",
+            "-of", "json", str(path),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        out, _ = await proc.communicate()
+        data = json.loads(out.decode("utf-8", errors="replace") or "{}")
+    except Exception as exc:
+        log.warning("ffprobe failed for %s: %s", path, exc)
+        return {"container": "", "video_codec": "", "audio_codec": "", "has_audio": False}
+    container   = ((data.get("format") or {}).get("format_name") or "").lower()
+    video_codec = ""
+    audio_codec = ""
+    has_audio   = False
+    for s in data.get("streams") or []:
+        if s.get("codec_type") == "video" and not video_codec:
+            video_codec = (s.get("codec_name") or "").lower()
+        elif s.get("codec_type") == "audio":
+            has_audio = True
+            if not audio_codec:
+                audio_codec = (s.get("codec_name") or "").lower()
+    return {"container": container, "video_codec": video_codec,
+            "audio_codec": audio_codec, "has_audio": has_audio}
+
+
+def _is_browser_playable_mp4(probe: dict, ext: str) -> bool:
+    """Chrome/Electron's built-in decoder is happy with H.264 + AAC in an mp4.
+    Anything else (ProRes .mov, HEVC in mp4 without hvc1 tag, VP9 in webm, etc.)
+    we transcode to be safe."""
+    if ext.lower() != ".mp4":
+        return False
+    if probe.get("video_codec") != "h264":
+        return False
+    if probe.get("has_audio") and probe.get("audio_codec") not in ("aac", ""):
+        return False
+    return True
+
+
+async def _transcode_to_mp4(src: Path, dst: Path) -> None:
+    """Re-encode `src` to a browser-safe H.264 / AAC / faststart mp4.
+
+    Uses macOS videotoolbox when available (M-series does this in hardware and
+    is 3-5× faster than libx264 for typical phone footage), else falls back to
+    software x264. `movflags +faststart` moves the moov atom to the front so
+    HTML5 <video> can begin playback before the whole file has loaded.
+    """
+    # veryfast software encoder is our portable default; if the user's ffmpeg
+    # was built with videotoolbox (Homebrew macOS default) we prefer it.
+    v_codec = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "22"]
+    try:
+        # Cheap probe: does this ffmpeg know h264_videotoolbox?
+        proc = await asyncio.create_subprocess_exec(
+            "ffmpeg", "-hide_banner", "-encoders",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await proc.communicate()
+        if b"h264_videotoolbox" in (out or b""):
+            v_codec = ["-c:v", "h264_videotoolbox", "-b:v", "6M"]
+    except Exception:
+        pass
+
+    args = [
+        "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(src),
+        *v_codec,
+        "-c:a", "aac", "-b:a", "192k", "-ar", "44100",
+        "-movflags", "+faststart",
+        "-pix_fmt", "yuv420p",
+        str(dst),
+    ]
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg", *args,
+        stdout=asyncio.subprocess.DEVNULL,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    _, err = await proc.communicate()
+    if proc.returncode != 0:
+        tail = (err or b"").decode("utf-8", errors="replace").splitlines()[-15:]
+        raise RuntimeError(f"transcode failed:\n" + "\n".join(tail))
+
+
+def _safe_asset_name(kind: str, orig_name: str) -> str:
+    """Return a random-token filename that preserves the original extension."""
+    from secrets import token_hex
+    ext = ""
+    if "." in orig_name:
+        ext = "." + orig_name.rsplit(".", 1)[-1].lower()
+        # Whitelist reasonable extensions only.
+        if ext not in {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac",
+                       ".png", ".jpg", ".jpeg", ".webp", ".gif",
+                       ".mp4", ".mov", ".webm", ".mkv", ".m4v", ".mpeg"}:
+            ext = ""
+    return f"{kind}_{token_hex(6)}{ext}"
+
+
+@app.post("/api/reels/assets/upload")
+async def reels_assets_upload(
+    kind: str = Form(...),
+    file: UploadFile = File(...),
+):
+    """Upload a user-supplied music track or per-scene image override.
+
+    Returns {name, path, url, bytes, mime, kind} for the frontend to reference
+    in later render calls.
+    """
+    if kind not in _REELS_ASSET_KINDS:
+        raise HTTPException(400, f"kind must be one of {sorted(_REELS_ASSET_KINDS)}")
+
+    mime = (file.content_type or "").lower()
+    if kind == "music" and mime and mime not in _REELS_MUSIC_MIMES:
+        raise HTTPException(415, f"music mime {mime} not supported")
+    if kind == "scene_image" and mime and mime not in _REELS_IMAGE_MIMES:
+        raise HTTPException(415, f"image mime {mime} not supported")
+    if kind == "scene_video" and mime and mime not in _REELS_VIDEO_MIMES:
+        raise HTTPException(415, f"video mime {mime} not supported")
+
+    payload = await file.read()
+    if not payload:
+        raise HTTPException(400, "empty upload")
+    cap_mb = _REELS_ASSET_MAX_MB.get(kind, 40)
+    if len(payload) > cap_mb * 1024 * 1024:
+        raise HTTPException(413, f"file exceeds {cap_mb} MB cap for {kind}")
+
+    name = _safe_asset_name(kind, file.filename or "")
+    dst  = _reels_assets_dir() / name
+    dst.write_bytes(payload)
+    log.info("reels asset uploaded: %s (%d bytes)", dst, len(payload))
+
+    converted = False
+    if kind == "scene_video":
+        try:
+            probe = await _probe_video(dst)
+            ext   = dst.suffix.lower()
+            if not _is_browser_playable_mp4(probe, ext):
+                log.info("transcoding video %s (codec=%s ext=%s)",
+                         dst.name, probe.get("video_codec"), ext)
+                new_name = dst.with_suffix(".mp4").name.replace(dst.stem, dst.stem + "_h264")
+                new_dst  = _reels_assets_dir() / new_name
+                await _transcode_to_mp4(dst, new_dst)
+                dst.unlink(missing_ok=True)   # drop the original — we only serve the mp4
+                dst       = new_dst
+                name      = new_name
+                mime      = "video/mp4"
+                converted = True
+        except Exception as exc:
+            log.warning("video conversion failed for %s: %s (serving original)", dst.name, exc)
+
+    return {
+        "name":       name,
+        "path":       str(dst),
+        "url":        f"/api/reels/assets/{name}",
+        "bytes":      dst.stat().st_size,
+        "mime":       mime,
+        "kind":       kind,
+        "converted":  converted,
+    }
+
+
+@app.get("/api/reels/assets/{name}")
+async def reels_assets_get(name: str):
+    """Serve a previously-uploaded asset back for preview in the UI."""
+    if "/" in name or "\\" in name or ".." in name:
+        raise HTTPException(400, "bad name")
+    p = _reels_assets_dir() / name
+    if not p.exists() or not p.is_file():
+        raise HTTPException(404, "asset not found")
+    # Best-effort media type from extension.
+    ext = p.suffix.lower()
+    mt  = {
+        ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4",
+        ".aac": "audio/aac",  ".ogg": "audio/ogg", ".flac": "audio/flac",
+        ".png": "image/png",  ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+        ".webp": "image/webp", ".gif": "image/gif",
+        ".mp4": "video/mp4",  ".mov": "video/quicktime",
+        ".webm": "video/webm", ".mkv": "video/x-matroska",
+        ".m4v": "video/x-m4v", ".mpeg": "video/mpeg",
+    }.get(ext, "application/octet-stream")
+    return Response(content=p.read_bytes(), media_type=mt,
+                    headers={"Accept-Ranges": "bytes"})
+
+
+@app.get("/api/reels/library")
+async def reels_library():
+    """List all rendered reels (metadata + URLs)."""
+    return {"reels": _reels.list_finished_reels()}
+
+
+@app.get("/api/reels/media/{name}")
+async def reels_media(name: str):
+    """Serve a rendered reel MP4 (or its sidecar metadata JSON)."""
+    p = _reels.reel_media_path(name)
+    if p is None:
+        raise HTTPException(404, f"reel {name} not found")
+    media_type = "video/mp4" if p.suffix == ".mp4" else "application/octet-stream"
+    return Response(content=p.read_bytes(), media_type=media_type,
+                    headers={"Accept-Ranges": "bytes"})
+
+
+class ComfyStartRequest(BaseModel):
+    path: str | None = None   # optional user override; else auto-discover
+
+
+@app.post("/api/reels/comfy/start")
+async def reels_comfy_start(req: ComfyStartRequest):
+    """Auto-discover (or use the supplied `path`) and spawn ComfyUI detached.
+
+    Never spawns twice — checks the port first. If we can't find an install,
+    returns `{started: false, need_path: true, ...}` so the UI can ask.
+    """
+    # Trivial case: already running.
+    if await _comfy.is_port_up():
+        return {"started": True, "already_running": True}
+
+    hint = None
+    if req.path:
+        hint = req.path.strip() or None
+    else:
+        stored = await _db.get_config("comfy_path")
+        if stored:
+            hint = stored
+
+    install_dir = _comfy.find_install_dir(hint)
+    if install_dir is None:
+        return {
+            "started":   False,
+            "need_path": True,
+            "checked":   [str(p) for p in _comfy._COMMON_INSTALL_DIRS],
+            "message":   "ComfyUI not found in common locations. Provide the install path (the folder containing main.py).",
+        }
+
+    # Persist the working path so future launches skip discovery.
+    await _db.set_config("comfy_path", str(install_dir))
+
+    try:
+        info = await _comfy.start(install_dir)
+    except Exception as exc:
+        log.error("comfy spawn failed: %s", exc, exc_info=True)
+        raise HTTPException(500, f"failed to spawn ComfyUI: {exc}")
+    return info
+
+
+@app.post("/api/reels/comfy/stop")
+async def reels_comfy_stop():
+    """Terminate the ComfyUI *we* spawned. No-op if the user started it manually."""
+    return _comfy.stop_if_ours()
+
+
+class ComfyInstallRequest(BaseModel):
+    path:                 str  = "~/ComfyUI"
+    download_checkpoint:  bool = True
+
+
+async def _stream_comfy_install(req: ComfyInstallRequest) -> AsyncIterator[str]:
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def emit(evt: dict):
+        await queue.put(evt)
+
+    async def run():
+        try:
+            install_dir = await _comfy.install(
+                Path(req.path).expanduser(),
+                emit,
+                download_checkpoint=req.download_checkpoint,
+            )
+            # Persist the path so /start uses it without re-discovery.
+            await _db.set_config("comfy_path", str(install_dir))
+            # Kick off the actual ComfyUI process now that everything's on disk.
+            await emit({"stage": "start", "message": "Launching ComfyUI…"})
+            info = await _comfy.start(install_dir)
+            await emit({"stage": "start", "progress": 1.0, "message": f"ComfyUI spawned (pid {info.get('pid', 0)})"})
+            await emit({"stage": "ready", "install_path": str(install_dir)})
+        except Exception as exc:
+            log.error("comfy install failed: %s", exc, exc_info=True)
+            await emit({"stage": "error", "error": str(exc)})
+        finally:
+            await emit({"__end": True})
+
+    task = asyncio.create_task(run())
+    try:
+        while True:
+            evt = await queue.get()
+            if evt.get("__end"):
+                break
+            yield f"data: {json.dumps(evt)}\n\n"
+    finally:
+        if not task.done():
+            task.cancel()
+        yield "data: [DONE]\n\n"
+
+
+@app.post("/api/reels/comfy/install")
+async def reels_comfy_install(req: ComfyInstallRequest):
+    return StreamingResponse(
+        _stream_comfy_install(req),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.get("/api/reels/comfy/status")
+async def reels_comfy_status():
+    """Probe ComfyUI. Returns {running, version?, model?, error?}."""
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            # ComfyUI exposes /system_stats for a quick health/liveness check.
+            r = await client.get(f"{COMFY_HOST}/system_stats")
+            if r.status_code != 200:
+                return {"running": False, "error": f"HTTP {r.status_code}"}
+            stats   = r.json() if r.headers.get("content-type", "").startswith("application/json") else {}
+            version = ((stats.get("system") or {}).get("comfyui_version")
+                       or (stats.get("system") or {}).get("version") or "")
+
+            # Best-effort peek at the first available checkpoint. Not critical.
+            model = ""
+            try:
+                oi = await client.get(f"{COMFY_HOST}/object_info/CheckpointLoaderSimple", timeout=2.0)
+                if oi.status_code == 200:
+                    info = oi.json()
+                    ckpts = (info.get("CheckpointLoaderSimple", {})
+                                  .get("input", {})
+                                  .get("required", {})
+                                  .get("ckpt_name", [[]])[0]) or []
+                    if ckpts:
+                        model = ckpts[0]
+            except Exception:
+                pass
+
+            return {"running": True, "version": version, "model": model}
+    except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout):
+        return {"running": False, "error": f"no process on {COMFY_HOST}"}
+    except Exception as exc:
+        return {"running": False, "error": str(exc)}
+
+
 # ── /api/memory — SQLite-backed conversation persistence ──────────────────────
 @app.get("/api/memory/conversations")
 async def list_conversations():
@@ -1560,6 +2187,41 @@ async def purge_invalid_facts():
 @app.get("/api/setup/hardware")
 async def setup_hardware():
     return _hw.get_hardware()
+
+
+@app.get("/api/setup/ffmpeg")
+async def setup_ffmpeg():
+    """Check whether ffmpeg is on PATH — required by the Reels render pipeline."""
+    import shutil, sys
+    path = shutil.which("ffmpeg")
+    if not path:
+        install = {
+            "darwin": "brew install ffmpeg",
+            "linux":  "sudo apt install ffmpeg   # or dnf / pacman",
+            "win32":  'winget install "Gyan.FFmpeg"',
+        }.get(sys.platform, "https://ffmpeg.org/download.html")
+        return {
+            "installed": False,
+            "path":      "",
+            "version":   "",
+            "install_cmd": install,
+        }
+    version = ""
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            path, "-version",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await proc.communicate()
+        first  = (out or b"").decode("utf-8", errors="replace").splitlines()
+        if first:
+            # e.g. "ffmpeg version 8.1 Copyright..."
+            parts = first[0].split()
+            if len(parts) >= 3 and parts[0] == "ffmpeg":
+                version = parts[2]
+    except Exception:
+        pass
+    return {"installed": True, "path": path, "version": version, "install_cmd": ""}
 
 
 @app.get("/api/setup/recommendations")

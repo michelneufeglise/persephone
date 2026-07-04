@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   CheckCircle, AlertCircle, Download, Play, ExternalLink,
-  Terminal, RefreshCw, Server, Apple, Monitor,
+  Terminal, RefreshCw, Server, Apple, Monitor, Film, Copy,
 } from 'lucide-react'
 
 interface OllamaStatus {
@@ -185,6 +185,8 @@ export function OllamaStep({ onReady }: OllamaStepProps) {
             </span>
           )}
         </div>
+
+        <FfmpegChip />
       </div>
     )
   }
@@ -346,6 +348,82 @@ function ErrorBox({ text }: { text: string }) {
     <div className="flex items-start gap-2 p-2.5 rounded-lg bg-red-500/10 border border-red-500/30 text-red-300 text-xs">
       <AlertCircle className="w-3.5 h-3.5 flex-shrink-0 mt-0.5" />
       <span>{text}</span>
+    </div>
+  )
+}
+
+// ── ffmpeg availability chip (needed by Reels render pipeline) ──────────────
+interface FfmpegStatus {
+  installed: boolean
+  path:      string
+  version:   string
+  install_cmd: string
+}
+
+function FfmpegChip() {
+  const [ff, setFf]     = useState<FfmpegStatus | null>(null)
+  const [copied, setCp] = useState(false)
+
+  const refresh = useCallback(async () => {
+    try {
+      const r = await fetch('/api/setup/ffmpeg')
+      setFf(await r.json())
+    } catch {
+      setFf({ installed: false, path: '', version: '', install_cmd: 'https://ffmpeg.org/download.html' })
+    }
+  }, [])
+  useEffect(() => { refresh() }, [refresh])
+
+  if (!ff) return null
+
+  if (ff.installed) {
+    return (
+      <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-emerald-500/10 border border-emerald-500/30">
+        <Film className="w-3.5 h-3.5 text-emerald-300" />
+        <span className="text-xs text-emerald-200">
+          ffmpeg {ff.version && <span className="font-mono">{ff.version}</span>} ready
+        </span>
+        <span className="text-[10px] text-[var(--text-muted)] font-mono ml-1 truncate max-w-48" title={ff.path}>
+          {ff.path}
+        </span>
+      </div>
+    )
+  }
+
+  const copyInstall = async () => {
+    try { await navigator.clipboard.writeText(ff.install_cmd); setCp(true); setTimeout(() => setCp(false), 1500) } catch {}
+  }
+
+  return (
+    <div className="mx-auto max-w-md space-y-2 text-left">
+      <div className="flex items-start gap-2 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30">
+        <Film className="w-4 h-4 flex-shrink-0 mt-0.5 text-amber-300" />
+        <div className="flex-1 min-w-0 space-y-2">
+          <div className="text-xs text-amber-200 leading-snug">
+            <span className="font-semibold">ffmpeg is optional</span> — it's only required if you'll use the <span className="italic">Reels</span> tab to render short-form videos. You can finish the wizard without it and install later.
+          </div>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 text-[10.5px] font-mono text-amber-100 bg-black/30 px-2 py-1 rounded truncate">
+              {ff.install_cmd}
+            </code>
+            <button
+              onClick={copyInstall}
+              title="Copy install command"
+              className="px-2 py-1 rounded-md text-[10px] font-mono uppercase tracking-wider text-amber-200 hover:bg-amber-500/20 border border-amber-500/30 flex items-center gap-1"
+            >
+              <Copy className="w-3 h-3" />
+              {copied ? 'copied' : 'copy'}
+            </button>
+          </div>
+          <button
+            onClick={refresh}
+            className="inline-flex items-center gap-1 text-[10px] text-amber-200 hover:text-amber-100 transition-colors"
+          >
+            <RefreshCw className="w-3 h-3" />
+            Re-check after installing
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

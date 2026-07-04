@@ -35,7 +35,8 @@ DEFAULT_VOICE = "af_heart"
 
 # ── Curated voice catalog ─────────────────────────────────────────────────────
 # All included in the standard Kokoro v1.0 voice pack — no extra downloads.
-# Prefix legend: af/am = American female/male, bf/bm = British female/male
+# Prefix legend: af/am = American female/male, bf/bm = British female/male,
+#                ef/em = Spanish female/male
 VOICES = [
     # American female
     {"id": "af_heart",   "name": "Heart",   "gender": "female", "accent": "US",
@@ -76,6 +77,16 @@ VOICES = [
      "description": "Professional, news-anchor timbre"},
     {"id": "bm_fable",   "name": "Fable",   "gender": "male",   "accent": "UK",
      "description": "Warm, narrative — perfect for stories"},
+
+    # Spanish female
+    {"id": "ef_dora",    "name": "Dora",    "gender": "female", "accent": "ES",
+     "description": "Warm Castilian Spanish — clear, expressive"},
+
+    # Spanish male
+    {"id": "em_alex",    "name": "Alex",    "gender": "male",   "accent": "ES",
+     "description": "Confident Castilian Spanish — mid-tone, versatile"},
+    {"id": "em_santa",   "name": "Santa",   "gender": "male",   "accent": "ES",
+     "description": "Deep, jovial Spanish — theatrical narrator"},
 ]
 VALID_VOICES = {v["id"] for v in VOICES}
 
@@ -154,6 +165,8 @@ def _lang_for_voice(voice_id: str) -> str:
     """Kokoro's `create()` takes an eSpeak lang code."""
     if voice_id.startswith(("bf_", "bm_")):
         return "en-gb"
+    if voice_id.startswith(("ef_", "em_")):
+        return "es"
     return "en-us"
 
 

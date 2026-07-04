@@ -20,6 +20,7 @@ Persephone wraps the speed of local Ollama models in a thoughtful, beautifully d
 - 🔮 **Smart auto-router.** A two-stage hybrid classifier picks the right model for each turn — `qwen2.5:0.5b` for *"hi"*, `qwen2.5-coder:7b` for *"refactor this function"*, `qwen3:ohm` for deep reasoning, all in milliseconds.
 - 🛠 **MCP tools out of the box.** DuckDuckGo, Brave Search, Fetch, Filesystem (**incl. a Persephone-scoped filesystem for the repo itself**), Git, SQLite, Memory, Puppeteer, Sequential Thinking — toggle on with one click; servers spawn automatically.
 - 🐦 **Ornith Coder mode.** One-click sidebar preset that switches the active model to `ornith:latest` (Qwen3-based 9B agentic coder, 262K context) and injects a plan → approve → diff → README → commit workflow. Wired to the `persephone-fs` MCP for real repo access.
+- 🎬 **Reels studio.** New sidebar tab: type a topic, pick tone + duration + aspect, and Persephone plans scenes (script + image prompt + timing per scene) via the active LLM, will drive ComfyUI for stills and Kokoro for voiceover, then ffmpeg composites a 9:16 TikTok/Reels/Shorts video.
 - 🔬 **Deep research engine.** Decomposes a question into sub-questions, searches the web, fetches sources, embeds chunks, and synthesises a fully-cited markdown report with a generative SVG cover.
 - 📚 **Persistent knowledge base.** Every research run feeds chunks into a `sqlite-vec` semantic index — search across everything you've ever researched.
 - 🎙 **In-process TTS.** Orpheus / SNAC neural codec for natural-sounding voice playback, with 8 voices.
@@ -207,6 +208,24 @@ npm run dev   # opens http://localhost:5173
 
 Works the same way on Windows (PowerShell or cmd) — `npm run dev` and `npm run electron:dev` auto-detect the platform and shell out to `python`/`python3` accordingly.
 
+#### Managing the services
+
+A single control CLI (`scripts/persephone.mjs`) handles the whole lifecycle with coloured, tagged output. Every command is aliased as an npm script.
+
+```bash
+npm start               # FastAPI + Vite (dev)
+npm run start:electron  # FastAPI + Vite + Electron shell
+npm stop                # kill FastAPI, Vite, Electron, and orphaned MCP subprocesses
+npm restart             # stop → start
+npm run restart:electron
+npm run status          # port/pid snapshot + live /api/models probe
+npm run help
+```
+
+`stop` is thorough: it kills anything bound to :8000 or :5173, sweeps for `server/main.py`, `server/mcp_persephone_git.py`, `node_modules/vite/bin/vite.js`, `mcp-server-*`, and Electron by process-name pattern, then upgrades to `SIGKILL` if anything is still on the ports 800ms later. This solves the common case where a failed `Ctrl+C` leaves a FastAPI process pinning port 8000 and its MCP children as zombies.
+
+`npm run persephone -- dmg` and `npm run persephone -- exe` first stop everything, then delegate to the existing `npm run dmg` / `npm run exe` electron-builder flows.
+
 #### Troubleshooting
 
 **`ERROR fastapi Form data requires "python-multipart" to be installed.`**
@@ -332,7 +351,46 @@ Every model reply is rendered with custom React-Markdown components:
 
 Plus **generative SVG cover art** at the top of research reports — deterministic from the query hash, so the same query always produces the same cover; theme-aware colours.
 
-### 9 · Ornith Coder mode
+### 9 · Reels — short-form vertical video (local slideshow pipeline)
+
+A new **Reels** tab in the sidebar (between Chat and Research) turns your topic into a TikTok / Instagram Reels / YouTube Shorts-ready video without leaving Persephone.
+
+Current status:
+- ✅ **Scene planner** — the active chat model decomposes your topic into N ~4-second scenes (3-12 depending on target duration), each with a spoken script line, a Stable-Diffusion image prompt, and a duration. Streams scene-by-scene via `/api/reels/plan`.
+- ✅ **Voice** — Kokoro TTS (see §7). Any voice / accent works — English (US, UK) or Spanish (ES).
+- ✅ **Aspect chips** — 9:16 (TikTok/Reels/Shorts), 1:1 (feed post), 16:9 (YouTube).
+- ✅ **Tone chips** — informative, energetic, calm, dramatic, luxury. Shifts the planner's rhythm and vocabulary.
+- ✅ **ComfyUI probe** — the header shows a live "comfyui · ready / offline" chip. If ComfyUI is running on `127.0.0.1:8188`, Persephone reads its installed checkpoints via `GET /api/reels/comfy/checkpoints` and can generate stills via `POST /api/reels/image`.
+- ✅ **Render pipeline** — pick an SD checkpoint, click **Render video**, and Persephone: (1) generates one image per scene via ComfyUI, (2) speaks the scene line via Kokoro, (3) runs ffmpeg per-scene with a subtle Ken Burns zoom pan (alternating in/out) and burned-in captions in DejaVu Sans Bold (auto-downloaded on first render), (4) stitches the scenes with the concat demuxer, (5) plays the finished MP4 inline and adds it to the History tab. Optional background music with sidechain-ducked audio can be passed via `musicPath`.
+- ✅ **History tab** — every rendered reel is persisted with its metadata sidecar (topic, aspect, voice, duration, size) and shown as a scrollable grid with inline HTML5 `<video>` previews.
+
+**Setup `ffmpeg`** (required for the render pipeline — install via Homebrew, `apt`, or `winget`):
+
+```bash
+brew install ffmpeg                 # macOS
+sudo apt install ffmpeg             # Debian/Ubuntu
+winget install "Gyan.FFmpeg"        # Windows
+```
+
+**Setup ComfyUI** (one-time, so the Images stage lights up):
+
+```bash
+# Anywhere outside the Persephone repo:
+git clone https://github.com/comfyanonymous/ComfyUI.git
+cd ComfyUI
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+# Drop at least one SD checkpoint into models/checkpoints/, e.g.
+#   models/checkpoints/sd_xl_base_1.0.safetensors
+#   (or a smaller SD 1.5 like models/checkpoints/v1-5-pruned-emaonly.ckpt)
+
+python main.py --port 8188
+```
+
+On startup Persephone probes `http://127.0.0.1:8188/system_stats`. Override the host with `COMFY_HOST=http://192.168.x.x:8188` in the environment.
+
+### 10 · Ornith Coder mode
 
 A one-click preset that turns Persephone into a project-aware coding assistant for **this repo**.
 
@@ -353,7 +411,7 @@ Click the button again to restore your previous model and system prompt. State p
 
 Prerequisites: the `persephone-fs` and `git` MCP servers must be enabled in **Settings → Tools**.
 
-### 10 · Five themes
+### 11 · Five themes
 
 - **Underworld** — Polished obsidian veined with pomegranate fire (default)
 - **Spring Goddess** — Iridescent dawn, light theme
@@ -468,6 +526,14 @@ POST   /api/idp/export/{fmt}         export as md/txt/pdf/json/xlsx/csv
 
 POST   /api/tts                      synthesize speech (WAV)
 GET    /api/tts/voices               list Orpheus voices
+
+POST   /api/reels/plan               SSE stream of scene plan (LLM decomposition)
+POST   /api/reels/image              PNG bytes for one scene via ComfyUI
+POST   /api/reels/render             SSE stream of a full reel render (image → voice → composite → concat)
+GET    /api/reels/library            list every rendered reel (metadata + URLs)
+GET    /api/reels/media/{name}       stream a rendered MP4 (or sidecar JSON)
+GET    /api/reels/comfy/status       {running, version?, model?, error?}
+GET    /api/reels/comfy/checkpoints  list of installed SD checkpoints
 
 GET    /api/setup/hardware           CPU/GPU/RAM/tier
 GET    /api/setup/recommendations    tier-filtered model catalog

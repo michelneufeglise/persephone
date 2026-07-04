@@ -118,6 +118,20 @@ MCP_SERVERS: list[dict] = [
         "docs_url": "https://github.com/modelcontextprotocol/servers/tree/main/src/git",
     },
     {
+        "id": "persephone-git",
+        "name": "Persephone Git Remote",
+        "category": "files",
+        "description": "Push, pull, and fetch for the Persephone repo — fills the gap left by mcp-server-git, which has no remote operations. Powers Ornith Coder's commit-and-push step.",
+        "tags": ["git", "push", "remote", "persephone", "ornith", "free"],
+        "install": {
+            "command": "python3",
+            "args": ["/Users/michelneufeglise/private/persephone/server/mcp_persephone_git.py"],
+            "env_vars": {},
+        },
+        "requires_setup": False,
+        "docs_url": "https://modelcontextprotocol.io",
+    },
+    {
         "id": "sqlite",
         "name": "SQLite",
         "category": "data",

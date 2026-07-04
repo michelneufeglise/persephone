@@ -20,7 +20,16 @@
     "electron:dev": "node scripts/electron-dev.mjs",
     "electron:build": "npm run icon && npm run build && electron-builder",
     "dmg": "npm run icon && npm run build && npm run bundle:python && electron-builder --mac dmg",
-    "exe": "npm run icon && npm run build && npm run bundle:python -- --platform=win && electron-builder --win nsis"
+    "exe": "npm run icon && npm run build && npm run bundle:python -- --platform=win && electron-builder --win nsis",
+
+    "start": "node scripts/persephone.mjs start",
+    "start:electron": "node scripts/persephone.mjs start --electron",
+    "stop": "node scripts/persephone.mjs stop",
+    "restart": "node scripts/persephone.mjs restart",
+    "restart:electron": "node scripts/persephone.mjs restart --electron",
+    "status": "node scripts/persephone.mjs status",
+    "help": "node scripts/persephone.mjs help",
+    "persephone": "node scripts/persephone.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.62.3",
