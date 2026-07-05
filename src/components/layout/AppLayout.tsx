@@ -7,6 +7,7 @@ import { SettingsView } from '@/components/settings/SettingsView'
 import { MemoryView } from '@/components/memory/MemoryView'
 import { ResearchView } from '@/components/research/ResearchView'
 import { ReelsView } from '@/components/reels/ReelsView'
+import { DocumentsPanel } from '@/components/documents/DocumentsPanel'
 
 export function AppLayout() {
   const { currentView } = useAppStore()
@@ -69,6 +70,17 @@ export function AppLayout() {
                 className="flex-1 p-4"
               >
                 <ReelsView />
+              </motion.div>
+            ) : currentView === 'documents' ? (
+              <motion.div
+                key="documents"
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -6 }}
+                transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
+                className="flex-1 overflow-hidden"
+              >
+                <DocumentsPanel />
               </motion.div>
             ) : currentView === 'research' ? (
               <motion.div

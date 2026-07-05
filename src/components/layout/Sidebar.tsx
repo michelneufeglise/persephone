@@ -1,5 +1,5 @@
 import { motion, AnimatePresence } from 'framer-motion'
-import { MessageCircle, Settings, Plus, Trash2, Pin, Brain, Microscope, Code2, Clapperboard } from 'lucide-react'
+import { MessageCircle, Settings, Plus, Trash2, Pin, Brain, Microscope, Code2, Clapperboard, FileText } from 'lucide-react'
 import { useAppStore } from '@/store/appStore'
 import type { Conversation } from '@/types'
 
@@ -52,6 +52,12 @@ export function Sidebar() {
           label="Reels"
           active={currentView === 'reels'}
           onClick={() => setCurrentView('reels')}
+        />
+        <NavItem
+          icon={FileText}
+          label="Documents"
+          active={currentView === 'documents'}
+          onClick={() => setCurrentView('documents')}
         />
         <NavItem
           icon={Microscope}

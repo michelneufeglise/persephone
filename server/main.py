@@ -49,14 +49,62 @@ DIST_DIR    = Path(__file__).parent.parent / "dist"
 OLLAMA_DEFAULTS = {
     "num_thread":     _hw.recommended_num_thread(),  # matches the host's actual core count
     "num_batch":      512,     # larger batch = faster prompt processing
-    # 8K is enough now that we stopped listing every MCP tool in the system
-    # prompt (tools schemas still go via the `tools` array). Doubling KV cache
-    # to 16K cost ~2× prompt-eval time on M-series with no real benefit.
+    # 8K is the starting budget for lightweight conversational turns. Bigger
+    # prompts (heavy MCP tools, long histories, memory-rich turns) are
+    # auto-scaled up to 16 / 32 / 64K per request by _stream_one_round via
+    # `_estimate_message_tokens` + `_next_ctx_bucket`.
     "num_ctx":        8192,
     "f16_kv":         True,    # half-precision KV cache (saves bandwidth)
     "use_mmap":       True,
     "repeat_penalty": 1.1,
 }
+
+
+# Ordered ladder of Ollama context sizes we're willing to allocate. Powers of
+# two so KV-cache alignment stays clean; capped at 128K (Llama 3.3 / Qwen 3.6 /
+# Nemotron 3 Nano top out around there in practice).
+_CTX_BUCKETS = (8192, 16384, 32768, 65536, 131072)
+
+
+def _next_ctx_bucket(tokens_needed: int) -> int:
+    """Pick the smallest `_CTX_BUCKETS` value that fits `tokens_needed`."""
+    for b in _CTX_BUCKETS:
+        if b >= tokens_needed:
+            return b
+    return _CTX_BUCKETS[-1]
+
+
+def _estimate_message_tokens(messages: list[dict]) -> int:
+    """
+    Estimate the total tokens in a chat `messages` array without shelling out
+    to a tokenizer. `chars ÷ 4` is the widely-used ballpark for BPE-tokenised
+    English/multilingual text and is within ~10% for all Ollama chat models
+    we ship.
+
+    Includes tool_calls / tool results too — those are the exact things that
+    push the prompt over the default 8K window in real-world MCP use.
+    """
+    total_chars = 0
+    for m in messages:
+        c = m.get("content")
+        if isinstance(c, str):
+            total_chars += len(c)
+        elif isinstance(c, list):
+            # multimodal / tool-response array shape
+            for part in c:
+                if isinstance(part, dict):
+                    total_chars += len(part.get("text", "") or "")
+        tcalls = m.get("tool_calls")
+        if isinstance(tcalls, list):
+            for tc in tcalls:
+                total_chars += len(json.dumps(tc, default=str))
+        name = m.get("name")
+        if isinstance(name, str):
+            total_chars += len(name)
+    # Per-message overhead: role tag, delimiters, ~4 tokens each in most
+    # chat templates. Undercounting bites, overcounting is cheap.
+    per_message_overhead = 6 * len(messages)
+    return (total_chars // 4) + per_message_overhead
 
 
 # ── Lifespan: pre-load SNAC model ─────────────────────────────────────────────
@@ -1083,6 +1131,30 @@ async def _stream_one_round(
             "raised num_predict %d → %d for %s (tool_synth=%s reasoning=%s)",
             user_predict, effective_floor, model,
             is_tool_synthesis, reasoning_floor > 0,
+        )
+
+    # Generic prompt-size auto-scale (applies to EVERY request, every model).
+    #
+    # The old 8K default explodes with even modest MCP-tool loads:
+    #   memory facts (30 lines) ≈ 600 tokens
+    #   MCP policy + N tools    ≈ 2000-4000 tokens
+    #   character prompt        ≈ 400 tokens
+    #   history (16 turns)      ≈ 2000-4000 tokens
+    #   the model's reply room  ≈ 2000 tokens
+    # Total commonly clears 8K → Ollama returns HTTP 400 "exceed_context_size_error".
+    #
+    # We estimate prompt tokens (chars ÷ 4 is well-known 5% ballpark) and pick
+    # the smallest power-of-2 ctx window that comfortably holds prompt + reply.
+    est_prompt_tokens = _estimate_message_tokens(messages)
+    room_for_reply    = max(2048, int(round_options.get("num_predict", 2048) or 2048))
+    needed_ctx        = est_prompt_tokens + room_for_reply + 512   # small safety margin
+    cur_ctx           = int(round_options.get("num_ctx", 8192) or 8192)
+    scaled_ctx        = _next_ctx_bucket(needed_ctx)
+    if scaled_ctx > cur_ctx:
+        round_options["num_ctx"] = scaled_ctx
+        log.info(
+            "raised num_ctx %d → %d (prompt≈%d tokens + reply≈%d)",
+            cur_ctx, scaled_ctx, est_prompt_tokens, room_for_reply,
         )
 
     # Reasoning-model tool-synthesis context bump. When a reasoning model

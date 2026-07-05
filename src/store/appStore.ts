@@ -179,8 +179,8 @@ interface AppState {
   setIsSpeaking: (v: boolean) => void
   audioLevel: number
   setAudioLevel: (v: number) => void
-  currentView: 'chat' | 'reels' | 'settings' | 'memory' | 'research'
-  setCurrentView: (v: 'chat' | 'reels' | 'settings' | 'memory' | 'research') => void
+  currentView: 'chat' | 'reels' | 'documents' | 'settings' | 'memory' | 'research'
+  setCurrentView: (v: 'chat' | 'reels' | 'documents' | 'settings' | 'memory' | 'research') => void
   voicePanelOpen: boolean
   setVoicePanelOpen: (v: boolean) => void
 
