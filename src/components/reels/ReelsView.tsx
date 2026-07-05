@@ -74,7 +74,16 @@ interface ComfyStatus {
 
 type Tone   = 'informative' | 'energetic' | 'calm' | 'dramatic' | 'luxury'
 type Aspect = '9:16' | '1:1' | '16:9'
-type Tab    = 'new' | 'history'
+type Tab    = 'new' | 'library' | 'history'
+
+interface Asset {
+  name:  string
+  kind:  'music' | 'scene_image' | 'scene_video' | 'unknown'
+  path:  string
+  url:   string
+  bytes: number
+  mtime: number
+}
 
 const TONES: { id: Tone; label: string; hint: string }[] = [
   { id: 'informative', label: 'Informative', hint: 'Clear, factual, listicle-ready' },
@@ -176,6 +185,10 @@ function ReelsViewInner() {
   const [capsOn, setCapsOn]       = useState(true)
   const [capMode, setCapMode]     = useState<'script' | 'transcript'>('script')
   const [translate, setTranslate] = useState(false)
+  // Library: full asset list + a small "pick from library" modal state.
+  const [assets, setAssets]        = useState<Asset[]>([])
+  const [pickerKind, setPickerKind] = useState<null | 'music' | 'scene_image' | 'scene_video'>(null)
+
   const [comfyStarting, setStart]  = useState(false)
   const [comfyStartErr, setSErr]   = useState<string | null>(null)
   const [needComfyPath, setNeedP]  = useState(false)
@@ -199,6 +212,7 @@ function ReelsViewInner() {
       .then(r => r.json()).then(d => setVoices(d.voices ?? []))
       .catch(() => {})
     refreshLibrary()
+    refreshAssets()
     autoStartComfy()  // status + checkpoints refresh happen inside
   }, [])
 
@@ -377,6 +391,46 @@ function ReelsViewInner() {
     } catch { /* empty is fine */ }
   }, [])
 
+  const refreshAssets = useCallback(async () => {
+    try {
+      const r = await fetch('/api/reels/assets')
+      const d = await r.json()
+      setAssets(d.assets ?? [])
+    } catch { /* empty is fine */ }
+  }, [])
+
+  async function deleteAsset(name: string) {
+    if (!confirm(`Delete “${name}”? This can't be undone.`)) return
+    try {
+      const r = await fetch(`/api/reels/assets/${encodeURIComponent(name)}`, { method: 'DELETE' })
+      if (!r.ok) { alert(`Delete failed: HTTP ${r.status}`); return }
+      // Clear it from wherever it was in use so we don't render broken paths.
+      setAssets(prev => prev.filter(a => a.name !== name))
+      if (masterVid?.name  === name) setMasterV(null)
+      if (music?.name      === name) setMusic(null)
+      if (plan) {
+        // Drop overrides in any scene that was pointing at this asset.
+        setPlan({
+          ...plan,
+          scenes: plan.scenes.map(s => {
+            const patch: Partial<Scene> = {}
+            if (s.overrideImagePath && s.overrideImagePath.endsWith(name)) {
+              patch.overrideImagePath = undefined
+              patch.overrideImageUrl  = undefined
+            }
+            if (s.overrideVideoPath && s.overrideVideoPath.endsWith(name)) {
+              patch.overrideVideoPath = undefined
+              patch.overrideVideoUrl  = undefined
+            }
+            return Object.keys(patch).length ? { ...s, ...patch } : s
+          }),
+        })
+      }
+    } catch (exc: any) {
+      alert(`Delete failed: ${exc?.message ?? exc}`)
+    }
+  }
+
   async function uploadAsset(kind: 'music' | 'scene_image' | 'scene_video', file: File): Promise<{ path: string; url: string; name: string } | null> {
     setUpload(kind)
     try {
@@ -388,7 +442,9 @@ function ReelsViewInner() {
         alert(`Upload failed: ${await r.text()}`)
         return null
       }
-      return await r.json()
+      const result = await r.json()
+      refreshAssets()   // keep library view in sync
+      return result
     } catch (exc: any) {
       alert(`Upload failed: ${exc?.message ?? exc}`)
       return null
@@ -692,7 +748,7 @@ function ReelsViewInner() {
 
       {/* ── Tabs ──────────────────────────────────────────────────── */}
       <div className="flex gap-1 mb-4 flex-shrink-0">
-        {(['new', 'history'] as const).map(t => (
+        {(['new', 'library', 'history'] as const).map(t => (
           <button
             key={t}
             onClick={() => setTab(t)}
@@ -702,7 +758,7 @@ function ReelsViewInner() {
                 : 'border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--border-bright)] hover:text-[var(--text-secondary)]'
             }`}
           >
-            {t === 'new' ? 'new reel' : 'history'}
+            {t === 'new' ? 'new reel' : t === 'library' ? 'library' : 'history'}
           </button>
         ))}
       </div>
@@ -725,6 +781,8 @@ function ReelsViewInner() {
                   video={masterVid}
                   onAttach={attachMasterVideo}
                   onClear={() => setMasterV(null)}
+                  onBrowse={() => setPickerKind('scene_video')}
+                  hasLibraryItems={assets.some(a => a.kind === 'scene_video')}
                   uploading={uploading === 'scene_video'}
                 />
 
@@ -856,6 +914,8 @@ function ReelsViewInner() {
                       onChangeVolume={setMusicVol}
                       onAttach={attachMusic}
                       onClear={() => setMusic(null)}
+                      onBrowse={() => setPickerKind('music')}
+                      hasLibraryItems={assets.some(a => a.kind === 'music')}
                       uploading={uploading === 'music'}
                     />
 
@@ -943,6 +1003,28 @@ function ReelsViewInner() {
                 <PipelinePanel comfy={comfy} />
               </div>
             </motion.div>
+          ) : tab === 'library' ? (
+            <motion.div
+              key="library"
+              initial={{ opacity: 0, y: 6 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -6 }}
+              transition={{ duration: 0.25 }}
+            >
+              <AssetLibrary
+                assets={assets}
+                onDelete={deleteAsset}
+                onUseAsMaster={a => {
+                  setMasterV({ name: a.name, path: a.path, url: a.url, bytes: a.bytes, converted: false })
+                  setTab('new')
+                }}
+                onUseAsMusic={a => {
+                  setMusic({ name: a.name, path: a.path, url: a.url, bytes: a.bytes })
+                  setTab('new')
+                }}
+                onRefresh={refreshAssets}
+              />
+            </motion.div>
           ) : (
             <motion.div
               key="history"
@@ -964,6 +1046,24 @@ function ReelsViewInner() {
           )}
         </AnimatePresence>
       </div>
+
+      {/* Picker modal — used by MasterVideoPanel & MusicPanel to reuse assets */}
+      {pickerKind && (
+        <AssetPickerModal
+          kind={pickerKind}
+          assets={assets.filter(a => a.kind === pickerKind)}
+          onClose={() => setPickerKind(null)}
+          onDelete={deleteAsset}
+          onPick={a => {
+            if (a.kind === 'scene_video') {
+              setMasterV({ name: a.name, path: a.path, url: a.url, bytes: a.bytes, converted: false })
+            } else if (a.kind === 'music') {
+              setMusic({ name: a.name, path: a.path, url: a.url, bytes: a.bytes })
+            }
+            setPickerKind(null)
+          }}
+        />
+      )}
     </div>
   )
 }
@@ -1880,11 +1980,13 @@ function OptionRow({
 }
 
 function MasterVideoPanel({
-  video, onAttach, onClear, uploading,
+  video, onAttach, onClear, onBrowse, hasLibraryItems, uploading,
 }: {
   video: MasterVideo | null
   onAttach: (file: File) => void
   onClear:  () => void
+  onBrowse: () => void
+  hasLibraryItems: boolean
   uploading: boolean
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
@@ -1954,32 +2056,45 @@ function MasterVideoPanel({
           </p>
         </>
       ) : (
-        <button
-          onClick={() => inputRef.current?.click()}
-          disabled={uploading}
-          className="w-full flex flex-col items-center justify-center gap-1.5 px-4 py-6 rounded-xl border border-dashed border-[var(--border)] hover:border-[var(--accent)] hover:bg-[var(--accent-dim)]/40 text-[var(--text-muted)] hover:text-[var(--accent)] transition-all disabled:opacity-40"
-        >
-          {uploading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Upload className="w-5 h-5" />}
-          <span className="text-[12px] font-mono uppercase tracking-widest">
-            {uploading ? 'uploading & converting…' : 'upload video'}
-          </span>
-          <span className="text-[10px] font-mono lowercase text-[var(--text-muted)]/70">
-            mp4 · mov · webm · mkv · ≤ 300 MB · auto-converted to mp4
-          </span>
-        </button>
+        <div className="space-y-2">
+          <button
+            onClick={() => inputRef.current?.click()}
+            disabled={uploading}
+            className="w-full flex flex-col items-center justify-center gap-1.5 px-4 py-6 rounded-xl border border-dashed border-[var(--border)] hover:border-[var(--accent)] hover:bg-[var(--accent-dim)]/40 text-[var(--text-muted)] hover:text-[var(--accent)] transition-all disabled:opacity-40"
+          >
+            {uploading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Upload className="w-5 h-5" />}
+            <span className="text-[12px] font-mono uppercase tracking-widest">
+              {uploading ? 'uploading & converting…' : 'upload video'}
+            </span>
+            <span className="text-[10px] font-mono lowercase text-[var(--text-muted)]/70">
+              mp4 · mov · webm · mkv · ≤ 300 MB · auto-converted to mp4
+            </span>
+          </button>
+          {hasLibraryItems && (
+            <button
+              onClick={onBrowse}
+              className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-[11px] font-mono uppercase tracking-widest text-[var(--accent)] hover:bg-[var(--accent-dim)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors"
+            >
+              <Film className="w-3.5 h-3.5" />
+              or pick from library
+            </button>
+          )}
+        </div>
       )}
     </Panel>
   )
 }
 
 function MusicPanel({
-  music, volume, onChangeVolume, onAttach, onClear, uploading,
+  music, volume, onChangeVolume, onAttach, onClear, onBrowse, hasLibraryItems, uploading,
 }: {
   music: MusicAsset | null
   volume: number
   onChangeVolume: (v: number) => void
   onAttach: (file: File) => void
   onClear:  () => void
+  onBrowse: () => void
+  hasLibraryItems: boolean
   uploading: boolean
 }) {
   const inputRef = useRef<HTMLInputElement>(null)
@@ -2035,19 +2150,30 @@ function MusicPanel({
           </p>
         </div>
       ) : (
-        <button
-          onClick={() => inputRef.current?.click()}
-          disabled={uploading}
-          className="w-full flex flex-col items-center justify-center gap-1 px-4 py-4 rounded-xl border border-dashed border-[var(--border)] hover:border-[var(--accent)] hover:bg-[var(--accent-dim)]/40 text-[var(--text-muted)] hover:text-[var(--accent)] transition-all disabled:opacity-40"
-        >
-          {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
-          <span className="text-[11px] font-mono uppercase tracking-widest">
-            {uploading ? 'uploading…' : 'add background track'}
-          </span>
-          <span className="text-[10px] font-mono lowercase text-[var(--text-muted)]/70">
-            mp3 · wav · m4a · ogg · flac · ≤ 40 MB
-          </span>
-        </button>
+        <div className="space-y-1.5">
+          <button
+            onClick={() => inputRef.current?.click()}
+            disabled={uploading}
+            className="w-full flex flex-col items-center justify-center gap-1 px-4 py-4 rounded-xl border border-dashed border-[var(--border)] hover:border-[var(--accent)] hover:bg-[var(--accent-dim)]/40 text-[var(--text-muted)] hover:text-[var(--accent)] transition-all disabled:opacity-40"
+          >
+            {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+            <span className="text-[11px] font-mono uppercase tracking-widest">
+              {uploading ? 'uploading…' : 'add background track'}
+            </span>
+            <span className="text-[10px] font-mono lowercase text-[var(--text-muted)]/70">
+              mp3 · wav · m4a · ogg · flac · ≤ 40 MB
+            </span>
+          </button>
+          {hasLibraryItems && (
+            <button
+              onClick={onBrowse}
+              className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[10.5px] font-mono uppercase tracking-widest text-[var(--accent)] hover:bg-[var(--accent-dim)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors"
+            >
+              <Music className="w-3 h-3" />
+              or pick from library
+            </button>
+          )}
+        </div>
       )}
     </div>
   )
@@ -2129,7 +2255,224 @@ function ReelCard({ reel }: { reel: Reel }) {
   )
 }
 
+// ── Asset library components ──────────────────────────────────────────────────
+function AssetLibrary({
+  assets, onDelete, onUseAsMaster, onUseAsMusic, onRefresh,
+}: {
+  assets: Asset[]
+  onDelete: (name: string) => void
+  onUseAsMaster: (a: Asset) => void
+  onUseAsMusic:  (a: Asset) => void
+  onRefresh: () => void
+}) {
+  const [filter, setFilter] = useState<'all' | 'scene_video' | 'scene_image' | 'music'>('all')
+  const shown = filter === 'all' ? assets : assets.filter(a => a.kind === filter)
+
+  const totalBytes = assets.reduce((n, a) => n + a.bytes, 0)
+
+  return (
+    <div className="space-y-4">
+      {/* Filter chips + stats */}
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-1.5">
+          {([
+            { id: 'all',          label: 'all',    icon: Sparkles },
+            { id: 'scene_video',  label: 'videos', icon: Film },
+            { id: 'scene_image',  label: 'images', icon: ImageIcon },
+            { id: 'music',        label: 'music',  icon: Music },
+          ] as const).map(f => {
+            const count = f.id === 'all' ? assets.length : assets.filter(a => a.kind === f.id).length
+            const active = filter === f.id
+            return (
+              <button
+                key={f.id}
+                onClick={() => setFilter(f.id)}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-[10.5px] font-mono uppercase tracking-widest transition-all ${
+                  active
+                    ? 'border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--accent)]'
+                    : 'border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--border-bright)] hover:text-[var(--text-secondary)]'
+                }`}
+              >
+                <f.icon className="w-3 h-3" />
+                {f.label}
+                <span className="opacity-60">{count}</span>
+              </button>
+            )
+          })}
+        </div>
+        <div className="flex items-center gap-2 text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)]">
+          <span>{formatBytes(totalBytes)} · {assets.length} files</span>
+          <button
+            onClick={onRefresh}
+            title="Refresh"
+            className="p-1 rounded-md text-[var(--text-muted)] hover:text-[var(--accent)]"
+          >
+            <Wand2 className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      </div>
+
+      {shown.length === 0 ? (
+        <p className="pt-8 text-center font-display-italic text-[var(--text-muted)]">
+          {assets.length === 0
+            ? 'Nothing uploaded yet — drop a video, music track, or scene image from the New tab.'
+            : `No ${filter.replace('scene_', '')} in library.`}
+        </p>
+      ) : (
+        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-3">
+          {shown.map(a => (
+            <AssetCard
+              key={a.name}
+              asset={a}
+              onDelete={() => onDelete(a.name)}
+              onUse={() => a.kind === 'scene_video' ? onUseAsMaster(a) : a.kind === 'music' ? onUseAsMusic(a) : null}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function AssetCard({
+  asset, onDelete, onUse,
+}: {
+  asset: Asset
+  onDelete: () => void
+  onUse: () => void
+}) {
+  const [previewErr, setPreviewErr] = useState(false)
+  const iconFor = asset.kind === 'scene_video' ? Film
+                : asset.kind === 'scene_image' ? ImageIcon
+                : asset.kind === 'music'       ? Music
+                : Sparkles
+
+  const preview = () => {
+    if (asset.kind === 'scene_video') {
+      return previewErr ? (
+        <div className="w-full aspect-video flex items-center justify-center bg-black text-emerald-300/70">
+          <Film className="w-8 h-8" />
+        </div>
+      ) : (
+        <video src={asset.url}
+               muted playsInline preload="metadata"
+               onError={() => setPreviewErr(true)}
+               className="w-full aspect-video object-cover bg-black" />
+      )
+    }
+    if (asset.kind === 'scene_image') {
+      return <img src={asset.url} alt="" className="w-full aspect-video object-cover bg-black" />
+    }
+    if (asset.kind === 'music') {
+      return (
+        <div className="w-full aspect-video flex flex-col items-center justify-center gap-2 bg-black">
+          <Music className="w-8 h-8 text-[var(--accent)]" />
+          <audio src={asset.url} controls preload="none" className="w-[85%] h-7" style={{ colorScheme: 'dark' }} />
+        </div>
+      )
+    }
+    return <div className="w-full aspect-video bg-black" />
+  }
+
+  const Icon = iconFor
+  const canUse = asset.kind === 'scene_video' || asset.kind === 'music'
+
+  return (
+    <div className="rounded-2xl overflow-hidden border border-[var(--border)] bg-[var(--bg-primary)]/40 hover:border-[var(--accent)] transition-colors group">
+      {preview()}
+      <div className="p-3 space-y-2">
+        <div className="flex items-center gap-1.5">
+          <Icon className="w-3 h-3 text-[var(--accent)] flex-shrink-0" />
+          <span className="text-[11px] text-[var(--text-primary)] font-mono truncate flex-1" title={asset.name}>
+            {asset.name}
+          </span>
+        </div>
+        <div className="flex items-center justify-between text-[9.5px] font-mono uppercase tracking-widest text-[var(--text-muted)]">
+          <span>{formatBytes(asset.bytes)}</span>
+          <span>{new Date(asset.mtime * 1000).toLocaleDateString()}</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          {canUse && (
+            <button
+              onClick={onUse}
+              className="flex-1 px-2 py-1 rounded-md text-[10px] font-mono uppercase tracking-widest text-[var(--accent)] border border-[var(--accent)]/40 hover:bg-[var(--accent-dim)] transition-colors"
+              title={asset.kind === 'scene_video' ? 'Use as master video' : 'Use as background music'}
+            >
+              use
+            </button>
+          )}
+          <button
+            onClick={onDelete}
+            className="flex-1 px-2 py-1 rounded-md text-[10px] font-mono uppercase tracking-widest text-red-300/80 border border-red-500/30 hover:bg-red-500/10 hover:text-red-200 transition-colors"
+            title="Delete from disk"
+          >
+            delete
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function AssetPickerModal({
+  kind, assets, onClose, onPick, onDelete,
+}: {
+  kind: 'music' | 'scene_image' | 'scene_video'
+  assets: Asset[]
+  onClose: () => void
+  onPick: (a: Asset) => void
+  onDelete: (name: string) => void
+}) {
+  const label = kind === 'scene_video' ? 'video' : kind === 'scene_image' ? 'image' : 'music'
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
+         onClick={onClose}>
+      <div className="w-full max-w-3xl max-h-[85vh] rounded-2xl border border-[var(--border)] bg-[var(--bg-primary)] shadow-2xl flex flex-col overflow-hidden"
+           onClick={e => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-3 border-b border-[var(--border)]">
+          <div>
+            <h3 className="font-display text-lg text-[var(--text-primary)] leading-none">
+              Pick a {label}
+            </h3>
+            <p className="text-[10px] font-mono uppercase tracking-widest text-[var(--text-muted)] mt-1.5">
+              from your reels library · {assets.length} item{assets.length === 1 ? '' : 's'}
+            </p>
+          </div>
+          <button onClick={onClose} className="p-1.5 rounded-md text-[var(--text-muted)] hover:text-[var(--text-primary)]">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4">
+          {assets.length === 0 ? (
+            <p className="pt-6 text-center font-display-italic text-[var(--text-muted)]">
+              Nothing here yet. Upload a {label} from the panel to build up your library.
+            </p>
+          ) : (
+            <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+              {assets.map(a => (
+                <AssetCard
+                  key={a.name}
+                  asset={a}
+                  onDelete={() => onDelete(a.name)}
+                  onUse={() => onPick(a)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────────
+function formatBytes(n: number): string {
+  if (n < 1024)          return `${n} B`
+  if (n < 1024 * 1024)   return `${(n / 1024).toFixed(1)} KB`
+  if (n < 1024 ** 3)     return `${(n / 1_048_576).toFixed(1)} MB`
+  return `${(n / 1_073_741_824).toFixed(2)} GB`
+}
+
 function aspectBox(a: Aspect): { w: number; h: number } {
   switch (a) {
     case '9:16': return { w: 180, h: 320 }

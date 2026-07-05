@@ -1917,6 +1917,63 @@ async def reels_assets_upload(
     }
 
 
+def _asset_kind_from_name(name: str) -> str:
+    if name.startswith("music_"):        return "music"
+    if name.startswith("scene_image_"):  return "scene_image"
+    if name.startswith("scene_video_"):  return "scene_video"
+    return "unknown"
+
+
+@app.get("/api/reels/assets")
+async def reels_assets_list(kind: str | None = None):
+    """List every asset saved under data_dir()/reels/assets, newest first.
+
+    Query params:
+      kind : "music" | "scene_image" | "scene_video" — optional filter.
+    """
+    d = _reels_assets_dir()
+    out: list[dict] = []
+    if d.exists():
+        for p in d.iterdir():
+            if not p.is_file() or p.name.startswith("."):
+                continue
+            k = _asset_kind_from_name(p.name)
+            if kind and k != kind:
+                continue
+            stat = p.stat()
+            out.append({
+                "name":  p.name,
+                "kind":  k,
+                "path":  str(p),
+                "url":   f"/api/reels/assets/{p.name}",
+                "bytes": stat.st_size,
+                "mtime": int(stat.st_mtime),
+            })
+    out.sort(key=lambda a: a["mtime"], reverse=True)
+    return {"assets": out}
+
+
+@app.delete("/api/reels/assets/{name}")
+async def reels_assets_delete(name: str):
+    """Delete a previously-uploaded asset from disk.
+
+    Only removes the asset file itself — any conversation, plan, or render
+    that referenced it by absolute path will get a "file not found" error
+    at next render, which is the intended UX for cache-clearing.
+    """
+    if "/" in name or "\\" in name or ".." in name:
+        raise HTTPException(400, "bad name")
+    p = _reels_assets_dir() / name
+    if not p.exists() or not p.is_file():
+        raise HTTPException(404, "asset not found")
+    try:
+        p.unlink()
+    except OSError as exc:
+        raise HTTPException(500, f"delete failed: {exc}")
+    log.info("reels asset deleted: %s", name)
+    return {"ok": True, "name": name}
+
+
 @app.get("/api/reels/assets/{name}")
 async def reels_assets_get(name: str):
     """Serve a previously-uploaded asset back for preview in the UI."""
