@@ -20,7 +20,7 @@ Persephone wraps the speed of local Ollama models in a thoughtful, beautifully d
 - 🔮 **Smart auto-router.** A two-stage hybrid classifier picks the right model for each turn — `qwen2.5:0.5b` for *"hi"*, `qwen2.5-coder:7b` for *"refactor this function"*, `qwen3:ohm` for deep reasoning, all in milliseconds.
 - 🛠 **MCP tools out of the box.** DuckDuckGo, Brave Search, Fetch, Filesystem (**incl. a Persephone-scoped filesystem for the repo itself**), Git, SQLite, Memory, Puppeteer, Sequential Thinking — toggle on with one click; servers spawn automatically.
 - 🐦 **Ornith Coder mode.** One-click sidebar preset that switches the active model to `ornith:latest` (Qwen3-based 9B agentic coder, 262K context) and injects a plan → approve → diff → README → commit workflow. Wired to the `persephone-fs` MCP for real repo access.
-- 🎬 **Reels studio.** New sidebar tab: type a topic, pick tone + duration + aspect, and Persephone plans scenes (script + image prompt + timing per scene) via the active LLM, will drive ComfyUI for stills and Kokoro for voiceover, then ffmpeg composites a 9:16 TikTok/Reels/Shorts video.
+- 🎬 **Reels studio.** New sidebar tab. Type a topic, pick tone + duration + aspect, and Persephone plans scenes (script + image prompt + timing per scene) via the active LLM, drives ComfyUI for stills OR your own uploaded footage, layers Kokoro voice-over OR keeps the source speaker talking, burns in captions (from the script or from a live Whisper transcript with translate-to-English), applies per-scene look effects (brightness / contrast / saturation / speed / grayscale), then ffmpeg composites a 9:16 TikTok/Reels/Shorts MP4 with sidechain-ducked background music.
 - 🔬 **Deep research engine.** Decomposes a question into sub-questions, searches the web, fetches sources, embeds chunks, and synthesises a fully-cited markdown report with a generative SVG cover.
 - 📚 **Persistent knowledge base.** Every research run feeds chunks into a `sqlite-vec` semantic index — search across everything you've ever researched.
 - 🎙 **In-process TTS.** Orpheus / SNAC neural codec for natural-sounding voice playback, with 8 voices.
@@ -351,44 +351,71 @@ Every model reply is rendered with custom React-Markdown components:
 
 Plus **generative SVG cover art** at the top of research reports — deterministic from the query hash, so the same query always produces the same cover; theme-aware colours.
 
-### 9 · Reels — short-form vertical video (local slideshow pipeline)
+### 9 · Reels — short-form vertical video studio
 
-A new **Reels** tab in the sidebar (between Chat and Research) turns your topic into a TikTok / Instagram Reels / YouTube Shorts-ready video without leaving Persephone.
+A **Reels** tab in the sidebar (between Chat and Research) turns any topic — or any piece of source footage you drop in — into a TikTok / Instagram Reels / YouTube Shorts-ready MP4 without leaving Persephone.
 
-Current status:
-- ✅ **Scene planner** — the active chat model decomposes your topic into N ~4-second scenes (3-12 depending on target duration), each with a spoken script line, a Stable-Diffusion image prompt, and a duration. Streams scene-by-scene via `/api/reels/plan`.
-- ✅ **Voice** — Kokoro TTS (see §7). Any voice / accent works — English (US, UK) or Spanish (ES).
-- ✅ **Aspect chips** — 9:16 (TikTok/Reels/Shorts), 1:1 (feed post), 16:9 (YouTube).
-- ✅ **Tone chips** — informative, energetic, calm, dramatic, luxury. Shifts the planner's rhythm and vocabulary.
-- ✅ **ComfyUI probe** — the header shows a live "comfyui · ready / offline" chip. If ComfyUI is running on `127.0.0.1:8188`, Persephone reads its installed checkpoints via `GET /api/reels/comfy/checkpoints` and can generate stills via `POST /api/reels/image`.
-- ✅ **Render pipeline** — pick an SD checkpoint, click **Render video**, and Persephone: (1) generates one image per scene via ComfyUI, (2) speaks the scene line via Kokoro, (3) runs ffmpeg per-scene with a subtle Ken Burns zoom pan (alternating in/out) and burned-in captions in DejaVu Sans Bold (auto-downloaded on first render), (4) stitches the scenes with the concat demuxer, (5) plays the finished MP4 inline and adds it to the History tab. Optional background music with sidechain-ducked audio can be passed via `musicPath`.
-- ✅ **History tab** — every rendered reel is persisted with its metadata sidecar (topic, aspect, voice, duration, size) and shown as a scrollable grid with inline HTML5 `<video>` previews.
+#### Input options
 
-**Setup `ffmpeg`** (required for the render pipeline — install via Homebrew, `apt`, or `winget`):
+| Source | How it works |
+|---|---|
+| **AI script + ComfyUI stills** *(default)* | The active chat model plans 3–12 scenes (script + Stable-Diffusion prompt + duration each); ComfyUI generates one still per scene; Kokoro reads the script. |
+| **Your own master video** | Drop a clip in the **Your footage** panel. Anything non-H.264 is transcoded to browser-playable MP4 server-side (uses macOS `h264_videotoolbox` when available — 3–5× faster than software). The clip becomes the background for every scene, seeked to a different offset per scene so scene N plays the correct slice instead of restarting from t=0. |
+| **Per-scene image override** | Click ⬆ on any scene card, pick a PNG/JPG/WEBP. That scene uses your picture, and **the master video's audio keeps playing under it** — great for "cut away to a chart while the speaker keeps talking." |
+| **Per-scene video clip override** | Same button, pick an MP4/MOV/WEBM/MKV. That scene uses your clip *and* its own audio. Ken Burns is skipped (the clip already has motion). |
+
+#### Per-scene controls (each **SceneCard**)
+
+- **Editable caption text.** The textarea at the top of each scene *is* the caption — edit it and it's both what Kokoro speaks and what gets burned in. Blur or ⌘Enter persists.
+- **Start-at offset.** Numeric input showing which second of the master (or per-scene clip) this scene plays from. Preview updates instantly.
+- **Effects strip.** Expandable section with sliders for **brightness** (`-0.5…+0.5`), **contrast** (`0.5×…2.0×`), **saturation** (`0×…2.5×`), **speed** (`0.5×…2.0×`, video track only so Kokoro voice never warps), and a **grayscale** toggle. Values are applied via ffmpeg's `eq`, `hue`, and `setpts` filters spliced between the scale/zoompan chain and the caption overlay so effects colour the frame without tinting text.
+
+#### Global rendering options (below the scene list)
+
+- **Voiceover toggle.** Off = skip Kokoro. Video scenes play their own audio; image scenes with master attached play the master's audio at their offset; image scenes with no master go silent.
+- **Captions toggle.** Off = no burned-in text at all.
+- **Caption source:** *AI script* (default) vs *Transcribe source* — the latter runs [Whisper](https://github.com/openai/whisper) (`base` model, ~150 MB on first use) on each video scene's source audio and emits time-synced subtitles as a chain of `overlay=…:enable='between(t,seg.start,seg.end)'` filters.
+- **Translate to English** *(when transcribing)*. Any source language → English subtitles via Whisper's built-in `task="translate"`.
+- **Background music.** Drop an audio file (mp3/wav/m4a/ogg/flac) → volume slider → the render mixes it under the voiceover with `sidechaincompress` so music auto-ducks by ~8× when speech is present.
+
+#### Right-column live preview
+
+An aspect-locked phone frame that plays the current scene's *actual* background — master video seeked to the scene's offset, or the scene's own video/image — with a translucent caption pill in the low third matching the burned-in render position. Dot navigator at the bottom lets you click through every scene to spot-check without rendering.
+
+#### Backend pipeline
+
+1. **Plan** → SSE from `POST /api/reels/plan`. Auto-picks a fast non-thinking model (`qwen2.5:32b` → `14b` → `7b` → `hermes3:8b`) rather than the active chat model, so agentic/thinking models don't dump into `<think>` and produce empty plans.
+2. **Assets** → per-scene ffprobe + optional transcode via `POST /api/reels/assets/upload` (kinds: `music`, `scene_image`, `scene_video`).
+3. **Render** → SSE from `POST /api/reels/render` streams `{stage, scene, total}` events. Each scene ffmpeg call:
+   - Video branch: `-stream_loop -1 -ss <offset> -t <duration> -i clip` + scale/crop/fps/setsar + effects + caption overlay chain.
+   - Image branch: `-loop 1 -t <duration> -i still.png` + scale/crop/zoompan (Ken Burns) + effects + caption overlay chain.
+   - Audio branch: Kokoro wav / source video audio / master-audio slice / silent lavfi track — picked by voiceover flag and scene source.
+   - Captions rendered as PIL PNGs (Arial Bold or auto-downloaded fallback), each looped to full scene duration so they can't win `-shortest`.
+4. **Concat** → ffmpeg concat demuxer, audio re-encoded to AAC to normalise frame boundaries.
+5. **Music** (optional) → sidechain-compressor + amix pass, video stream copied.
+
+The renderer sits on top of **`server/ffmpeg_helper.py`**, a thin ergonomic wrapper around [ffmpeg-python](https://github.com/kkroening/ffmpeg-python) that lets us build filter graphs fluently while still shelling out to native Homebrew ffmpeg (no perf hit vs. hand-rolled `filter_complex` strings).
+
+#### Setup
+
+**`ffmpeg`** (required):
 
 ```bash
-brew install ffmpeg                 # macOS
+brew install ffmpeg                 # macOS  (h264_videotoolbox comes bundled)
 sudo apt install ffmpeg             # Debian/Ubuntu
 winget install "Gyan.FFmpeg"        # Windows
 ```
 
-**Setup ComfyUI** (one-time, so the Images stage lights up):
+The wizard's ffmpeg check (extended `OllamaStep`) shows an emerald *"ffmpeg version ready"* pill when it finds ffmpeg on `PATH`, otherwise an amber panel with the exact install command for your OS and a copy button.
 
-```bash
-# Anywhere outside the Persephone repo:
-git clone https://github.com/comfyanonymous/ComfyUI.git
-cd ComfyUI
-python -m venv .venv && source .venv/bin/activate
-pip install -r requirements.txt
+**ComfyUI** (only if you want AI-generated stills — user footage doesn't need it):
 
-# Drop at least one SD checkpoint into models/checkpoints/, e.g.
-#   models/checkpoints/sd_xl_base_1.0.safetensors
-#   (or a smaller SD 1.5 like models/checkpoints/v1-5-pruned-emaonly.ckpt)
+- **Click "Install ComfyUI for me"** in the Reels header when the amber panel appears. Persephone `git clone`s the repo, creates a Python venv, installs dependencies, optionally downloads SDXL Base 1.0 (~6.5 GB, opt-in checkbox), then spawns ComfyUI *detached* so it survives Persephone restarts. Progress streams via `POST /api/reels/comfy/install` SSE with stage tracker + log tail.
+- **Or point at an existing install** with the path input in the same panel. Persephone probes `~/ComfyUI`, `~/comfyui`, `~/Documents/ComfyUI`, `~/ComfyUI_windows_portable/ComfyUI`, `/opt/ComfyUI` and `$COMFYUI_DIR` first, so a standard install is auto-detected.
+- **Auto-start on tab open.** Landing on the Reels tab triggers `POST /api/reels/comfy/start` if the port is down; the header chip flips through `starting…` → `ready` as it polls.
+- **Stop button** on the header chip terminates only what Persephone spawned — ComfyUI you started by hand is untouched.
 
-python main.py --port 8188
-```
-
-On startup Persephone probes `http://127.0.0.1:8188/system_stats`. Override the host with `COMFY_HOST=http://192.168.x.x:8188` in the environment.
+Override the host with `COMFY_HOST=http://192.168.x.x:8188` in the environment.
 
 ### 10 · Ornith Coder mode
 
@@ -442,8 +469,9 @@ Switch any time in Settings → Theme. Every accent, shadow, and gradient update
 ### Stack
 
 - **Frontend** — React 18, Vite 6, Tailwind 3, Framer Motion 11, Zustand, React Markdown, Mermaid 11, Rough.js, Sharp (icon gen)
-- **Backend** — FastAPI, Uvicorn, httpx, aiosqlite, sqlite-vec, PyTorch (for SNAC TTS), SNAC, NumPy, SciPy
+- **Backend** — FastAPI, Uvicorn, httpx, aiosqlite, sqlite-vec, PyTorch (for SNAC TTS), SNAC, NumPy, SciPy, Pillow (Reels caption PNGs), ffmpeg-python (helper layer over native ffmpeg), openai-whisper (Reels transcription + translation)
 - **Desktop** — Electron 33, electron-builder 25
+- **Reels media** — native `ffmpeg` on `PATH` (h264 + AAC + `overlay` + `zoompan` + `eq` + `setpts` + `sidechaincompress` + `hue` filters), optional `h264_videotoolbox` hardware encoder on macOS. ComfyUI (Stable Diffusion) as an *optional* external local process on `:8188` — Persephone can auto-install it (`git clone` + venv + pip + SDXL Base 1.0) on first Reels tab open.
 - **Models** — Any Ollama-compatible: Qwen 2.5 / 3 / 3.6 (incl. AgentWorld), Gemma 3 / 4, Llama 3.1 / 3.2 / 3.3, Nemotron / Nemotron 3 Nano, Mistral, DeepSeek, Phi-4, Hermes 3, MiniCPM-V / MiniCPM-O, Granite, **Ornith** (Qwen3 coder, 262K ctx), **olmOCR 2**, GLM-OCR, etc. Catalog lives in `server/model_catalog.py`.
 - **Embeddings** — `mxbai-embed-large` (1024-dim, MixedBread AI) via Ollama `/api/embed`
 - **Vector store** — `sqlite-vec` virtual table (KNN via `WHERE embedding MATCH ? AND k = ?`)
@@ -464,6 +492,10 @@ persephone/
 │   ├── mcp_*.py          ← MCP catalog + client + manager (JSON-RPC over stdio)
 │   ├── idp_engine.py     ← document processing
 │   ├── tts_engine.py     ← Orpheus + SNAC
+│   ├── reels_render.py   ← Reels: scene renderers, Ken Burns, effects, concat
+│   ├── ffmpeg_helper.py  ← thin ffmpeg-python wrapper (probe / concat / mix)
+│   ├── transcribe.py     ← lazy-loaded Whisper for source-audio subtitling
+│   ├── comfy_client.py   ← ComfyUI: discover, spawn, install, generate
 │   ├── hardware.py       ← M-series + tier detection
 │   ├── model_catalog.py  ← curated tier-aware model recommendations
 │   ├── ollama_setup.py   ← cross-platform install + lifecycle
@@ -471,6 +503,7 @@ persephone/
 ├── src/                  ← React frontend
 │   ├── components/
 │   │   ├── chat/         ← ChatWindow, MessageBubble, ChatInput, ModelSelector, ThinkingPanel, ToolCallList
+│   │   ├── reels/        ← ReelsView (studio · master video · per-scene editing · effects · preview · history)
 │   │   ├── research/     ← ResearchView (run / history / KB search / detail overlay)
 │   │   ├── memory/       ← MemoryView (facts + history)
 │   │   ├── markdown/     ← RichMarkdown, Mermaid, SketchBorder, OrnamentalDivider, CoverArt
@@ -529,11 +562,22 @@ GET    /api/tts/voices               list Orpheus voices
 
 POST   /api/reels/plan               SSE stream of scene plan (LLM decomposition)
 POST   /api/reels/image              PNG bytes for one scene via ComfyUI
-POST   /api/reels/render             SSE stream of a full reel render (image → voice → composite → concat)
+POST   /api/reels/render             SSE stream of a full reel render
+                                     (image/video → voice → effects → captions →
+                                      per-scene mp4 → concat → optional music mix)
 GET    /api/reels/library            list every rendered reel (metadata + URLs)
 GET    /api/reels/media/{name}       stream a rendered MP4 (or sidecar JSON)
+POST   /api/reels/assets/upload      multipart: kind=music|scene_image|scene_video
+                                     (auto-transcodes non-H.264 video to browser MP4)
+GET    /api/reels/assets/{name}      serve a previously-uploaded asset
+
 GET    /api/reels/comfy/status       {running, version?, model?, error?}
 GET    /api/reels/comfy/checkpoints  list of installed SD checkpoints
+POST   /api/reels/comfy/start        auto-discover install dir, spawn detached
+POST   /api/reels/comfy/stop         terminate the ComfyUI Persephone spawned
+POST   /api/reels/comfy/install      SSE: git clone + venv + pip + SDXL Base
+
+GET    /api/setup/ffmpeg             {installed, path, version, install_cmd}
 
 GET    /api/setup/hardware           CPU/GPU/RAM/tier
 GET    /api/setup/recommendations    tier-filtered model catalog
