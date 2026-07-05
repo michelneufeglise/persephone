@@ -17,3 +17,8 @@ server/uploads
 # kokoro-onnx GitHub releases. Never version-controlled (325 MB + 28 MB).
 server/kokoro/*.onnx
 server/kokoro/*.bin
+
+# Reels working directory — user uploads, generated scene stills, per-scene
+# MP4 intermediates, rendered final MP4s, and sidecar metadata. All local /
+# session data, sometimes hundreds of MB per reel.
+server/reels/
