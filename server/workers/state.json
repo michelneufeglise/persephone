@@ -1,0 +1,30 @@
+{
+  "memory_curator": {
+    "enabled": true,
+    "last_run_ts": 1784289590.3630662,
+    "last_duration_s": 0.07278987497556955,
+    "last_result": {
+      "dedup": {
+        "scanned": 35,
+        "removed": 0
+      },
+      "reextract": {
+        "conversations": 0,
+        "new_facts": 0,
+        "model": "qwen2.5:1.5b"
+      }
+    },
+    "last_error": ""
+  },
+  "model_warmer": {
+    "enabled": true,
+    "last_run_ts": 1784289585.287715,
+    "last_duration_s": 18.716337624937296,
+    "last_result": {
+      "model": "hf.co/mradermacher/L3.3-70B-Euryale-v2.3-GGUF:q4_k_m",
+      "ok": true,
+      "latency_ms": 18699
+    },
+    "last_error": ""
+  }
+}

@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import re
+import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -38,6 +39,102 @@ import research_db as _rdb
 import embeddings as _emb
 import comfy_client as _comfy
 import reels_render as _reels
+import workers as _workers
+import delegate as _delegate
+from dataclasses import dataclass
+
+
+# Delegate hooks — injected into delegate.py at startup so it can insert
+# messages into a conversation and ask the main model to add a short
+# follow-up comment on the delegate's result, without importing from main
+# (which would create a cycle).
+
+async def _delegate_insert_message(
+    conv_id: str, role: str, content: str, meta: dict,
+) -> str:
+    """
+    Persist a new message from the delegate flow. Returns the new msg id.
+    Uses upsert_message so we get atomic write + conversation.updated_at bump.
+    """
+    import uuid as _uuid
+    msg_id = f"delg-{_uuid.uuid4().hex[:16]}"
+    await _db.upsert_message(conv_id, {
+        "id":        msg_id,
+        "role":      role,
+        "content":   content,
+        "model":     meta.get("delegate_model") or "delegate",
+        "timestamp": time.time() * 1000,
+        "meta":      meta,
+    })
+    return msg_id
+
+
+async def _delegate_main_model_comment(main_model: str, prompt: str) -> str:
+    """
+    Ask the main model for a SHORT follow-up comment on the delegate's result.
+    Non-streaming, tools-off, small num_predict to keep it snappy. Falls back
+    to empty string on any error — the delegate flow is fault-tolerant.
+    """
+    if not main_model:
+        return ""
+    payload = {
+        "model": main_model,
+        "messages": [
+            {"role": "system", "content":
+             "You are being asked for a very short follow-up comment on a "
+             "subtask's result. 1-3 sentences maximum. Do not restate the "
+             "delegate's answer."},
+            {"role": "user", "content": prompt},
+        ],
+        "stream":      False,
+        "keep_alive":  "5m",
+        # Thinker models will burn budget on <think> here for no benefit —
+        # a comment is short and doesn't need reasoning. Force off.
+        "think":       False,
+        "options": {
+            "temperature":  0.5,
+            "num_predict":  300,
+            "num_ctx":      8192,
+        },
+    }
+    try:
+        async with httpx.AsyncClient(timeout=90.0) as client:
+            r = await client.post(f"{OLLAMA_BASE}/api/chat", json=payload)
+            if r.status_code != 200:
+                return ""
+            data = r.json()
+            return ((data.get("message") or {}).get("content") or "").strip()
+    except Exception:
+        return ""
+
+
+# NOTE: the auto-delegation infrastructure (system-prompt hints, dispatcher
+# mode, task classifier, tool-based `delegate_task` injection) has been
+# removed. The user explicitly chose the "two-button" model — one button
+# sends to main chat, the other to POST /api/delegate/send. There's no
+# more classifier deciding for them.
+
+
+# ── Task classifier ──────────────────────────────────────────────────────────
+# Runs before the main model on every turn. Classifies the user's latest
+# message into 'task' or 'conversation'. Uses a tiny fast model + JSON output
+# format so it's ~50-150ms overhead.
+#
+# 'conversation' = greetings, acks, meta questions about the assistant,
+#                  personal chit-chat, follow-up clarifications.
+# 'task'         = anything else that needs work — lookup, analysis, creation,
+#                  code, research, summarisation, comparison, etc.
+
+# ── Judge-based category picker for /api/delegate/send ──────────────────────
+# The user clicks "send to worker" — we run the judge model against the
+# request text to pick the strongest-fit category. Same tiny-model pattern
+# as the existing auto-router judge, just with a different category set.
+#
+# The commented-out block below (`_TASK_CLASSIFIER_*`) is retained as a
+# historical reference — see git log for the auto-delegation flow it powered.
+
+# ── Removed: task classifier that ALSO decomposed multi-part tasks. ────────
+# See `_judge_delegate_category` below for the new user-triggered picker.
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s  %(name)s  %(message)s")
 log = logging.getLogger("persephone")
@@ -152,11 +249,41 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             log.debug("judge pre-warm skipped: %s", exc)
     asyncio.create_task(_prewarm_judge())
 
+    # Background workers — Memory Curator + Model Warmer. Idle-gated so they
+    # never fight the active chat model for unified memory.
+    try:
+        import workers_impl as _wimpl
+        _wimpl.register_workers()
+        await _workers.start()
+        log.info("Background workers scheduler started")
+    except Exception as exc:
+        log.warning("Workers startup failed: %s", exc)
+
+    # Wire the delegate module — it needs a way to insert new messages into
+    # a conversation, invoke the main model for a short comment on the
+    # delegate's result, AND access the MCP tools + call them so research /
+    # general delegates can hit web-search. Inject those hooks here rather
+    # than importing main from delegate.py (would create a cycle).
+    try:
+        _delegate.set_message_inserter(_delegate_insert_message)
+        _delegate.set_comment_fn(_delegate_main_model_comment)
+        _delegate.set_mcp_bridge(
+            get_tools = _mcp_mgr.manager.list_tools_for_ollama,
+            call_tool = _mcp_mgr.manager.call,
+        )
+        log.info("Delegate infrastructure ready")
+    except Exception as exc:
+        log.warning("Delegate setup failed: %s", exc)
+
     yield
 
     # Shut down MCP processes on exit
     try:
         await _mcp_mgr.manager.stop_all()
+    except Exception:
+        pass
+    try:
+        await _workers.stop()
     except Exception:
         pass
 
@@ -526,9 +653,49 @@ def _predict_floor(model: str) -> int:
     # with the MoE reasoners, otherwise it truncates mid-plan.
     if lower.startswith("ornith"):
         return _MOE_REASONING_FLOOR
+    # DeepSeek-R1 (dense 70B distill) has famously deep chains-of-thought —
+    # on structured tasks like Ableton compose/edit it happily burns 8-12k
+    # tokens on <think> before emitting the JSON. Floor at MoE-tier so the
+    # visible JSON never gets truncated.
+    if lower.startswith("deepseek-r1"):
+        return _MOE_REASONING_FLOOR
     # Regular native-thinking models
     if _supports_native_thinking(model):
         return _EXTENDED_PREDICT_FLOOR
+    return 0
+
+
+# num_ctx floors: Ollama's default num_ctx is 8192 for most models, but that
+# ceiling routinely trips for long-context models the moment a chat grows or
+# includes tool output. Persephone's `_estimate_message_tokens` is a chars/4
+# ballpark that undercounts JSON-heavy tool results by 20-40%, so the
+# auto-scaler in _stream_one_round can miss the bump. We floor num_ctx here
+# by model family so the auto-scaler NEVER hands Ollama a value below the
+# floor, regardless of what the frontend sent.
+def _ctx_floor(model: str) -> int:
+    """Minimum num_ctx this model should get."""
+    if not model:
+        return 0
+    lower = model.lower()
+    # Frontier long-context MoE / thinker families — 32K minimum. These
+    # models were trained on 128K-262K contexts and comfortably serve 32K
+    # without VRAM pressure on M-series unified memory.
+    if (
+        lower.startswith("qwen3.6")
+        or lower.startswith("qwen3")
+        or lower.startswith("nemotron-3-nano")
+        or lower.startswith("nemotron-3")
+        or lower.startswith("deepseek-r1")
+        or lower.startswith("ornith")
+        or lower.startswith("gemma4")
+        or "agentworld" in lower
+        or "agents-a1" in lower               # InternScience Agents-A1 (262K native)
+        or "internscience/agents-a1" in lower
+    ):
+        return 32768
+    # Regular native-thinking models (older gemma-thinking, etc) — 16K floor.
+    if _supports_native_thinking(model):
+        return 16384
     return 0
 
 
@@ -1147,14 +1314,22 @@ async def _stream_one_round(
     # the smallest power-of-2 ctx window that comfortably holds prompt + reply.
     est_prompt_tokens = _estimate_message_tokens(messages)
     room_for_reply    = max(2048, int(round_options.get("num_predict", 2048) or 2048))
-    needed_ctx        = est_prompt_tokens + room_for_reply + 512   # small safety margin
+    # Safety margin was 512 but chars/4 underestimates JSON/code-heavy tool
+    # output by 20-40%, so bump to 2048 — costs nothing when we don't need it.
+    needed_ctx        = est_prompt_tokens + room_for_reply + 2048
     cur_ctx           = int(round_options.get("num_ctx", 8192) or 8192)
     scaled_ctx        = _next_ctx_bucket(needed_ctx)
+    # Apply per-model floor AFTER auto-scale — long-context models never get
+    # less than their floor, regardless of what the frontend sent OR what the
+    # bucketing math produced.
+    ctx_floor         = _ctx_floor(model)
+    if ctx_floor > scaled_ctx:
+        scaled_ctx    = _next_ctx_bucket(ctx_floor)
     if scaled_ctx > cur_ctx:
         round_options["num_ctx"] = scaled_ctx
         log.info(
-            "raised num_ctx %d → %d (prompt≈%d tokens + reply≈%d)",
-            cur_ctx, scaled_ctx, est_prompt_tokens, room_for_reply,
+            "raised num_ctx %d → %d (prompt≈%d tokens + reply≈%d, model_floor=%d)",
+            cur_ctx, scaled_ctx, est_prompt_tokens, room_for_reply, ctx_floor,
         )
 
     # Reasoning-model tool-synthesis context bump. When a reasoning model
@@ -1272,6 +1447,12 @@ async def _stream_ollama_chat(
     is_ornith     = model.lower().startswith("ornith")
     force_tools   = is_ornith
     tools         = all_tools if (all_tools and (force_tools or _likely_needs_tools(messages))) else []
+
+    # Main chat is now completely delegation-free. The user explicitly
+    # controls dispatch via the "send to worker" button in the UI, which
+    # hits POST /api/delegate/send directly. This endpoint just streams a
+    # normal chat completion from the active model — same as before all
+    # the delegate infrastructure existed.
 
     # Ornith scope-lock: agentic coder mode is meant for the Persephone repo
     # only. If the generic `filesystem` MCP is enabled it exposes writable
@@ -1487,6 +1668,9 @@ async def _stream_ollama_chat(
 
 @app.post("/api/chat")
 async def chat(req: ChatRequest):
+    # Tell the workers scheduler the user is active — pauses background
+    # workers so they don't compete for the model's memory slot mid-turn.
+    _workers.touch_user_activity()
     return StreamingResponse(
         _stream_ollama_chat(
             req.model, req.messages, req.options, req.tool_model,
@@ -2223,6 +2407,1003 @@ async def reels_comfy_status():
         return {"running": False, "error": str(exc)}
 
 
+# ── /api/ableton — Ableton Live integration (Phase 1: detect + bridge + ping) ─
+# The Music tab in the sidebar shows up when `abletonAvailable` is true in the
+# app-shell status probe below. Composer endpoints land in Phase 2.
+import ableton_detect    as _abl_detect
+import ableton_bridge    as _abl_bridge
+import ableton_client    as _abl_client
+import ableton_composer  as _abl_composer
+import song_translator   as _abl_song_translator
+import song_spec         as _abl_song_spec
+import ableton_session   as _abl_session
+import ableton_library   as _abl_library
+import edit_plan         as _abl_edit
+
+
+@app.get("/api/ableton/status")
+async def ableton_status():
+    """Everything the Music tab needs to render its state in one round-trip.
+
+    - `installed`      : is any Ableton Live app on disk?
+    - `running`        : is any Ableton Live process currently up?
+    - `bridgeInstalled`: is AbletonOSC in ~/Music/Ableton/User Library/Remote Scripts?
+    - `connected`      : does the running Live actually answer an OSC ping?
+    """
+    installs = _abl_detect.find_installs()
+    best     = _abl_detect.best_install()
+    running  = _abl_detect.is_running()
+    bridge   = _abl_bridge.is_installed()
+
+    connected = False
+    if running and bridge:
+        try:
+            client = await _abl_client.get()
+            connected = await client.ping(timeout=1.0)
+        except Exception as exc:
+            log.debug("ableton ping error: %s", exc)
+
+    return {
+        "installed":       bool(installs),
+        "installs":        installs,
+        "best":            best,
+        "running":         running,
+        "bridgeInstalled": bridge,
+        "bridgeDir":       str(_abl_bridge.install_dir()),
+        "connected":       connected,
+        "hostVersion":     best.get("version") if best else "",
+        "hostEdition":     best.get("edition") if best else "",
+        "isTrial":         bool(best and best.get("is_trial")),
+    }
+
+
+async def _stream_bridge_install() -> AsyncIterator[str]:
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def emit(evt: dict):
+        await queue.put(evt)
+
+    async def run():
+        try:
+            await _abl_bridge.install(emit)
+            await emit({"stage": "notes", "message": _abl_bridge.post_install_instructions()})
+        except Exception as exc:
+            log.error("ableton bridge install failed: %s", exc, exc_info=True)
+            await emit({"stage": "error", "error": str(exc)})
+        finally:
+            await emit({"__end": True})
+
+    task = asyncio.create_task(run())
+    try:
+        while True:
+            evt = await queue.get()
+            if evt.get("__end"):
+                break
+            yield f"data: {json.dumps(evt)}\n\n"
+    finally:
+        if not task.done():
+            task.cancel()
+        yield "data: [DONE]\n\n"
+
+
+@app.post("/api/ableton/install-bridge")
+async def ableton_install_bridge():
+    return StreamingResponse(
+        _stream_bridge_install(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+class AbletonLaunchRequest(BaseModel):
+    path: str | None = None   # optional override; else uses best_install()
+
+
+@app.post("/api/ableton/launch")
+async def ableton_launch(req: AbletonLaunchRequest):
+    """Open the Ableton Live app (macOS)."""
+    target = req.path
+    if not target:
+        best = _abl_detect.best_install()
+        if best is None:
+            raise HTTPException(404, "No Ableton Live install found")
+        target = best["path"]
+    if not Path(target).exists():
+        raise HTTPException(404, f"App not found at {target}")
+    if sys.platform != "darwin":
+        raise HTTPException(501, "Auto-launch only implemented on macOS in Phase 1")
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            "open", str(target),
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        await proc.wait()
+        if proc.returncode != 0:
+            raise HTTPException(500, "open command failed")
+    except Exception as exc:
+        raise HTTPException(500, f"launch failed: {exc}")
+    return {"launched": True, "path": target}
+
+
+@app.post("/api/ableton/browser-probe")
+async def ableton_browser_probe():
+    """
+    Diagnostic: run one full auto-load attempt end-to-end and report every
+    step. Returns a structured object the UI can render as a checklist.
+
+    Requires at least one track in the current Ableton session (target=0).
+    """
+    try:
+        client = await _abl_client.get()
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+    steps: list[dict] = []
+
+    # 1) can we even talk to the bridge?
+    ok = await client.ping(timeout=1.5)
+    steps.append({"name": "OSC ping", "ok": ok})
+    if not ok:
+        return {"ok": False, "steps": steps, "error": "bridge unreachable"}
+
+    # 2) does the patched browser handler respond at all?
+    instruments = await client.get_instruments(timeout=2.0)
+    steps.append({
+        "name":  "GET /live/browser/get/instruments",
+        "ok":    bool(instruments),
+        "count": len(instruments),
+        "sample": [n for n, _ in instruments[:6]],
+    })
+    drums = await client.get_drums(timeout=2.0)
+    steps.append({
+        "name":  "GET /live/browser/get/drums",
+        "ok":    True,
+        "count": len(drums),
+        "sample": [n for n, _ in drums[:6]],
+    })
+    if not instruments:
+        return {"ok": False, "steps": steps,
+                "error": "browser patch not responding — Ableton needs a full Cmd+Q + restart after installing/updating the patch"}
+
+    # 3) try loading three sensible candidates by name onto track 0.
+    # These are the actual Live 12 Intro built-ins — see server/song_translator
+    # _ROLE_DEFAULTS for the ladder used at compose time.
+    tests = [
+        ("instruments", "Drift"),
+        ("drums",       "505 Core Kit"),
+        ("instruments", "Drum Sampler"),
+    ]
+    for cat, name in tests:
+        ok, detail = await client.load_instrument_named(0, cat, name, timeout=3.0)
+        steps.append({
+            "name": f"load_named({cat}, {name!r})",
+            "ok":   ok, "detail": detail,
+        })
+
+    # 4) first-in-category fallback.
+    ok, detail = await client.load_first_in_category(0, "instruments", timeout=3.0)
+    steps.append({"name": "load_first(instruments)", "ok": ok, "detail": detail})
+
+    return {"ok": True, "steps": steps, "instruments_count": len(instruments), "drums_count": len(drums)}
+
+
+@app.get("/api/ableton/browser-list")
+async def ableton_browser_list():
+    """
+    Diagnostic: reveals what the (patched) AbletonOSC reports for the
+    Instruments + Drums browser categories. Empty lists → the patch isn't
+    loaded (Live wasn't restarted after install/patch), or Live's browser
+    is genuinely empty for that category.
+    """
+    try:
+        client = await _abl_client.get()
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "instruments": [], "drums": []}
+    instruments = await client.get_instruments(timeout=2.0)
+    drums       = await client.get_drums(timeout=2.0)
+    return {
+        "ok":           True,
+        "patched":      bool(instruments or drums),
+        "instruments":  [{"name": n, "uri": u} for n, u in instruments],
+        "drums":        [{"name": n, "uri": u} for n, u in drums],
+    }
+
+
+class AbletonFireSceneRequest(BaseModel):
+    scene_index: int = 0
+
+
+@app.post("/api/ableton/fire-scene")
+async def ableton_fire_scene(req: AbletonFireSceneRequest):
+    """Trigger a Session-view scene — fires every clip on that row."""
+    try:
+        client = await _abl_client.get()
+    except Exception as exc:
+        raise HTTPException(500, str(exc))
+    await client.fire_scene(req.scene_index)
+    return {"fired": req.scene_index}
+
+
+@app.post("/api/ableton/stop-all")
+async def ableton_stop_all():
+    """Stop transport + all currently-playing clips + un-solo everything."""
+    try:
+        client = await _abl_client.get()
+    except Exception as exc:
+        raise HTTPException(500, str(exc))
+    await client.stop_all_clips()
+    await client.stop_all()
+    # Clear any solos left over from per-track preview.
+    await client.clear_all_solos()
+    return {"stopped": True}
+
+
+# ── Per-track control (track-first composer workflow) ─────────────────────
+class AbletonFireClipRequest(BaseModel):
+    track_index: int
+    slot_index:  int = 0
+    solo:        bool = True   # solo-preview by default; false = additive
+
+
+@app.post("/api/ableton/fire-clip")
+async def ableton_fire_clip(req: AbletonFireClipRequest):
+    """
+    Preview one track's clip. When solo=True (default) we set track.solo=1
+    first so only that track is audible — matches the "click ▶ = hear only
+    this track" UX. When solo=False (shift+click) we fire additively so it
+    layers with anything already playing.
+
+    Key subtlety: Live's default global clip-launch quantise is "1 Bar",
+    which means firing a clip while transport is stopped can silently wait
+    up to a full bar before playback starts. We set quantise to None (0)
+    and also nudge transport with start_playing so ▶ is instant.
+    """
+    try:
+        client = await _abl_client.get()
+    except Exception as exc:
+        raise HTTPException(500, str(exc))
+    # Immediate-launch: 0 = "None" in Live's clip trigger quantization enum.
+    await client.set_clip_trigger_quantization(0)
+    if req.solo:
+        # Clear any lingering solos so we don't stack them, then solo this one.
+        await client.clear_all_solos()
+        await client.set_track_solo(req.track_index, True)
+    await client.fire_clip_slot(req.track_index, req.slot_index)
+    # Firing a clip while transport is stopped should auto-start it, but on
+    # some Live versions this is unreliable. Belt-and-braces.
+    await client.start_all()
+    return {"fired": {"track": req.track_index, "slot": req.slot_index}, "solo": req.solo}
+
+
+class AbletonStopTrackRequest(BaseModel):
+    track_index: int
+    slot_index:  int = 0
+
+
+@app.post("/api/ableton/stop-track")
+async def ableton_stop_track(req: AbletonStopTrackRequest):
+    """
+    Stop just this track's clip + un-solo it. Complement to fire-clip:
+      * Solo-preview mode: stop this track → clip stops + solo cleared → silence.
+      * Additive mode:    stop this track → other soloed/playing tracks continue.
+    Deliberately does NOT touch global transport — other clips keep playing.
+    """
+    try:
+        client = await _abl_client.get()
+    except Exception as exc:
+        raise HTTPException(500, str(exc))
+    await client.stop_clip(req.track_index, req.slot_index)
+    await client.set_track_solo(req.track_index, False)
+    return {"stopped": {"track": req.track_index, "slot": req.slot_index}}
+
+
+class AbletonSetSoloRequest(BaseModel):
+    track_index: int
+    solo:        bool = False
+
+
+@app.post("/api/ableton/set-solo")
+async def ableton_set_solo(req: AbletonSetSoloRequest):
+    try:
+        client = await _abl_client.get()
+    except Exception as exc:
+        raise HTTPException(500, str(exc))
+    await client.set_track_solo(req.track_index, req.solo)
+    return {"ok": True}
+
+
+class AbletonDeleteTrackRequest(BaseModel):
+    track_index: int
+
+
+@app.post("/api/ableton/delete-track")
+async def ableton_delete_track(req: AbletonDeleteTrackRequest):
+    try:
+        client = await _abl_client.get()
+    except Exception as exc:
+        raise HTTPException(500, str(exc))
+    await client.delete_track(req.track_index)
+    return {"deleted": req.track_index}
+
+
+@app.post("/api/ableton/ping")
+async def ableton_ping():
+    """One-shot connectivity probe. Returns latency in ms if reachable."""
+    try:
+        client = await _abl_client.get()
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+    t0 = time.monotonic()
+    ok = await client.ping(timeout=1.5)
+    ms = int((time.monotonic() - t0) * 1000)
+    return {"ok": ok, "latency_ms": ms}
+
+
+# ── /api/ableton/compose — LLM-driven SongSpec generation ─────────────────────
+@app.get("/api/ableton/genre-presets")
+async def ableton_genre_presets():
+    return {"presets": _abl_song_spec.GENRE_PRESETS}
+
+
+class AbletonComposeRequest(BaseModel):
+    topic: str = ""
+    genre: str = "lo-fi hip-hop"
+    model: str = ""     # optional per-request override; empty → composer picks
+    deep:  bool = False # true → use the Deep Reasoning role config
+
+
+async def _stream_compose(req: AbletonComposeRequest) -> AsyncIterator[str]:
+    try:
+        installed = await _installed_models()
+    except Exception:
+        installed = set()
+    # Pull the user-configured composer choice from Settings so their pick
+    # wins over the built-in ladder (unless the request itself explicitly
+    # overrode via `model`, which stream_compose already honours first).
+    role_key = "ableton_deep_model" if req.deep else "ableton_composer_model"
+    configured = (await _db.get_config(role_key)) or ""
+    try:
+        async for evt in _abl_composer.stream_compose(
+            OLLAMA_BASE, req.model, req.topic, req.genre, installed,
+            configured_model=configured, deep=req.deep,
+        ):
+            yield f"data: {json.dumps(evt)}\n\n"
+    except Exception as exc:
+        log.error("ableton compose failed: %s", exc, exc_info=True)
+        yield f"data: {json.dumps({'stage': 'error', 'error': str(exc)})}\n\n"
+    finally:
+        yield "data: [DONE]\n\n"
+
+
+@app.post("/api/ableton/compose")
+async def ableton_compose(req: AbletonComposeRequest):
+    return StreamingResponse(
+        _stream_compose(req),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+class AbletonApplySongRequest(BaseModel):
+    spec:              dict
+    wipe_first:        bool = True
+    load_instruments:  bool = True
+
+
+async def _stream_apply_song(req: AbletonApplySongRequest) -> AsyncIterator[str]:
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def emit(evt: dict):
+        await queue.put(evt)
+
+    async def run():
+        try:
+            spec  = _abl_song_spec.parse_song_spec(req.spec)
+            client = await _abl_client.get()
+            if not await client.ping(timeout=1.0):
+                await emit({"stage": "error",
+                            "error": "AbletonOSC bridge unreachable — is Live running and the control surface enabled?"})
+                return
+            stats = await _abl_song_translator.apply(
+                spec, client, on_progress=emit,
+                wipe_first=req.wipe_first,
+                load_instruments=req.load_instruments,
+            )
+            # Record this compose as the new session state (fresh undo history).
+            await _abl_session.get().set_spec(spec)
+            await emit({"stage": "complete", **stats})
+        except Exception as exc:
+            log.error("apply song failed: %s", exc, exc_info=True)
+            await emit({"stage": "error", "error": str(exc)})
+        finally:
+            await emit({"__end": True})
+
+    task = asyncio.create_task(run())
+    try:
+        while True:
+            evt = await queue.get()
+            if evt.get("__end"):
+                break
+            yield f"data: {json.dumps(evt)}\n\n"
+    finally:
+        if not task.done():
+            task.cancel()
+        yield "data: [DONE]\n\n"
+
+
+@app.post("/api/ableton/apply-song")
+async def ableton_apply_song(req: AbletonApplySongRequest):
+    return StreamingResponse(
+        _stream_apply_song(req),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ── Per-track apply (track-first workflow) ───────────────────────────────────
+class AbletonApplyTrackRequest(BaseModel):
+    spec:              dict            # full current SongSpec (client is source of truth)
+    track_id:          str             # id of the track to (re)apply
+    live_track_index:  int | None = None  # None → append as new; int → refresh existing
+    load_instrument:   bool = True
+
+
+async def _stream_apply_track(req: AbletonApplyTrackRequest) -> AsyncIterator[str]:
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def emit(evt: dict):
+        await queue.put(evt)
+
+    async def run():
+        try:
+            spec   = _abl_song_spec.parse_song_spec(req.spec)
+            client = await _abl_client.get()
+            if not await client.ping(timeout=1.0):
+                await emit({"stage": "error",
+                            "error": "AbletonOSC bridge unreachable — is Live running?"})
+                return
+            stats = await _abl_song_translator.apply_single_track(
+                spec, req.track_id, client, on_progress=emit,
+                live_track_index=req.live_track_index,
+                load_instrument=req.load_instrument,
+            )
+            # Update session with the latest spec so edit chat stays in sync.
+            await _abl_session.get().set_spec(spec)
+            await emit({"stage": "complete", **stats})
+        except Exception as exc:
+            log.error("apply track failed: %s", exc, exc_info=True)
+            await emit({"stage": "error", "error": str(exc)})
+        finally:
+            await emit({"__end": True})
+
+    task = asyncio.create_task(run())
+    try:
+        while True:
+            evt = await queue.get()
+            if evt.get("__end"):
+                break
+            yield f"data: {json.dumps(evt)}\n\n"
+    finally:
+        if not task.done():
+            task.cancel()
+        yield "data: [DONE]\n\n"
+
+
+@app.post("/api/ableton/apply-track")
+async def ableton_apply_track(req: AbletonApplyTrackRequest):
+    return StreamingResponse(
+        _stream_apply_track(req),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ── Add-track composer (LLM proposes ONE track for the current song) ─────────
+class AbletonAddTrackRequest(BaseModel):
+    role:        str  = "chord"      # drums | bass | chord | lead | pad | fx | vox
+    description: str  = ""           # free-text intent, e.g. "warm rhodes, jazzy"
+    model:       str  = ""           # optional override
+    deep:        bool = False        # true → use the Deep Reasoning role config
+
+
+async def _stream_add_track(req: AbletonAddTrackRequest) -> AsyncIterator[str]:
+    session = _abl_session.get()
+    spec    = session.current_spec
+    if spec is None:
+        yield f"data: {json.dumps({'stage': 'error', 'error': 'No song loaded — compose a brief first or add a first track.'})}\n\n"
+        yield "data: [DONE]\n\n"
+        return
+    try:
+        installed = await _installed_models()
+    except Exception:
+        installed = set()
+    role_key = "ableton_deep_model" if req.deep else "ableton_composer_model"
+    configured = (await _db.get_config(role_key)) or ""
+    try:
+        async for evt in _abl_composer.stream_add_track(
+            OLLAMA_BASE, req.model, req.role, req.description, spec, installed,
+            configured_model=configured, deep=req.deep,
+        ):
+            # When the LLM returns a completed track, splice it into the session
+            # spec so the edit chat sees it and the frontend can apply it.
+            if evt.get("stage") == "track" and evt.get("track"):
+                await session.add_track(evt["track"])
+                # Refresh event with the updated full spec so the client is authoritative.
+                evt["spec"] = _abl_session.spec_to_dict(session.current_spec)  # type: ignore[arg-type]
+            yield f"data: {json.dumps(evt)}\n\n"
+    except Exception as exc:
+        log.error("ableton add-track failed: %s", exc, exc_info=True)
+        yield f"data: {json.dumps({'stage': 'error', 'error': str(exc)})}\n\n"
+    finally:
+        yield "data: [DONE]\n\n"
+
+
+@app.post("/api/ableton/add-track")
+async def ableton_add_track(req: AbletonAddTrackRequest):
+    return StreamingResponse(
+        _stream_add_track(req),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# ── Session state ────────────────────────────────────────────────────────────
+@app.get("/api/ableton/session")
+async def ableton_session_state():
+    return _abl_session.get().snapshot()
+
+
+# ── Song library ─────────────────────────────────────────────────────────────
+# Persistent per-user library of saved SongSpecs. Each entry is a JSON file
+# under data_dir()/ableton/songs/. The frontend uses these endpoints for the
+# New / Save / Browse-Library / Delete buttons in the music panel.
+
+@app.get("/api/ableton/song/library")
+async def ableton_song_library():
+    """Metadata-only listing of saved songs, newest first."""
+    return {"songs": _abl_library.list_songs()}
+
+
+class AbletonSongSaveRequest(BaseModel):
+    name: str = ""       # user-given name; empty → "Untitled"
+    song_id: str = ""    # when set, updates an existing record instead of duplicating
+
+
+@app.post("/api/ableton/song/save")
+async def ableton_song_save(req: AbletonSongSaveRequest):
+    """Save the current session's SongSpec under a user-given name."""
+    spec = _abl_session.get().current_spec
+    if spec is None:
+        raise HTTPException(400, "no current song to save — compose one first")
+    record = _abl_library.save_song(
+        req.name, _abl_session.spec_to_dict(spec), song_id=req.song_id,
+    )
+    return {"ok": True, "song": {
+        "id": record["id"], "name": record["name"],
+        "created_at": record["created_at"], "updated_at": record["updated_at"],
+    }}
+
+
+@app.get("/api/ableton/song/{song_id}")
+async def ableton_song_get(song_id: str):
+    record = _abl_library.load_song(song_id)
+    if record is None:
+        raise HTTPException(404, f"song not found: {song_id}")
+    return record
+
+
+@app.post("/api/ableton/song/{song_id}/load")
+async def ableton_song_load(song_id: str):
+    """Load a saved song into the session. Does NOT materialise it — the user
+    still needs to click Apply to push it to Ableton."""
+    record = _abl_library.load_song(song_id)
+    if record is None:
+        raise HTTPException(404, f"song not found: {song_id}")
+    try:
+        spec = _abl_song_spec.parse_song_spec(record.get("spec") or {})
+    except Exception as exc:
+        raise HTTPException(400, f"stored song is invalid: {exc}")
+    await _abl_session.get().set_spec(spec)
+    return {"ok": True, "song_id": song_id, "spec": _abl_session.spec_to_dict(spec)}
+
+
+@app.delete("/api/ableton/song/{song_id}")
+async def ableton_song_delete(song_id: str):
+    ok = _abl_library.delete_song(song_id)
+    return {"ok": ok, "deleted": song_id}
+
+
+class AbletonSongNewRequest(BaseModel):
+    wipe_ableton: bool = False
+
+
+@app.post("/api/ableton/song/new")
+async def ableton_song_new(req: AbletonSongNewRequest):
+    """
+    Clear the current session so the composer is a blank slate. Optionally
+    also wipes the live Ableton session (delete every track) — off by default
+    because that's destructive; the frontend prompts before enabling it.
+    """
+    session = _abl_session.get()
+    async with session._lock:  # noqa: SLF001 — direct lock for clean reset
+        session.current_spec = None
+        session.undo_stack.clear()
+        session._persist()  # noqa: SLF001
+    removed = 0
+    if req.wipe_ableton:
+        try:
+            client = await _abl_client.get()
+            if await client.ping(timeout=1.0):
+                removed = await client.delete_all_tracks()
+        except Exception as exc:
+            log.warning("song/new: wipe_ableton failed: %s", exc)
+    return {"ok": True, "wiped_ableton": req.wipe_ableton, "removed_tracks": removed}
+
+
+@app.get("/api/ableton/patterns")
+async def ableton_patterns():
+    """The pattern-archetype vocabulary the composer uses per role."""
+    from style_adapters import PATTERN_HELP
+    return {"patterns": PATTERN_HELP}
+
+
+class AbletonSetPatternRequest(BaseModel):
+    track_index:  int
+    section_id:   str
+    pattern:      str   # empty string = clear
+
+
+@app.post("/api/ableton/set-pattern")
+async def ableton_set_pattern(req: AbletonSetPatternRequest):
+    """
+    Set the pattern archetype on one clip AND materialise the change in Live.
+
+    Session's SongSpec is mutated in place; the clip is rebuilt via the
+    style-adapters + note_patterns dispatch; the resulting notes replace the
+    clip's contents in Ableton via a clip.replace_notes op (which also pushes
+    a reverse-plan onto the undo stack so ⌘Z works).
+    """
+    session = _abl_session.get()
+    spec    = session.current_spec
+    if spec is None:
+        raise HTTPException(400, "no current song")
+    try:
+        track = spec.tracks[req.track_index]
+    except IndexError:
+        raise HTTPException(404, "track_index out of range")
+
+    # Find (or create) the clip on the target section.
+    clip = None
+    for c in track.clips:
+        if c.section == req.section_id:
+            clip = c
+            break
+    if clip is None:
+        raise HTTPException(404, f"no clip on section {req.section_id!r}")
+
+    # Update the pattern and regenerate notes via the adapters.
+    clip.pattern = req.pattern.strip().lower()
+    clip.notes   = []                    # clear so fill_missing_notes rebuilds
+
+    from note_patterns import fill_missing_notes
+    fill_missing_notes(spec)
+
+    # Push the new notes into Live via a clip.replace_notes edit op so undo works.
+    op = {
+        "kind":         "clip.replace_notes",
+        "track_index":  req.track_index,
+        "section":      req.section_id,
+        "notes":        [
+            {"pitch": n.pitch, "start": n.start,
+             "length": n.length, "velocity": n.velocity}
+            for n in clip.notes
+        ],
+    }
+    plan = {"reply": f"Pattern → {req.pattern}", "changes": [op]}
+
+    try:
+        client = await _abl_client.get()
+        if not await client.ping(timeout=1.0):
+            raise HTTPException(502, "AbletonOSC unreachable")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, f"bridge error: {exc}")
+
+    async def sink(_evt: dict) -> None:
+        return None
+
+    applied, reverses = await _abl_edit.apply_plan(plan, spec, client, sink)
+    await session.set_spec(spec)
+    await session.push_reverses(reverses)
+    return {"applied": len(applied), "notes": len(clip.notes),
+            "undo_depth": len(session.undo_stack)}
+
+
+# ── Iterative editing ────────────────────────────────────────────────────────
+class AbletonEditRequest(BaseModel):
+    message: str                            # the user's natural-language turn
+    model:   str = ""                       # optional planner override
+    # Track-first scoping — when the frontend has "active" tracks selected,
+    # it sends their ids here so the LLM only touches those. Empty list =
+    # unconstrained (legacy behaviour). Focus track goes first if present.
+    active_track_ids: list[str] = []
+    focus_track_id:   str = ""
+
+
+_EDIT_SYSTEM = (
+    "You edit an in-progress music sketch inside Ableton. Emit a strict JSON\n"
+    "EditPlan — no prose, no markdown fences. Schema:\n"
+    "{\n"
+    '  "reply":  "<1-2 sentence chat reply to the user>",\n'
+    '  "changes": [ {kind: str, ...op-specific fields}, ... ]\n'
+    "}\n"
+    "\n"
+    "Supported op kinds and their fields:\n"
+    '  {"kind": "set_tempo", "bpm": <number>}\n'
+    '  {"kind": "set_key",   "root": "C", "mode": "major"|"minor"|"dorian"|…}\n'
+    '  {"kind": "track.rename",  "track_index": <int>, "name": "<str>"}\n'
+    '  {"kind": "track.set_mix", "track_index": <int>, "volume_db"?: <number>, "pan"?: <number>}\n'
+    '  {"kind": "track.remove",  "track_index": <int>}\n'
+    '  {"kind": "clip.replace_notes", "track_index": <int>, "section": "<section id>",\n'
+    '     "notes": [{"pitch": <MIDI 0-127>, "start": <beats>, "length": <beats>, "velocity": <0-127>}, ...]}\n'
+    '  {"kind": "clip.transpose", "track_index": <int>, "section": "<section id>", "semitones": <int>}\n'
+    "\n"
+    "Rules:\n"
+    "  - Prefer the smallest possible EditPlan that satisfies the user.\n"
+    "  - Use `clip.transpose` for pitch-shifts (fast + reversible).\n"
+    "  - Use `clip.replace_notes` for rhythm / melody changes.\n"
+    "  - Track indices and section ids MUST match the CURRENT SESSION below.\n"
+    "  - MIDI conventions (kick=36, snare=38, closed hat=42, open hat=46,\n"
+    "    middle C = 60, bass usually pitches 28-45, chord 48-72, lead 60-84).\n"
+    "  - Notes' start/length in beats (1.0 = quarter note).\n"
+    "  - Empty {'changes': []} is fine if the user's message doesn't imply\n"
+    "    a change — put your response in `reply`.\n"
+)
+
+
+def _session_context(spec: SongSpec) -> str:
+    """Compact serialisation of the current SongSpec for the edit LLM."""
+    lines = [
+        f"BPM: {spec.bpm}",
+        f"Key: {spec.key.root} {spec.key.mode}",
+        f"Time signature: {spec.timesig.num}/{spec.timesig.den}",
+        f"Genre: {spec.genre or '(unset)'}",
+        "",
+        "Sections:",
+    ]
+    for i, sec in enumerate(spec.sections):
+        lines.append(f"  s{i} id={sec.id!r} name={sec.name!r} bars {sec.start_bar}-{sec.start_bar+sec.length_bars}")
+    lines.append("")
+    lines.append("Tracks:")
+    for i, t in enumerate(spec.tracks):
+        note_total = sum(len(c.notes) for c in t.clips)
+        clip_sections = ",".join(c.section for c in t.clips)
+        lines.append(
+            f"  {i}: {t.name!r} role={t.role} "
+            f"vol={t.mix.volume_db:.1f}dB pan={t.mix.pan:+.2f} "
+            f"clips=[{clip_sections}] notes={note_total}"
+        )
+    return "\n".join(lines)
+
+
+async def _stream_edit(req: AbletonEditRequest) -> AsyncIterator[str]:
+    session = _abl_session.get()
+    spec    = session.current_spec
+    if spec is None:
+        yield f"data: {json.dumps({'stage': 'error', 'error': 'No song loaded. Compose one first.'})}\n\n"
+        yield "data: [DONE]\n\n"
+        return
+
+    installed = await _installed_models()
+    # Edits honour the same "ableton composer" role config as compose — one
+    # configured model runs the whole workflow. If the user has chosen a
+    # specific one in Settings we prefer it; otherwise the editor ladder.
+    configured_editor = (await _db.get_config("ableton_composer_model")) or ""
+    planner   = req.model if (req.model and (req.model in installed or any(x.startswith(req.model + ':') for x in installed))) \
+                          else await _abl_composer.pick_editor_model(installed, configured=configured_editor)
+
+    yield f"data: {json.dumps({'stage': 'planning', 'model': planner})}\n\n"
+
+    # Build scope directive if the frontend gave us active_track_ids.
+    scope_note = ""
+    if req.active_track_ids:
+        # Map ids → indices (LLM works with track_index).
+        id_to_idx = {t.id: i for i, t in enumerate(spec.tracks)}
+        active_idx = [id_to_idx[tid] for tid in req.active_track_ids if tid in id_to_idx]
+        focus_idx  = id_to_idx.get(req.focus_track_id) if req.focus_track_id else None
+        if active_idx:
+            active_list = ", ".join(str(i) for i in active_idx)
+            focus_line  = (f"Focus track (primary target): track_index={focus_idx}. "
+                           if focus_idx is not None else "")
+            scope_note  = (
+                "\n\nSCOPE — the user is currently editing a subset of tracks. "
+                f"Only modify these track indices: [{active_list}]. "
+                f"{focus_line}"
+                "If the request is unambiguously about a track NOT in this list, "
+                "gently say so in `reply` and return an empty changes[] array."
+            )
+    system   = _EDIT_SYSTEM + scope_note + "\n\nCURRENT SESSION:\n" + _session_context(spec)
+    user_msg = req.message.strip() or "no message"
+
+    # If we picked a thinking-family model, give it a wider num_predict + ctx
+    # (thinking phase eats tokens even when we ask for it off) and DON'T force
+    # think:false — MoE reasoners with think:false often emit empty content.
+    # Instead, we lean on the `content OR thinking` salvage below.
+    is_thinking = any(planner.startswith(p) for p in (
+        "qwen3.6", "Hydroxide538/qwen-agentworld", "nemotron-3-nano",
+        "qwen3", "deepseek-r1", "gpt-oss", "gemma4",
+    ))
+    # DeepSeek-R1 (dense 70B distill) has famously deep chains-of-thought —
+    # 8k is enough for MoE thinkers but R1 routinely burns 8-12k tokens on
+    # <think> before emitting the tiny EditPlan JSON. Give it room to breathe.
+    is_deep_thinker = planner.startswith("deepseek-r1")
+
+    payload = {
+        "model":    planner,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user",   "content": user_msg},
+        ],
+        "format":     "json",
+        "stream":     False,
+        "think":      is_thinking,   # let thinkers think; force off for dense.
+        "options": {
+            "num_ctx":     16384 if is_thinking else 8192,
+            "num_predict": (16384 if is_deep_thinker
+                            else 8192 if is_thinking
+                            else 4096),
+            "temperature": 0.55,
+        },
+        # Long keep-alive for deep thinkers — paying 30-60s of cold-load
+        # once and then holding the 43GB weights for 30min beats paying
+        # that cost on every edit turn.
+        "keep_alive": "30m" if is_deep_thinker else "5m",
+    }
+
+    # Deep thinkers (deepseek-r1:70b in particular) can spend several minutes
+    # in <think> before emitting the tiny EditPlan JSON. Give thinkers a
+    # generous timeout so httpx doesn't abort the read before Ollama is done.
+    edit_timeout = 1800.0 if is_deep_thinker else 600.0 if is_thinking else 180.0
+    try:
+        async with httpx.AsyncClient(timeout=edit_timeout) as client:
+            r = await client.post(f"{OLLAMA_BASE}/api/chat", json=payload)
+            if r.status_code != 200:
+                yield f"data: {json.dumps({'stage': 'error', 'error': f'HTTP {r.status_code}: {r.text[:200]}'})}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+            data    = r.json()
+            msg     = data.get("message") or {}
+            content = (msg.get("content") or "").strip()
+            if not content:
+                # Some thinking-only outputs bury the JSON at the end of
+                # the thinking stream — try to salvage the last {...} block.
+                thinking = (msg.get("thinking") or "").strip()
+                if thinking:
+                    last_open  = thinking.rfind("{")
+                    last_close = thinking.rfind("}")
+                    if 0 <= last_open < last_close:
+                        content = thinking[last_open:last_close + 1]
+                    elif thinking.lstrip().startswith("{"):
+                        content = thinking
+    except Exception as exc:
+        log.error("edit call failed: %s", exc, exc_info=True)
+        yield f"data: {json.dumps({'stage': 'error', 'error': str(exc)})}\n\n"
+        yield "data: [DONE]\n\n"
+        return
+
+    try:
+        plan = json.loads(content)
+    except Exception as exc:
+        yield f"data: {json.dumps({'stage': 'error', 'error': f'invalid JSON from planner: {exc}'})}\n\n"
+        yield "data: [DONE]\n\n"
+        return
+
+    reply   = str(plan.get("reply", "")).strip()
+    changes = plan.get("changes") or []
+    yield f"data: {json.dumps({'stage': 'plan', 'reply': reply, 'changes': changes, 'summaries': [_abl_edit.op_summary(op) for op in changes]})}\n\n"
+    yield "data: [DONE]\n\n"
+
+
+@app.post("/api/ableton/edit")
+async def ableton_edit(req: AbletonEditRequest):
+    return StreamingResponse(
+        _stream_edit(req),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+class AbletonApplyEditRequest(BaseModel):
+    plan: dict   # {reply?, changes: [...]}
+
+
+async def _stream_apply_edit(req: AbletonApplyEditRequest) -> AsyncIterator[str]:
+    queue: asyncio.Queue = asyncio.Queue()
+
+    async def emit(evt: dict):
+        await queue.put(evt)
+
+    async def run():
+        session = _abl_session.get()
+        spec    = session.current_spec
+        if spec is None:
+            await emit({"stage": "error", "error": "No current song."})
+            return
+        try:
+            client = await _abl_client.get()
+            if not await client.ping(timeout=1.0):
+                await emit({"stage": "error", "error": "AbletonOSC bridge unreachable"})
+                return
+            applied, reverses = await _abl_edit.apply_plan(req.plan, spec, client, emit)
+            # Persist updated spec + push reverse-plan onto undo stack.
+            await session.set_spec(spec)   # NOTE clears undo — do BEFORE push
+            await session.push_reverses(reverses)
+            await emit({"stage": "complete", "applied": applied, "undo_depth": len(session.undo_stack)})
+        except Exception as exc:
+            log.error("apply-edit failed: %s", exc, exc_info=True)
+            await emit({"stage": "error", "error": str(exc)})
+        finally:
+            await emit({"__end": True})
+
+    task = asyncio.create_task(run())
+    try:
+        while True:
+            evt = await queue.get()
+            if evt.get("__end"):
+                break
+            yield f"data: {json.dumps(evt)}\n\n"
+    finally:
+        if not task.done():
+            task.cancel()
+        yield "data: [DONE]\n\n"
+
+
+@app.post("/api/ableton/apply-edit")
+async def ableton_apply_edit(req: AbletonApplyEditRequest):
+    return StreamingResponse(
+        _stream_apply_edit(req),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/api/ableton/undo")
+async def ableton_undo():
+    """Pop the last reverse-plan and apply it. Returns the reverses applied."""
+    session = _abl_session.get()
+    spec    = session.current_spec
+    if spec is None:
+        raise HTTPException(400, "no current song")
+    reverses = await session.pop_reverses()
+    if reverses is None:
+        return {"applied": 0, "message": "nothing to undo"}
+    try:
+        client = await _abl_client.get()
+        if not await client.ping(timeout=1.0):
+            raise HTTPException(502, "AbletonOSC unreachable")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(500, f"bridge error: {exc}")
+
+    async def sink(_evt: dict) -> None:
+        return None
+
+    n_ok = 0
+    for rev in reverses:
+        try:
+            await _abl_edit.apply_op(rev, spec, client, sink)
+            n_ok += 1
+        except Exception as exc:
+            log.warning("undo op failed: %s", exc)
+    # Persist without clearing undo (set_spec would).
+    async with session._lock:
+        session._persist()
+    return {"applied": n_ok, "remaining": len(session.undo_stack)}
+
+
 # ── /api/memory — SQLite-backed conversation persistence ──────────────────────
 @app.get("/api/memory/conversations")
 async def list_conversations():
@@ -2369,6 +3550,85 @@ async def setup_recommendations():
     return {"tier": hw["tier"], "hardware": hw, "recommendations": recs}
 
 
+@app.get("/api/setup/hardware-profile")
+async def setup_hardware_profile():
+    """
+    Extended hardware fingerprint — chip family + variant + estimated
+    memory bandwidth + tier. Used by the wizard's optimized-models flow
+    to filter models to those that clear the tok/s target.
+    """
+    hw = _hw.get_hardware()
+    return {
+        "os":                 hw["os"],
+        "arch":               hw["arch"],
+        "cpu":                hw["cpu"],
+        "chip_family":        hw["chip_family"],
+        "chip_variant":       hw["chip_variant"],
+        "ram_gb":             hw["ram_gb"],
+        "cores":              hw["cores"],
+        "perf_cores":         hw["perf_cores"],
+        "gpu":                hw["gpu"],
+        "gpu_vram_gb":        hw["gpu_vram_gb"],
+        "mem_bandwidth_gb_s": hw["mem_bandwidth_gb_s"],
+        "tier":               hw["tier"],
+    }
+
+
+@app.get("/api/setup/optimized-models")
+async def setup_optimized_models(min_tok_per_s: float = 20.0):
+    """
+    Per-model tok/s estimates + fit rating for the current hardware.
+    Includes every family the user asked for (DeepSeek, Gemma, Qwen,
+    MoE thinkers, vision, embeddings). The frontend uses fit=='top'/'good'
+    as the primary picks and 'acceptable' as the fallback tier.
+
+    Query params:
+      min_tok_per_s — the throughput target (default 20.0). Models
+                      returning ≥ this value get fit='good' or 'top'.
+    """
+    from benchmarks import estimate_tok_per_s, fit_rating
+    hw = _hw.get_hardware()
+    installed: set[str] = set()
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            r = await client.get(f"{OLLAMA_BASE}/api/tags")
+            for m in r.json().get("models", []):
+                installed.add(m["name"])
+    except Exception:
+        pass
+
+    # Build per-category lists. Each item carries the tok/s + fit so the
+    # UI can colour-code and sort by strength.
+    by_category: dict[str, list[dict]] = {}
+    for m in _catalog.MODELS:
+        est = estimate_tok_per_s(m, hw)
+        fit = fit_rating(est, min_target=min_tok_per_s)
+        base = m["id"].split(":")[0]
+        is_installed = m["id"] in installed or any(
+            x.startswith(base + ":") or x == base for x in installed
+        )
+        entry = {
+            **m,
+            "installed":     is_installed,
+            "tok_per_s_est": round(est, 1),
+            "fit":           fit,
+            "meets_target":  fit in ("top", "good"),
+        }
+        by_category.setdefault(m["category"], []).append(entry)
+
+    # Sort each category: installed first, then by tok/s descending.
+    for cat, items in by_category.items():
+        items.sort(key=lambda e: (
+            not e["installed"], -(e["tok_per_s_est"] or 0),
+        ))
+
+    return {
+        "profile":         (await setup_hardware_profile()),
+        "min_tok_per_s":   min_tok_per_s,
+        "categories":      by_category,
+    }
+
+
 @app.get("/api/setup/status")
 async def setup_status():
     completed = await _db.get_config("wizard_completed")
@@ -2431,6 +3691,84 @@ async def setup_reset():
     return {"ok": True}
 
 
+# ── TTS install verification ────────────────────────────────────────────────
+# The wizard calls this at the end of setup to ensure Kokoro (TTS) is fully
+# ready — Python package importable AND ONNX model files downloaded. Without
+# this, the first speech attempt eats a 100-500MB download that surprises
+# the user long after they finished setup.
+
+@app.get("/api/setup/tts-status")
+async def setup_tts_status():
+    """
+    Returns:
+      { package_installed, model_downloaded, voices_downloaded, ready,
+        model_size_mb, missing: [str], hint: str }
+    """
+    from pathlib import Path
+    result = {
+        "package_installed":  False,
+        "model_downloaded":   False,
+        "voices_downloaded":  False,
+        "ready":              False,
+        "model_size_mb":      0,
+        "voices_size_mb":     0,
+        "missing":            [],
+        "hint":               "",
+    }
+    try:
+        import kokoro_onnx  # noqa: F401
+        result["package_installed"] = True
+    except ImportError as exc:
+        result["missing"].append("kokoro_onnx python package")
+        result["hint"] = f"pip install kokoro-onnx failed on boot: {exc}"
+
+    # Model file locations (see tts_engine._kokoro_dir).
+    try:
+        kokoro_dir = _tts._kokoro_dir()   # noqa: SLF001 — internal path helper
+        model_path  = _tts._model_path()  # noqa: SLF001
+        voices_path = _tts._voices_path() # noqa: SLF001
+        if model_path.exists():
+            result["model_downloaded"] = model_path.stat().st_size > 1_000_000
+            result["model_size_mb"]    = model_path.stat().st_size // (1024 * 1024)
+        if voices_path.exists():
+            result["voices_downloaded"] = voices_path.stat().st_size > 100_000
+            result["voices_size_mb"]    = voices_path.stat().st_size // (1024 * 1024)
+        if not result["model_downloaded"]:  result["missing"].append("kokoro-v1.0.onnx")
+        if not result["voices_downloaded"]: result["missing"].append("voices-v1.0.bin")
+    except Exception as exc:
+        result["missing"].append(f"path resolution failed: {exc}")
+
+    result["ready"] = (
+        result["package_installed"]
+        and result["model_downloaded"]
+        and result["voices_downloaded"]
+    )
+    return result
+
+
+@app.post("/api/setup/tts-install")
+async def setup_tts_install():
+    """
+    Force-download the Kokoro model + voices if missing. Returns the same
+    shape as GET /api/setup/tts-status. Blocking — expected ~30-60s on
+    first call, ~5s if already downloaded.
+    """
+    try:
+        # Runs in a thread pool because urlretrieve is blocking; returns
+        # once files are on disk.
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, _tts._download_if_missing)  # noqa: SLF001
+    except Exception as exc:
+        return {"ok": False, "error": f"Kokoro download failed: {exc}",
+                **(await setup_tts_status())}
+    # Also warm up the ONNX session so the first user speech is instant.
+    try:
+        await loop.run_in_executor(None, _tts.preload_pipeline)
+    except Exception as exc:
+        log.warning("Kokoro preload after install failed (non-fatal): %s", exc)
+    return {"ok": True, **(await setup_tts_status())}
+
+
 # ── /api/models/roles — post-setup model reassignment ────────────────────────
 # The wizard's per-function model choices (main chat, auto-router judge,
 # vision, code, OCR, …) all live in `app_config` as plain key/value pairs.
@@ -2439,6 +3777,9 @@ async def setup_reset():
 _MODEL_ROLE_KEYS = [
     "active_model", "judge_model", "vision_model", "code_model",
     "ocr_model", "docs_model", "handwriting_model", "tables_model",
+    # Ableton composer roles: standard + deep-reasoning slots. Empty string
+    # means "fall back to _PLANNER_PREF / _DEEP_PLANNER_PREF in the composer".
+    "ableton_composer_model", "ableton_deep_model",
 ]
 
 
@@ -2448,14 +3789,16 @@ async def get_model_roles():
 
 
 class ModelRolesUpdate(BaseModel):
-    active_model:      str | None = None
-    judge_model:        str | None = None
-    vision_model:        str | None = None
-    code_model:          str | None = None
-    ocr_model:           str | None = None
-    docs_model:          str | None = None
-    handwriting_model:   str | None = None
-    tables_model:        str | None = None
+    active_model:           str | None = None
+    judge_model:            str | None = None
+    vision_model:           str | None = None
+    code_model:             str | None = None
+    ocr_model:              str | None = None
+    docs_model:             str | None = None
+    handwriting_model:      str | None = None
+    tables_model:           str | None = None
+    ableton_composer_model: str | None = None
+    ableton_deep_model:     str | None = None
 
 
 @app.post("/api/models/roles")
@@ -2856,6 +4199,203 @@ async def idp_export(fmt: str, req: IDPRequest):
         content=data, media_type=mime,
         headers={"Content-Disposition": f'attachment; filename="{base}.{ext}"'},
     )
+
+
+# ── Judge-based category picker for user-triggered "send to worker" ─────────
+# Uses the same tiny model class the auto-router judge uses. Emits one of
+# the delegate categories from a JSON-schema-constrained response so a
+# small model (qwen2.5:0.5b/1.5b) can reliably return a valid label.
+_DELEGATE_JUDGE_PROMPT = (
+    "Pick the SINGLE strongest-fit category for the user's request. Output "
+    "STRICT JSON only.\n"
+    "\n"
+    "Categories:\n"
+    "  quick        — one-line factual lookup.\n"
+    "  general      — balanced default when nothing else is a strong fit.\n"
+    "  research     — needs web search / current facts / sources.\n"
+    "  code         — programming, debugging, code review.\n"
+    "  deep         — hard multi-step reasoning, proofs, complex analysis.\n"
+    "  vision       — analyse an image / screenshot.\n"
+    "  long_context — analyse a very long document.\n"
+    "  structured   — extract to JSON / tables / strict schema.\n"
+    "  emotional    — empathic / warm / personal.\n"
+    "  creative     — long-form prose / storytelling / marketing copy.\n"
+    "\n"
+    "Output: {\"category\": \"<one of the labels above>\"}"
+)
+
+_DELEGATE_JUDGE_FORMAT = {
+    "type": "object",
+    "properties": {
+        "category": {"type": "string", "enum": [
+            "quick", "general", "research", "code", "deep", "vision",
+            "long_context", "structured", "emotional", "creative",
+        ]},
+    },
+    "required": ["category"],
+}
+
+
+async def _judge_delegate_category(text: str) -> str:
+    """
+    Ask the judge model which delegate category best fits `text`.
+    Falls back to 'general' on any failure — cheap + safe.
+    """
+    text = (text or "").strip()
+    if not text:
+        return "general"
+    installed = await _installed_models()
+    user_pref = (await _db.get_config("judge_model")) or ""
+    prefs = [user_pref, "qwen2.5:1.5b", "qwen2.5:0.5b",
+             "llama3.2:1b", "llama3.2:3b", "qwen2.5:3b", "qwen2.5:7b"]
+    model = _pick_first_installed(prefs, installed)
+    if not model:
+        return "general"
+    payload = {
+        "model":     model,
+        "messages": [
+            {"role": "system", "content": _DELEGATE_JUDGE_PROMPT},
+            {"role": "user",   "content": text[:800]},
+        ],
+        "stream":    False,
+        "keep_alive": "30s",
+        "format":    _DELEGATE_JUDGE_FORMAT,
+        "options":   {"temperature": 0.0, "num_predict": 30, "num_ctx": 2048},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            r = await client.post(f"{OLLAMA_BASE}/api/chat", json=payload)
+            if r.status_code != 200:
+                return "general"
+            raw = ((r.json().get("message") or {}).get("content") or "").strip()
+        parsed = json.loads(raw)
+        cat = str(parsed.get("category") or "general").strip().lower()
+        if cat not in {
+            "quick", "general", "research", "code", "deep", "vision",
+            "long_context", "structured", "emotional", "creative",
+        }:
+            return "general"
+        return cat
+    except Exception:
+        return "general"
+
+
+# ── /api/delegate/send — user-triggered dispatch from the "send to worker"
+# button in the main chat input. The user's text is sent to the judge model
+# to pick a category; the delegate is dispatched; ack returned immediately.
+# The user's own text and the delegate's result live ONLY in delegated_tasks
+# — they never enter the main chat conversation.
+class DelegateSendRequest(BaseModel):
+    prompt:        str
+    conv_id:       str = ""     # optional — for grouping in the Live tab
+    source_msg_id: str = ""     # optional — links back to source turn
+    category:      str = ""     # optional override; empty → judge picks
+
+
+@app.post("/api/delegate/send")
+async def delegate_send(req: DelegateSendRequest):
+    prompt = req.prompt.strip()
+    if not prompt:
+        raise HTTPException(400, "prompt is required")
+    cat = req.category.strip().lower() if req.category else ""
+    if not cat or cat not in _delegate.KNOWN_CATEGORIES:
+        cat = await _judge_delegate_category(prompt)
+    ack = await _delegate.dispatch(
+        prompt        = prompt,
+        category      = cat,
+        conv_id       = req.conv_id,
+        main_model    = "",          # main model stays uninvolved
+        source_msg_id = req.source_msg_id,
+    )
+    return {"ok": True, **ack}
+
+
+# ── /api/delegate — main-model → specialist async subtasks ───────────────────
+@app.get("/api/delegate/tasks")
+async def delegate_tasks(conv_id: str = "", status: str = "", limit: int = 50):
+    """
+    List delegated tasks, newest first. Filter by conversation and/or status.
+    Frontend polls with `conv_id=<active>` while a chat is open.
+    """
+    tasks = await _delegate.list_tasks(
+        conv_id = conv_id or None,
+        status  = status  or None,
+        limit   = max(1, min(200, limit)),
+    )
+    return {"tasks": tasks}
+
+
+@app.post("/api/delegate/{task_id}/cancel")
+async def delegate_cancel(task_id: str):
+    ok = await _delegate.cancel(task_id)
+    return {"ok": ok, "task_id": task_id}
+
+
+@app.get("/api/delegate/{task_id}/progress")
+async def delegate_progress(task_id: str):
+    """
+    Live streaming state for a running delegate: current content, thinking
+    tokens, tool events. Returns null when the task is no longer running
+    (the buffer is cleared 30s after completion).
+    """
+    return {"progress": _delegate.get_progress(task_id)}
+
+
+@app.get("/api/delegate/config")
+async def delegate_config():
+    """Return current category → model mapping (config overrides + defaults)."""
+    out = {}
+    for cat in _delegate.KNOWN_CATEGORIES:
+        configured = (await _db.get_config(f"delegate_model_{cat}")) or ""
+        out[cat] = {
+            "configured": configured,
+            "resolved":   await _delegate._pick_delegate_model(cat),  # noqa: SLF001
+        }
+    return {"categories": out}
+
+
+class DelegateConfigUpdate(BaseModel):
+    category: str
+    model:    str  # empty string clears the override → back to default
+
+
+@app.post("/api/delegate/config")
+async def delegate_config_update(req: DelegateConfigUpdate):
+    if req.category not in _delegate.KNOWN_CATEGORIES:
+        raise HTTPException(400, f"unknown category: {req.category!r}")
+    await _db.set_config(f"delegate_model_{req.category}", req.model or "")
+    return {"ok": True}
+
+
+# ── /api/workers — background worker swarm ───────────────────────────────────
+@app.get("/api/workers/status")
+async def workers_status():
+    """Snapshot of every worker + the scheduler's idle state."""
+    return _workers.status()
+
+
+@app.get("/api/workers/logs")
+async def workers_logs(limit: int = 100):
+    return {"events": _workers.logs(limit=limit)}
+
+
+class WorkerEnableRequest(BaseModel):
+    enabled: bool
+
+
+@app.post("/api/workers/{worker_id}/enable")
+async def workers_enable(worker_id: str, req: WorkerEnableRequest):
+    ok = await _workers.enable(worker_id, req.enabled)
+    if not ok:
+        raise HTTPException(404, f"unknown worker: {worker_id}")
+    return {"ok": True, "enabled": req.enabled}
+
+
+@app.post("/api/workers/{worker_id}/run-now")
+async def workers_run_now(worker_id: str):
+    """Fire a worker immediately, bypassing the idle-gate + enabled flag."""
+    result = await _workers.run_now(worker_id)
+    return result
 
 
 # ── Serve built frontend (production) ─────────────────────────────────────────

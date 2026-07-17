@@ -33,6 +33,30 @@ export interface Message {
   evalCount?: number
   /** Reason the auto-router picked this model, if it did. */
   routedReason?: string
+  /**
+   * Message metadata bag. Populated for delegated messages so the UI can
+   * badge them, show source model, jump-to-task, etc. Shape:
+   *   { delegated_task_id, delegated_source: 'delegate' | 'main_model_comment',
+   *     delegate_model, delegate_category }
+   */
+  meta?: Record<string, unknown>
+}
+
+export interface DelegatedTask {
+  id:              string
+  conversation_id: string
+  source_msg_id:   string
+  prompt:          string
+  category:        string
+  delegate_model:  string
+  main_model:      string
+  status:          'pending' | 'running' | 'done' | 'failed' | 'cancelled'
+  result:          string
+  comment:         string
+  error:           string
+  created_at:      number
+  started_at:      number | null
+  completed_at:    number | null
 }
 
 export interface Conversation {

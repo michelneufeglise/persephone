@@ -33,6 +33,7 @@ export function ChatWindow() {
     settings, getActiveConversation, activeConversationId,
     addMessage, updateMessage, setIsGenerating, isGenerating,
     createNewConversation, clearMessages, setIsSpeaking, setAudioLevel,
+    setVoicePanelOpen, setRightPanel,
   } = useAppStore()
 
   const abortRef       = useRef<AbortController | null>(null)
@@ -84,6 +85,150 @@ export function ChatWindow() {
   useEffect(() => {
     if (!activeConversationId) createNewConversation()
   }, [])
+
+  // Ref-based poller for delegate-reply arrival. A single long-lived poll
+  // per conversation, robust to task-persistence races. Fires on:
+  //   * mount when the conversation opens (catches replies that landed while
+  //     the tab was closed).
+  //   * every send-to-worker click.
+  // Stops when there are no more sent-to-worker turns awaiting a reply
+  // AND no in-flight tasks — then exits gracefully.
+  const pollRef = useRef<{ cancel: () => void } | null>(null)
+
+  function startDelegatePoll(convId: string) {
+    if (pollRef.current) return   // already polling for this conv
+    let cancelled = false
+    let handle: number | null = null
+    // Track ids we've already spliced in to avoid unnecessary store writes.
+    const seenIds = new Set<string>()
+
+    async function tick() {
+      if (cancelled) return
+      try {
+        // Always pull the conversation — even if no task shows as inflight
+        // yet, the delegate result may already be in DB from a previous
+        // session where the poll wasn't running.
+        const [tRes, mRes] = await Promise.all([
+          fetch(`/api/delegate/tasks?conv_id=${encodeURIComponent(convId)}&limit=20`),
+          fetch(`/api/memory/conversations/${convId}`),
+        ])
+        const tasks = ((await tRes.json()) as { tasks?: Array<{ status: string }> }).tasks ?? []
+        const hasInflight = tasks.some(t => t.status === 'pending' || t.status === 'running')
+
+        let awaitingReply = false
+        if (mRes.ok) {
+          const mData = await mRes.json() as { messages?: Message[] }
+          const msgs = mData.messages ?? []
+          for (const m of msgs) {
+            if (!seenIds.has(m.id)) {
+              seenIds.add(m.id)
+              // Only splice in messages the store doesn't already know about.
+              const current = useAppStore.getState().getActiveConversation()
+              if (current && current.id === convId && !current.messages.some(x => x.id === m.id)) {
+                addMessage(convId, m)
+              }
+            }
+          }
+          // Look for "sent_to_worker" user turns whose delegate reply hasn't
+          // arrived yet — the presence of one keeps the poll alive.
+          for (let i = 0; i < msgs.length; i++) {
+            const m = msgs[i]
+            const isSent = m.role === 'user'
+              && (m.meta as { sent_to_worker?: boolean } | undefined)?.sent_to_worker
+            if (!isSent) continue
+            const hasReplyAfter = msgs.slice(i + 1).some(
+              n => n.role === 'assistant'
+                && (n.meta as { delegated_task_id?: string } | undefined)?.delegated_task_id,
+            )
+            if (!hasReplyAfter) { awaitingReply = true; break }
+          }
+        }
+
+        if (cancelled) return
+        if (hasInflight || awaitingReply) {
+          handle = window.setTimeout(tick, 2000)
+        } else {
+          // Nothing outstanding — stop the poll. Restart via
+          // startDelegatePoll on the next send-to-worker click.
+          pollRef.current = null
+        }
+      } catch {
+        if (!cancelled) handle = window.setTimeout(tick, 5000)
+      }
+    }
+
+    pollRef.current = {
+      cancel: () => {
+        cancelled = true
+        if (handle != null) clearTimeout(handle)
+      },
+    }
+    void tick()
+  }
+
+  // Start the poll whenever we open a conversation. Cheap: tick will exit
+  // fast if there's nothing to wait for.
+  useEffect(() => {
+    if (!activeConversationId) return
+    startDelegatePoll(activeConversationId)
+    return () => {
+      pollRef.current?.cancel()
+      pollRef.current = null
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeConversationId])
+
+  // Send-to-worker: user clicked the amber Bot button.
+  //   1. Add the user's prompt to the chat as a user message tagged
+  //      `sent_to_worker: true` (badge in MessageBubble).
+  //   2. POST to /api/delegate/send — backend uses the judge to pick a
+  //      category, dispatches the worker, returns instantly.
+  //   3. Auto-expand the right panel + switch to Auxiliary tab for live
+  //      progress.
+  //   4. Kick the delegate poll so the reply is caught the instant it
+  //      lands (in case the useEffect version already exited).
+  async function handleSendToWorker(text: string) {
+    const prompt = text.trim()
+    if (!prompt) return
+
+    let convId = activeConversationId
+    if (!convId) {
+      convId = createNewConversation()
+    }
+
+    const userMsg: Message = {
+      id:        nanoid(),
+      role:      'user',
+      content:   prompt,
+      timestamp: Date.now(),
+      meta:      { sent_to_worker: true },
+    }
+    addMessage(convId, userMsg)
+    syncToBackend(convId, {
+      title:     conv?.title ?? 'New conversation',
+      model:     settings.activeModel,
+      updatedAt: Date.now(),
+    }, userMsg)
+
+    try {
+      await fetch('/api/delegate/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          prompt,
+          conv_id:       convId,
+          source_msg_id: userMsg.id,
+        }),
+      })
+      setVoicePanelOpen(true)
+      setRightPanel('delegate')
+      // Make sure the poll is running (it may have exited if the previous
+      // task finished quickly).
+      startDelegatePoll(convId)
+    } catch {
+      /* silent — user will see a missing entry in the Auxiliary panel */
+    }
+  }
 
   // Manual "Read aloud" — read latest voice/speed/volume from store at call-time.
   const handleSpeak = useCallback((text: string) => {
@@ -361,7 +506,7 @@ export function ChatWindow() {
         )}
       </div>
 
-      <ChatInput onSend={handleSend} onStop={handleStop} />
+      <ChatInput onSend={handleSend} onSendToWorker={handleSendToWorker} onStop={handleStop} />
     </div>
   )
 }

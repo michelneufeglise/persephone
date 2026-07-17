@@ -1,21 +1,23 @@
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
-  User, Cpu, Boxes, Brain, Database, Wrench, Palette, Volume2
+  User, Cpu, Boxes, Brain, Database, Wrench, Palette, Volume2, Bot,
 } from 'lucide-react'
 import { CharacterSection } from './sections/CharacterSection'
 import { ModelSection } from './sections/ModelSection'
 import { ModelRolesSection } from './sections/ModelRolesSection'
+import { AuxiliarySection } from './sections/AuxiliarySection'
 import { MemorySection } from './sections/MemorySection'
 import { McpSection } from './sections/McpSection'
 import { ThemeSection } from './sections/ThemeSection'
 import { VoiceSection } from './sections/VoiceSection'
 
-type Tab = 'character' | 'modelRoles' | 'model' | 'voice' | 'memory' | 'mcp' | 'theme'
+type Tab = 'character' | 'modelRoles' | 'auxiliary' | 'model' | 'voice' | 'memory' | 'mcp' | 'theme'
 
 const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: 'character',   label: 'Character',  icon: User },
   { id: 'modelRoles',  label: 'Models',     icon: Boxes },
+  { id: 'auxiliary',   label: 'Auxiliary',  icon: Bot },
   { id: 'model',       label: 'Generation', icon: Cpu },
   { id: 'voice',       label: 'Voice',      icon: Volume2 },
   { id: 'memory',      label: 'Memory',     icon: Brain },
@@ -65,6 +67,7 @@ export function SettingsView() {
           >
             {activeTab === 'character'  && <CharacterSection />}
             {activeTab === 'modelRoles' && <ModelRolesSection />}
+            {activeTab === 'auxiliary'  && <AuxiliarySection />}
             {activeTab === 'model'      && <ModelSection />}
             {activeTab === 'voice'      && <VoiceSection />}
             {activeTab === 'memory'     && <MemorySection />}

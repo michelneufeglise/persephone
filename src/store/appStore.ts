@@ -179,14 +179,14 @@ interface AppState {
   setIsSpeaking: (v: boolean) => void
   audioLevel: number
   setAudioLevel: (v: number) => void
-  currentView: 'chat' | 'reels' | 'documents' | 'settings' | 'memory' | 'research'
-  setCurrentView: (v: 'chat' | 'reels' | 'documents' | 'settings' | 'memory' | 'research') => void
+  currentView: 'chat' | 'reels' | 'documents' | 'music' | 'settings' | 'memory' | 'research' | 'workers'
+  setCurrentView: (v: 'chat' | 'reels' | 'documents' | 'music' | 'settings' | 'memory' | 'research' | 'workers') => void
   voicePanelOpen: boolean
   setVoicePanelOpen: (v: boolean) => void
 
   // Right panel switcher
-  rightPanel: 'voice' | 'documents'
-  setRightPanel: (v: 'voice' | 'documents') => void
+  rightPanel: 'voice' | 'documents' | 'delegate'
+  setRightPanel: (v: 'voice' | 'documents' | 'delegate') => void
 
   // Active document selection
   activeDocId: string | null

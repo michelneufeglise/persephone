@@ -40,6 +40,14 @@ const ROLES = [
     key: 'tables_model', label: 'Spreadsheets & Tables', required: false,
     description: 'Extracts tables and writes spreadsheet formulas.',
   },
+  {
+    key: 'ableton_composer_model', label: 'Ableton Composer', required: false,
+    description: 'The standard model for the Ableton track-first composer + edit chat. Default: qwen3.6:35b-a3b.',
+  },
+  {
+    key: 'ableton_deep_model', label: 'Ableton Deep Reasoning', required: false,
+    description: 'Used when the composer\'s Deep Reasoning toggle is on. Default: gemma4:26b.',
+  },
 ] as const
 
 type RoleKey = (typeof ROLES)[number]['key']
@@ -48,6 +56,7 @@ type RoleValues = Record<RoleKey, string>
 const EMPTY_ROLES: RoleValues = {
   active_model: '', judge_model: '', vision_model: '', code_model: '',
   ocr_model: '', docs_model: '', handwriting_model: '', tables_model: '',
+  ableton_composer_model: '', ableton_deep_model: '',
 }
 
 export function ModelRolesSection() {

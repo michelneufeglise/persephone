@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Wrench, ChevronDown, CheckCircle2, AlertCircle } from 'lucide-react'
+import { Wrench, ChevronDown, CheckCircle2, AlertCircle, Bot } from 'lucide-react'
 import type { ToolCall } from '@/types'
 import { clsx } from 'clsx'
 
@@ -16,33 +16,72 @@ export function ToolCallList({ calls }: { calls: ToolCall[] }) {
 function ToolCallCard({ call }: { call: ToolCall }) {
   const [open, setOpen] = useState(false)
   const [server, toolName] = call.name.split('__')
+  const isDelegate = call.name === 'delegate_task'
+  // Delegate calls return a JSON ack — parse it so we can show the picked
+  // model + task id in the collapsed header.
+  const delegateAck: { task_id?: string; delegate_model?: string; category?: string; message?: string } | null =
+    isDelegate && call.status === 'done' && call.preview
+      ? (() => { try { return JSON.parse(call.preview) } catch { return null } })()
+      : null
 
   return (
-    <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] overflow-hidden">
+    <div className={`rounded-lg border overflow-hidden ${
+      isDelegate
+        ? 'border-amber-400/40 bg-amber-400/5'
+        : 'border-[var(--border)] bg-[var(--bg-tertiary)]'
+    }`}>
       <button
         onClick={() => setOpen(o => !o)}
         className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left hover:bg-[var(--bg-secondary)] transition-colors"
       >
-        <StatusIcon status={call.status} />
+        {isDelegate ? <Bot className="w-3.5 h-3.5 text-amber-300 shrink-0" /> : <StatusIcon status={call.status} />}
 
         <div className="flex-1 min-w-0">
-          <div className="flex items-baseline gap-1.5">
-            <span className="text-[11px] text-[var(--text-muted)] font-mono">{server}</span>
-            <span className="text-[10px] text-[var(--text-muted)]">·</span>
-            <span className="text-[11px] text-[var(--accent)] font-mono font-medium truncate">
-              {toolName}
-            </span>
-          </div>
-          {call.status === 'running' && (
-            <span className="text-[10px] text-[var(--text-muted)]">Running…</span>
-          )}
-          {call.status === 'done' && call.preview && (
-            <span className="text-[10px] text-[var(--text-muted)] truncate block">
-              {call.preview.split('\n')[0].slice(0, 80)}
-            </span>
-          )}
-          {call.status === 'error' && (
-            <span className="text-[10px] text-red-400 truncate block">{call.error}</span>
+          {isDelegate ? (
+            <>
+              <div className="flex items-baseline gap-1.5 flex-wrap">
+                <span className="text-[11px] text-amber-300 font-mono font-medium">Delegated task</span>
+                {delegateAck?.delegate_model && (
+                  <>
+                    <span className="text-[10px] text-[var(--text-muted)]">→</span>
+                    <span className="text-[11px] text-[var(--accent)] font-mono truncate">
+                      {delegateAck.delegate_model.split(':')[0]}
+                    </span>
+                  </>
+                )}
+                {delegateAck?.category && (
+                  <span className="text-[9.5px] text-[var(--text-muted)] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded border border-[var(--border)]">
+                    {delegateAck.category}
+                  </span>
+                )}
+              </div>
+              <span className="text-[10px] text-[var(--text-muted)] truncate block">
+                {call.status === 'running' ? 'dispatching…'
+                 : call.status === 'error' ? (call.error ?? 'failed')
+                 : delegateAck?.message ?? 'task started — answer will appear below when ready'}
+              </span>
+            </>
+          ) : (
+            <>
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-[11px] text-[var(--text-muted)] font-mono">{server}</span>
+                <span className="text-[10px] text-[var(--text-muted)]">·</span>
+                <span className="text-[11px] text-[var(--accent)] font-mono font-medium truncate">
+                  {toolName}
+                </span>
+              </div>
+              {call.status === 'running' && (
+                <span className="text-[10px] text-[var(--text-muted)]">Running…</span>
+              )}
+              {call.status === 'done' && call.preview && (
+                <span className="text-[10px] text-[var(--text-muted)] truncate block">
+                  {call.preview.split('\n')[0].slice(0, 80)}
+                </span>
+              )}
+              {call.status === 'error' && (
+                <span className="text-[10px] text-red-400 truncate block">{call.error}</span>
+              )}
+            </>
           )}
         </div>
 

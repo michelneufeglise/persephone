@@ -21,6 +21,7 @@ Persephone wraps the speed of local Ollama models in a thoughtful, beautifully d
 - 🛠 **MCP tools out of the box.** DuckDuckGo, Brave Search, Fetch, Filesystem (**incl. a Persephone-scoped filesystem for the repo itself**), Git, SQLite, Memory, Puppeteer, Sequential Thinking — toggle on with one click; servers spawn automatically.
 - 🐦 **Ornith Coder mode.** One-click sidebar preset that switches the active model to `ornith:latest` (Qwen3-based 9B agentic coder, 262K context) and injects a plan → approve → diff → README → commit workflow. Wired to the `persephone-fs` MCP for real repo access.
 - 🎬 **Reels studio.** New sidebar tab. Type a topic, pick tone + duration + aspect, and Persephone plans scenes (script + image prompt + timing per scene) via the active LLM, drives ComfyUI for stills OR your own uploaded footage, layers Kokoro voice-over OR keeps the source speaker talking, burns in captions (from the script or from a live Whisper transcript with translate-to-English), applies per-scene look effects (brightness / contrast / saturation / speed / grayscale), then ffmpeg composites a 9:16 TikTok/Reels/Shorts MP4 with sidechain-ducked background music.
+- 🎹 **Ableton Live AI composer.** Detects a running Ableton Live 12 install, one-click installs the AbletonOSC bridge + Persephone's browser patch, and exposes a **Music** tab that composes full `SongSpec` JSONs (sections, tempo, key, tracks, note patterns) via `qwen2.5:32b` — or **`deepseek-r1:70b`** if you flip on "Deep reasoning". Materialises straight into a running Live session over OSC (auto-loads Drift / Drum Rack / 505 Core Kit per role), auto-fires scene 0, and lets you iteratively edit the song ("darker chorus", "less busy verse") with atomic `EditPlan` operations and full undo.
 - 🔬 **Deep research engine.** Decomposes a question into sub-questions, searches the web, fetches sources, embeds chunks, and synthesises a fully-cited markdown report with a generative SVG cover.
 - 📚 **Persistent knowledge base.** Every research run feeds chunks into a `sqlite-vec` semantic index — search across everything you've ever researched.
 - 🎙 **In-process TTS.** Orpheus / SNAC neural codec for natural-sounding voice playback, with 8 voices.
@@ -438,7 +439,22 @@ Click the button again to restore your previous model and system prompt. State p
 
 Prerequisites: the `persephone-fs` and `git` MCP servers must be enabled in **Settings → Tools**.
 
-### 11 · Five themes
+### 11 · Ableton Live AI composer
+
+A full **AI-driven music composer** that talks to a running Ableton Live 12 session over OSC. Persephone detects a local Live install, offers a one-click bridge install ([AbletonOSC](https://github.com/ideoforms/AbletonOSC) + our own browser patch), then exposes a **Music** tab in the sidebar with:
+
+- **Composer** — describe a mood ("rainy Sunday morning, warm Rhodes, boom-bap kit"), pick a genre, and Persephone streams a `SongSpec` JSON: sections + tempo + key + tracks + clips + note-pattern archetypes.
+- **Materialise into Live** — one click and Persephone wipes existing tracks, sets tempo + time-signature, creates a MIDI track per role, auto-loads a default instrument via the browser patch (Drift, Drum Rack, 505 Core Kit, …), drops MIDI notes into the right clip slots per section.
+- **Auto-play toggle** — Ableton doesn't launch playback on its own, so Persephone fires scene 0 for you (`POST /api/ableton/fire-scene`). Stop button hits `stop-all` on the Song.
+- **Edit chat** — after the initial song lands, talk to it: *"darker chorus"*, *"add a syncopated bass"*, *"less busy verse"*. The LLM emits atomic `EditPlan` operations that mutate the current SongSpec in-place; each edit is undoable (⌘Z or the Undo button).
+- **Deep reasoning toggle** — flips the composer off the default `qwen2.5:32b` (fast dense JSON emitter) onto **`deepseek-r1:70b`** (dense 70B reasoner). Much smarter about section arrangement, dynamic contour and chord choice, but ~30–60s per compose. Edits automatically prefer `deepseek-r1:70b` too when installed, then fall back to `qwen3.6:35b-a3b` / `Hydroxide538/qwen-agentworld` / `nemotron-3-nano:30b`.
+- **Auto-instruments** — Persephone ships an `AbletonOSC` browser patch (`server/ableton_patches/browser.py`) exposing `/live/browser/load_named` + `/live/browser/load_first` so the composer can populate every track with an instrument without the user dragging anything. Diagnostic probe endpoint (`POST /api/ableton/browser-probe`) walks Live 12 Intro's default `Drift` / `Drum Sampler` / `505 Core Kit` names and reports any misses.
+
+Backend wiring lives in `server/ableton_composer.py` (planner + editor prefs), `server/ableton_client.py` (async OSC with request/reply correlation via FIFO waiters), `server/song_translator.py` (SongSpec → real Live tracks/clips), `server/style_adapters.py` (deterministic Note generators per pattern archetype — `boom_bap`, `four_on_floor`, `tresillo`, `walking`, `arpeggio_up`, …), and `server/music_theory.py` (Roman-numeral progressions, cadences, scales).
+
+Prerequisite: Ableton Live 12 with the AbletonOSC control surface enabled (Live → Preferences → Link/Tempo/MIDI → Control Surface). Persephone's setup helper handles the install for you.
+
+### 12 · Five themes
 
 - **Underworld** — Polished obsidian veined with pomegranate fire (default)
 - **Spring Goddess** — Iridescent dawn, light theme
@@ -578,6 +594,24 @@ POST   /api/reels/comfy/stop         terminate the ComfyUI Persephone spawned
 POST   /api/reels/comfy/install      SSE: git clone + venv + pip + SDXL Base
 
 GET    /api/setup/ffmpeg             {installed, path, version, install_cmd}
+
+GET    /api/ableton/status           detect Live install + bridge state
+POST   /api/ableton/install-bridge   clone AbletonOSC + apply browser patch
+POST   /api/ableton/launch           spawn Live if not already running
+POST   /api/ableton/ping             OSC round-trip to the bridge
+POST   /api/ableton/compose          SSE stream of LLM-generated SongSpec
+                                     (accepts `model` override — e.g. deepseek-r1:70b
+                                      for "Deep reasoning" mode)
+POST   /api/ableton/apply-song       SSE: materialise SongSpec into a Live session
+POST   /api/ableton/edit             SSE: iterative EditPlan (undo-able)
+POST   /api/ableton/apply-edit       apply the last plan
+POST   /api/ableton/undo             pop last edit off the stack
+GET    /api/ableton/session          current SongSpec + undo depth
+GET    /api/ableton/patterns         pattern archetype vocabulary
+POST   /api/ableton/set-pattern      swap a clip's pattern archetype
+POST   /api/ableton/fire-scene       launch a Session-view scene
+POST   /api/ableton/stop-all         stop transport + all running clips
+POST   /api/ableton/browser-probe    end-to-end auto-load diagnostic
 
 GET    /api/setup/hardware           CPU/GPU/RAM/tier
 GET    /api/setup/recommendations    tier-filtered model catalog

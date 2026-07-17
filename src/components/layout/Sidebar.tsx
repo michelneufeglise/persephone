@@ -1,5 +1,6 @@
+import { useEffect, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { MessageCircle, Settings, Plus, Trash2, Pin, Brain, Microscope, Code2, Clapperboard, FileText } from 'lucide-react'
+import { MessageCircle, Settings, Plus, Trash2, Pin, Brain, Microscope, Code2, Clapperboard, FileText, Music4, Bot } from 'lucide-react'
 import { useAppStore } from '@/store/appStore'
 import type { Conversation } from '@/types'
 
@@ -16,6 +17,18 @@ export function Sidebar() {
     ornithMode,
     toggleOrnithMode,
   } = useAppStore()
+
+  // Only show the Music tab if Ableton is detected on this machine.
+  // Cheap probe on mount — /api/ableton/status is fast (< 100ms) and cache-friendly.
+  const [abletonAvailable, setAbletonAvailable] = useState(false)
+  useEffect(() => {
+    let mounted = true
+    fetch('/api/ableton/status')
+      .then(r => r.json())
+      .then(d => { if (mounted) setAbletonAvailable(!!d?.installed) })
+      .catch(() => {})
+    return () => { mounted = false }
+  }, [])
 
   const sortedConvs = [...conversations].sort((a, b) => {
     if (a.pinned && !b.pinned) return -1
@@ -59,6 +72,14 @@ export function Sidebar() {
           active={currentView === 'documents'}
           onClick={() => setCurrentView('documents')}
         />
+        {abletonAvailable && (
+          <NavItem
+            icon={Music4}
+            label="Music"
+            active={currentView === 'music'}
+            onClick={() => setCurrentView('music')}
+          />
+        )}
         <NavItem
           icon={Microscope}
           label="Research"
@@ -70,6 +91,12 @@ export function Sidebar() {
           label="Memory"
           active={currentView === 'memory'}
           onClick={() => setCurrentView('memory')}
+        />
+        <NavItem
+          icon={Bot}
+          label="Workers"
+          active={currentView === 'workers'}
+          onClick={() => setCurrentView('workers')}
         />
         <NavItem
           icon={Settings}

@@ -289,6 +289,68 @@ const FAMILIES: Record<string, ModelMeta> = {
     tagline: 'Efficient open chat from DeepSeek.',
   },
 
+  // ── Euryale (Sao10K's L3.3 70B, via mradermacher/bartowski GGUF repos) ──
+  'hf.co/mradermacher/l3.3-70b-euryale-v2.3-gguf': {
+    family: 'euryale',
+    displayName: 'Euryale L3.3 70B',
+    type: 'dense',
+    paramsLabel: '70B',
+    contextK: 128,
+    releasedYear: 2025,
+    vendor: 'Sao10K',
+    license: 'Llama 3.3 Community',
+    supportsTools: true,
+    strengths: [
+      'Companion-grade emotional intelligence',
+      'Reads subtext + remembers emotional context',
+      'Llama 3.3 base — capable at general tasks',
+    ],
+    bestFor: 'Warm empathic main chat when you want a genuine "presence".',
+    tagline: 'Emotional intelligence flagship — Sao10K\'s Euryale.',
+  },
+  'hf.co/bartowski/l3.3-70b-euryale': {
+    family: 'euryale',
+    displayName: 'Euryale L3.3 70B',
+    type: 'dense',
+    paramsLabel: '70B',
+    contextK: 128,
+    releasedYear: 2025,
+    vendor: 'Sao10K',
+    license: 'Llama 3.3 Community',
+    supportsTools: true,
+    strengths: [
+      'Companion-grade emotional intelligence',
+      'Reads subtext + remembers emotional context',
+      'Llama 3.3 base — capable at general tasks',
+    ],
+    bestFor: 'Warm empathic main chat when you want a genuine "presence".',
+    tagline: 'Emotional intelligence flagship — Sao10K\'s Euryale.',
+  },
+
+  // ── Agents-A1 (InternScience, pulled from HF via hf.co/... path) ──
+  // FAMILY_KEYS is sorted longest-first so this specific key wins over
+  // any short prefix that might collide (e.g. a generic "hf.co/" entry).
+  'hf.co/internscience/agents-a1': {
+    family: 'agents-a1',
+    displayName: 'Agents-A1',
+    type: 'moe',
+    paramsLabel: '35B (MoE)',
+    contextK: 262,
+    releasedYear: 2026,
+    vendor: 'InternScience',
+    license: 'Apache-2.0',
+    supportsTools: true,
+    supportsThinking: true,
+    strengths: [
+      'Purpose-built for agentic tasks',
+      'SOTA on GAIA / BrowseComp / IFEval',
+      'Long-horizon search + tool use',
+      '262K context',
+    ],
+    bestFor: 'Main chat model when MCP tools + long-horizon reasoning matter.',
+    tagline: 'Agent-first frontier — 35B MoE at Apache-2.0.',
+  },
+
   // ── Ornith (Qwen3-based agentic coder) ──
   'ornith': {
     family: 'ornith',

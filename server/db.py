@@ -63,6 +63,28 @@ CREATE TABLE IF NOT EXISTS user_facts (
 );
 CREATE INDEX IF NOT EXISTS idx_facts_created ON user_facts(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_facts_cat     ON user_facts(category);
+
+-- Delegated tasks: async subtasks the main chat model spawned via the
+-- `delegate_task` tool. Result flows back into the conversation as a new
+-- assistant message once the delegate finishes.
+CREATE TABLE IF NOT EXISTS delegated_tasks (
+    id                TEXT PRIMARY KEY,
+    conversation_id   TEXT NOT NULL,
+    source_msg_id     TEXT NOT NULL DEFAULT '',
+    prompt            TEXT NOT NULL,
+    category          TEXT NOT NULL DEFAULT 'general',
+    delegate_model    TEXT NOT NULL DEFAULT '',
+    main_model        TEXT NOT NULL DEFAULT '',
+    status            TEXT NOT NULL DEFAULT 'pending',   -- pending|running|done|failed|cancelled
+    result            TEXT NOT NULL DEFAULT '',
+    comment           TEXT NOT NULL DEFAULT '',
+    error             TEXT NOT NULL DEFAULT '',
+    created_at        REAL NOT NULL,
+    started_at        REAL,
+    completed_at      REAL
+);
+CREATE INDEX IF NOT EXISTS idx_deltasks_conv    ON delegated_tasks(conversation_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_deltasks_status  ON delegated_tasks(status);
 """
 
 
@@ -128,10 +150,24 @@ async def get_conversation(conv_id: str) -> dict | None:
                 "thinkingContent": m["thinking"],
                 "model":          m["model"],
                 "timestamp":      int(m["timestamp"] * 1000),
+                "meta":           _parse_meta(m["meta"] if "meta" in m.keys() else "{}"),
             }
             for m in msgs
         ],
     }
+
+
+def _parse_meta(raw: Any) -> dict:
+    """Best-effort JSON parse for the meta column; missing/corrupt → {}."""
+    if isinstance(raw, dict):
+        return raw
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, dict) else {}
+    except (ValueError, TypeError):
+        return {}
 
 
 async def upsert_conversation(data: dict) -> None:
@@ -156,12 +192,15 @@ async def upsert_conversation(data: dict) -> None:
 
 
 async def upsert_message(conv_id: str, msg: dict) -> None:
+    meta = msg.get("meta") or {}
+    if not isinstance(meta, dict):
+        meta = {}
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
-            """INSERT INTO messages (id,conversation_id,role,content,thinking,model,timestamp)
-               VALUES (?,?,?,?,?,?,?)
+            """INSERT INTO messages (id,conversation_id,role,content,thinking,model,timestamp,meta)
+               VALUES (?,?,?,?,?,?,?,?)
                ON CONFLICT(id) DO UPDATE SET
-                 content=excluded.content, thinking=excluded.thinking""",
+                 content=excluded.content, thinking=excluded.thinking, meta=excluded.meta""",
             (
                 msg["id"],
                 conv_id,
@@ -170,6 +209,7 @@ async def upsert_message(conv_id: str, msg: dict) -> None:
                 msg.get("thinkingContent", ""),
                 msg.get("model", ""),
                 msg.get("timestamp", time.time() * 1000) / 1000,
+                json.dumps(meta),
             ),
         )
         # Update conversation updated_at

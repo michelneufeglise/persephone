@@ -8,6 +8,8 @@ import { MemoryView } from '@/components/memory/MemoryView'
 import { ResearchView } from '@/components/research/ResearchView'
 import { ReelsView } from '@/components/reels/ReelsView'
 import { DocumentsPanel } from '@/components/documents/DocumentsPanel'
+import { AbletonView } from '@/components/ableton/AbletonView'
+import { WorkersView } from '@/components/workers/WorkersView'
 
 export function AppLayout() {
   const { currentView } = useAppStore()
@@ -82,6 +84,17 @@ export function AppLayout() {
               >
                 <DocumentsPanel />
               </motion.div>
+            ) : currentView === 'music' ? (
+              <motion.div
+                key="music"
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -6 }}
+                transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
+                className="flex-1 p-4"
+              >
+                <AbletonView />
+              </motion.div>
             ) : currentView === 'research' ? (
               <motion.div
                 key="research"
@@ -92,6 +105,17 @@ export function AppLayout() {
                 className="flex-1 p-4"
               >
                 <ResearchView />
+              </motion.div>
+            ) : currentView === 'workers' ? (
+              <motion.div
+                key="workers"
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -6 }}
+                transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
+                className="flex-1 overflow-hidden"
+              >
+                <WorkersView />
               </motion.div>
             ) : (
               <motion.div

@@ -17,6 +17,12 @@ export interface CatalogModel {
   size_gb: number
   tiers: string[]
   installed: boolean
+  /** Estimated tokens/sec on the current hardware (from /api/setup/optimized-models). */
+  tok_per_s_est?: number
+  /** Fit rating: 'top' | 'good' | 'acceptable' | 'slow' | 'unsupported'. */
+  fit?: string
+  /** True when tok_per_s_est ≥ min target (usually 20). */
+  meets_target?: boolean
 }
 
 interface ModelCardProps {
@@ -158,6 +164,27 @@ export function ModelCard({ model, selected, onSelect, ramGb = 0 }: ModelCardPro
         <span className="flex items-center gap-1"><MemoryStick className="w-3 h-3" />≥{model.ram_min_gb}GB RAM</span>
         <span className="font-mono">{model.quant}</span>
         <span>~{model.size_gb}GB dl</span>
+        {model.tok_per_s_est !== undefined && (
+          <span
+            className={clsx(
+              'font-mono font-medium px-1.5 py-0.5 rounded-full border',
+              model.fit === 'top' && 'text-emerald-300 border-emerald-500/40 bg-emerald-500/10',
+              model.fit === 'good' && 'text-green-300 border-green-500/40 bg-green-500/10',
+              model.fit === 'acceptable' && 'text-amber-300 border-amber-500/40 bg-amber-500/10',
+              model.fit === 'slow' && 'text-red-300 border-red-500/40 bg-red-500/10',
+              model.fit === 'unsupported' && 'text-red-400 border-red-500/50 bg-red-500/15',
+            )}
+            title={
+              model.fit === 'top'         ? 'Runs comfortably above 40 tok/s on your hardware'
+              : model.fit === 'good'      ? 'Meets the 20 tok/s target'
+              : model.fit === 'acceptable'? 'Runnable but below the 20 tok/s comfort target'
+              : model.fit === 'slow'      ? 'Runnable but slow (< 10 tok/s) — long waits'
+              : 'Not runnable on this hardware (insufficient RAM)'
+            }
+          >
+            ~{model.tok_per_s_est} tok/s
+          </span>
+        )}
         <a
           href={model.hf_url}
           target="_blank"

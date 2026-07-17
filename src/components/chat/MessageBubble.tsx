@@ -3,7 +3,7 @@ import { RichMarkdown } from '@/components/markdown/RichMarkdown'
 import { ThinkingPanel } from './ThinkingPanel'
 import { ToolCallList } from './ToolCallList'
 import type { Message } from '@/types'
-import { Volume2, Copy, Check } from 'lucide-react'
+import { Volume2, Copy, Check, Bot, ArrowUpRight } from 'lucide-react'
 import { useState } from 'react'
 
 interface MessageBubbleProps {
@@ -69,12 +69,23 @@ export function MessageBubble({ message, onSpeak, isLatest }: MessageBubbleProps
 
       {/* Bubble */}
       <div className={`max-w-[75%] flex flex-col ${isUser ? 'items-end' : 'items-start'}`}>
-        {/* Model tag for AI messages */}
-        {!isUser && message.model && (
-          <div className="flex items-center gap-1.5 mb-1.5 ml-2">
-            <span className="text-[9px] text-[var(--text-muted)] font-mono uppercase tracking-[0.25em]">
-              {message.model.split(':')[0]}
+        {/* "Sent to worker" badge on user turns dispatched via the amber Bot button */}
+        {isUser && (message.meta as { sent_to_worker?: boolean } | undefined)?.sent_to_worker && (
+          <div className="flex items-center gap-1.5 mb-1.5 mr-2 justify-end">
+            <span className="inline-flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded-full uppercase tracking-wider border border-amber-400/40 text-amber-300 bg-amber-400/10"
+                  title="Sent to an auxiliary worker model — reply appears below when ready">
+              <Bot className="w-2.5 h-2.5" /> sent to worker
             </span>
+          </div>
+        )}
+        {/* Model tag + delegated badge for AI messages */}
+        {!isUser && (message.model || !!message.meta?.delegated_task_id) && (
+          <div className="flex items-center gap-1.5 mb-1.5 ml-2 flex-wrap">
+            {message.model && (
+              <span className="text-[9px] text-[var(--text-muted)] font-mono uppercase tracking-[0.25em]">
+                {message.model.split(':')[0]}
+              </span>
+            )}
             {message.routedReason && (
               <span
                 className="text-[9px] font-mono px-1.5 py-0.5 rounded-full
@@ -85,6 +96,29 @@ export function MessageBubble({ message, onSpeak, isLatest }: MessageBubbleProps
                 ⊹ {message.routedReason.replace(/^auto · /, '')}
               </span>
             )}
+            {(() => {
+              const meta = message.meta as
+                | { delegated_task_id?: string;
+                    delegated_source?: 'delegate' | 'main_model_comment';
+                    delegate_model?: string;
+                    delegate_category?: string } | undefined
+              if (!meta?.delegated_task_id) return null
+              const isMainComment = meta.delegated_source === 'main_model_comment'
+              return (
+                <span
+                  className={`inline-flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded-full uppercase tracking-wider ${
+                    isMainComment
+                      ? 'border border-[var(--border)] text-[var(--text-muted)] bg-[var(--bg-tertiary)]/60'
+                      : 'border border-amber-400/40 text-amber-300 bg-amber-400/10'
+                  }`}
+                  title={`Delegated to ${meta.delegate_model ?? '?'} (${meta.delegate_category ?? '?'})`}
+                >
+                  {isMainComment
+                    ? <>↩ follow-up</>
+                    : <><Bot className="w-2.5 h-2.5" /> delegated · {meta.delegate_model?.split(':')[0]}</>}
+                </span>
+              )
+            })()}
           </div>
         )}
 

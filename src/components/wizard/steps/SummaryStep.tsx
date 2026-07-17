@@ -1,6 +1,8 @@
+import { useCallback, useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import { User, Cpu, Eye, Code2, Database, Volume2, Palette, CheckCircle,
-         ScanText, FileText, PenLine, Table, Wrench, Wand2 } from 'lucide-react'
+         ScanText, FileText, PenLine, Table, Wrench, Wand2, Loader2,
+         AlertTriangle, Download } from 'lucide-react'
 
 interface Config {
   accountName: string
@@ -24,7 +26,57 @@ interface SummaryStepProps {
   config: Config
 }
 
+interface TtsStatus {
+  ready:              boolean
+  package_installed:  boolean
+  model_downloaded:   boolean
+  voices_downloaded:  boolean
+  model_size_mb:      number
+  voices_size_mb:     number
+  missing:            string[]
+}
+
 export function SummaryStep({ config }: SummaryStepProps) {
+  const [ttsStatus, setTtsStatus]     = useState<TtsStatus | null>(null)
+  const [ttsInstalling, setTtsInstalling] = useState(false)
+  const [ttsError, setTtsError]       = useState<string>('')
+
+  const loadStatus = useCallback(async () => {
+    try {
+      const r = await fetch('/api/setup/tts-status')
+      if (r.ok) setTtsStatus(await r.json())
+    } catch { /* silent */ }
+  }, [])
+
+  // Auto-install on first mount if not ready — the wizard is the natural
+  // place to sink a one-time 100-500MB download so the first spoken reply
+  // doesn't surprise the user with wait time later.
+  useEffect(() => {
+    (async () => {
+      await loadStatus()
+      try {
+        const r = await fetch('/api/setup/tts-status')
+        const s = await r.json() as TtsStatus
+        if (!s.ready && s.package_installed) {
+          setTtsInstalling(true)
+          setTtsError('')
+          try {
+            const ir = await fetch('/api/setup/tts-install', { method: 'POST' })
+            const id = await ir.json() as TtsStatus & { ok?: boolean; error?: string }
+            setTtsStatus(id)
+            if (!id.ok && id.error) setTtsError(id.error)
+          } catch (exc) {
+            setTtsError(exc instanceof Error ? exc.message : String(exc))
+          } finally {
+            setTtsInstalling(false)
+          }
+        } else {
+          setTtsStatus(s)
+        }
+      } catch { /* silent */ }
+    })()
+  }, [loadStatus])
+
   const rows = [
     { icon: User,      label: 'Account',          value: config.accountName        || 'Not set'     },
     { icon: Cpu,       label: 'Main model',       value: config.activeModel        || 'Not selected'},
@@ -83,6 +135,51 @@ export function SummaryStep({ config }: SummaryStepProps) {
             </span>
           </motion.div>
         ))}
+      </div>
+
+      {/* TTS install status — shown so the user sees Kokoro finishing on-screen */}
+      <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)]/60 px-4 py-3 space-y-1.5">
+        <div className="flex items-center gap-2 text-xs">
+          <Volume2 className="w-3.5 h-3.5 text-[var(--accent)]" />
+          <span className="text-[var(--text-primary)] font-medium">Voice engine</span>
+          {ttsInstalling && <>
+            <Loader2 className="w-3 h-3 animate-spin text-[var(--accent)]" />
+            <span className="text-[var(--text-muted)]">downloading Kokoro model (~360 MB)…</span>
+          </>}
+          {!ttsInstalling && ttsStatus?.ready && <>
+            <CheckCircle className="w-3 h-3 text-emerald-400" />
+            <span className="text-[var(--text-muted)]">
+              ready ({ttsStatus.model_size_mb} MB model + {ttsStatus.voices_size_mb} MB voices, warmed up)
+            </span>
+          </>}
+          {!ttsInstalling && ttsStatus && !ttsStatus.ready && (
+            <>
+              <AlertTriangle className="w-3 h-3 text-amber-400" />
+              <span className="text-[var(--text-muted)]">
+                {ttsStatus.missing.length > 0 ? `Missing: ${ttsStatus.missing.join(', ')}` : 'Not ready yet'}
+              </span>
+              <button
+                onClick={async () => {
+                  setTtsInstalling(true)
+                  try {
+                    const r = await fetch('/api/setup/tts-install', { method: 'POST' })
+                    const d = await r.json() as TtsStatus & { ok?: boolean; error?: string }
+                    setTtsStatus(d)
+                    if (!d.ok && d.error) setTtsError(d.error); else setTtsError('')
+                  } catch (exc) {
+                    setTtsError(exc instanceof Error ? exc.message : String(exc))
+                  } finally { setTtsInstalling(false) }
+                }}
+                className="ml-auto flex items-center gap-1 text-[10px] px-2 py-0.5 rounded border border-[var(--accent)] text-[var(--accent)] hover:bg-[var(--accent-dim)]"
+              >
+                <Download className="w-2.5 h-2.5" /> retry
+              </button>
+            </>
+          )}
+        </div>
+        {ttsError && (
+          <div className="text-[10.5px] text-red-300 italic">{ttsError}</div>
+        )}
       </div>
 
       <p className="text-xs text-[var(--text-muted)] text-center">

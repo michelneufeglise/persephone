@@ -254,6 +254,57 @@ MODELS: list[dict] = [
         "size_gb": 43.0, "tiers": ["ultra"],
     },
     {
+        "id": "deepseek-r1:70b", "name": "DeepSeek R1 70B", "family": "DeepSeek",
+        "params": "70B", "ram_min_gb": 40, "quant": "Q4_K_M",
+        "category": "chat",
+        "description": (
+            "Strongest local reasoner. Distilled from Llama 70B, visible <think> chain. "
+            "Persephone auto-picks this as the top preference for Ableton edits and — when "
+            "you toggle 'Deep reasoning' in the composer — for song generation too."
+        ),
+        "tags": ["reasoning", "thinking", "frontier", "ableton"],
+        "hf_url": "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Llama-70B",
+        "size_gb": 43.0, "tiers": ["ultra"],
+    },
+    {
+        "id": "deepseek-r1:32b", "name": "DeepSeek R1 32B", "family": "DeepSeek",
+        "params": "32B", "ram_min_gb": 20, "quant": "Q4_K_M",
+        "category": "chat",
+        "description": (
+            "Qwen 2.5 32B distillation of R1. Same reasoning-first training as the "
+            "70B but ~2-3× faster and half the RAM. Sweet spot for M1/M2 Max, M3 "
+            "Pro, or discrete GPUs with 24GB+ VRAM."
+        ),
+        "tags": ["reasoning", "thinking", "balanced"],
+        "hf_url": "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-32B",
+        "size_gb": 20.0, "tiers": ["ultra", "high"],
+    },
+    {
+        "id": "deepseek-r1:14b", "name": "DeepSeek R1 14B", "family": "DeepSeek",
+        "params": "14B", "ram_min_gb": 9, "quant": "Q4_K_M",
+        "category": "chat",
+        "description": (
+            "Qwen 2.5 14B distillation of R1. Runs comfortably on 16GB machines "
+            "with headroom to spare. Best entry-point to R1-style reasoning "
+            "without the 70B RAM tax."
+        ),
+        "tags": ["reasoning", "thinking", "small"],
+        "hf_url": "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",
+        "size_gb": 9.0, "tiers": ["ultra", "high", "mid"],
+    },
+    {
+        "id": "deepseek-r1:8b", "name": "DeepSeek R1 8B", "family": "DeepSeek",
+        "params": "8B", "ram_min_gb": 6, "quant": "Q4_K_M",
+        "category": "chat",
+        "description": (
+            "Llama 3.1 8B distillation of R1. Reasoning training on a small "
+            "base — for low-RAM machines that still want visible <think> chains."
+        ),
+        "tags": ["reasoning", "thinking", "compact"],
+        "hf_url": "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
+        "size_gb": 5.2, "tiers": ["ultra", "high", "mid", "low"],
+    },
+    {
         "id": "llama3.2:3b", "name": "Llama 3.2 3B", "family": "Meta",
         "params": "3B", "ram_min_gb": 2, "quant": "Q4_K_M",
         "category": "chat",
@@ -315,6 +366,45 @@ MODELS: list[dict] = [
         "tags": ["thinking", "moe", "long-context", "reasoning"],
         "hf_url": "https://huggingface.co/Qwen/Qwen3.6-35B-A3B",
         "size_gb": 23.0, "tiers": ["ultra", "high"],
+    },
+    {
+        # Pulled directly from HuggingFace via Ollama's hf.co pull path. The
+        # model id below matches what `ollama list` prints after the pull, so
+        # the installed-detector lights up correctly.
+        "id": "hf.co/InternScience/Agents-A1-Q4_K_M-GGUF:latest",
+        "name": "Agents-A1 35B (agentic)",
+        "family": "InternScience",
+        "params": "35B (MoE)", "ram_min_gb": 22, "quant": "Q4_K_M",
+        "category": "chat",
+        "description": (
+            "Purpose-built agentic model from InternScience. 262K context, "
+            "MoE architecture, strong tool use + long-horizon search + "
+            "scientific reasoning. SOTA on GAIA, BrowseComp, IFEval. "
+            "Best used as your main chat model when leaning on MCP tools."
+        ),
+        "tags": ["thinking", "moe", "long-context", "agentic", "tools"],
+        "hf_url": "https://huggingface.co/InternScience/Agents-A1-Q4_K_M-GGUF",
+        "size_gb": 21.2, "tiers": ["ultra", "high"],
+    },
+    {
+        # Sao10K's Euryale is the gold-standard "emotional intelligence"
+        # local fine-tune of Llama 3.3 70B — trained for companion-grade
+        # empathic conversation. bartowski's GGUF repo is the community
+        # standard for llama.cpp / Ollama.
+        "id": "hf.co/mradermacher/L3.3-70B-Euryale-v2.3-GGUF:q4_k_m",
+        "name": "Euryale L3.3 70B (emotional)",
+        "family": "Sao10K",
+        "params": "70B", "ram_min_gb": 40, "quant": "Q4_K_M",
+        "category": "chat",
+        "description": (
+            "Sao10K's L3.3 70B Euryale — companion-grade emotional intelligence. "
+            "Reads subtext, remembers emotional context across a conversation, "
+            "responds with warmth. Not roleplay-only — it's a fully capable "
+            "70B model with genuine emotional presence baked in."
+        ),
+        "tags": ["companion", "empathic", "creative", "long-context"],
+        "hf_url": "https://huggingface.co/mradermacher/L3.3-70B-Euryale-v2.3-GGUF",
+        "size_gb": 43.0, "tiers": ["ultra"],
     },
     {
         "id": "Hydroxide538/qwen-agentworld-35b-a3b:q4_k_m", "name": "Qwen AgentWorld 35B-A3B", "family": "Community / Qwen3.6",
