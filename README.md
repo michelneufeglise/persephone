@@ -1,8 +1,10 @@
 <div align="center">
 
-# ⚘ Persephone
+<img src="public/persephone_logo.png" width="120" alt="Persephone" />
 
-**A local-first AI companion with deep research, persistent memory, and an editorial sense of design.**
+# Persephone
+
+**A local-first AI companion with deep research, persistent memory, browser-style tabs, background workers, and an editorial sense of design.**
 
 *Queen of the underworld, herald of spring — your private, offline‑capable AI workspace that runs entirely on your own machine via [Ollama](https://ollama.com).*
 
@@ -17,18 +19,23 @@
 Persephone wraps the speed of local Ollama models in a thoughtful, beautifully designed app that goes far beyond a chat box:
 
 - 🧠 **Persistent memory across every model.** Tell her your name once — every model from `qwen2.5:0.5b` to `gemma4:26b` will know it from then on.
-- 🔮 **Smart auto-router.** A two-stage hybrid classifier picks the right model for each turn — `qwen2.5:0.5b` for *"hi"*, `qwen2.5-coder:7b` for *"refactor this function"*, `qwen3:ohm` for deep reasoning, all in milliseconds.
-- 🛠 **MCP tools out of the box.** DuckDuckGo, Brave Search, Fetch, Filesystem (**incl. a Persephone-scoped filesystem for the repo itself**), Git, SQLite, Memory, Puppeteer, Sequential Thinking — toggle on with one click; servers spawn automatically.
-- 🐦 **Ornith Coder mode.** One-click sidebar preset that switches the active model to `ornith:latest` (Qwen3-based 9B agentic coder, 262K context) and injects a plan → approve → diff → README → commit workflow. Wired to the `persephone-fs` MCP for real repo access.
-- 🎬 **Reels studio.** New sidebar tab. Type a topic, pick tone + duration + aspect, and Persephone plans scenes (script + image prompt + timing per scene) via the active LLM, drives ComfyUI for stills OR your own uploaded footage, layers Kokoro voice-over OR keeps the source speaker talking, burns in captions (from the script or from a live Whisper transcript with translate-to-English), applies per-scene look effects (brightness / contrast / saturation / speed / grayscale), then ffmpeg composites a 9:16 TikTok/Reels/Shorts MP4 with sidechain-ducked background music.
-- 🎹 **Ableton Live AI composer.** Detects a running Ableton Live 12 install, one-click installs the AbletonOSC bridge + Persephone's browser patch, and exposes a **Music** tab that composes full `SongSpec` JSONs (sections, tempo, key, tracks, note patterns) via `qwen2.5:32b` — or **`deepseek-r1:70b`** if you flip on "Deep reasoning". Materialises straight into a running Live session over OSC (auto-loads Drift / Drum Rack / 505 Core Kit per role), auto-fires scene 0, and lets you iteratively edit the song ("darker chorus", "less busy verse") with atomic `EditPlan` operations and full undo.
-- 🔬 **Deep research engine.** Decomposes a question into sub-questions, searches the web, fetches sources, embeds chunks, and synthesises a fully-cited markdown report with a generative SVG cover.
+- 🗂 **Browser-style tabs in the main chat.** `⌘T` opens a new tab, `⌘W` closes, `⌘1..9` switches. Each tab runs its own conversation and its own model — and each tab streams **truly in parallel** (Persephone auto-configures Ollama's `OLLAMA_NUM_PARALLEL` / `MAX_LOADED_MODELS` from Settings → Setup).
+- 🤖 **Auxiliary worker models.** Type a question, hit the amber Bot button (or ⌘/Ctrl+Enter) → the judge model picks the best category (research / code / vision / deep / …), dispatches a specialist worker in the background, and streams its thinking + tool calls + reply live in the right-panel "Auxiliary" tab. Main chat stays completely free while workers run.
+- 🔬 **Deep research engine.** Decomposes a question into sub-questions, searches the web, fetches sources, embeds chunks, and synthesises a fully-cited markdown report — with a one-click **PDF export**.
 - 📚 **Persistent knowledge base.** Every research run feeds chunks into a `sqlite-vec` semantic index — search across everything you've ever researched.
-- 🎙 **In-process TTS.** Orpheus / SNAC neural codec for natural-sounding voice playback, with 8 voices.
+- 🔮 **Smart auto-router.** A two-stage hybrid classifier picks the right model for each turn — `qwen2.5:0.5b` for *"hi"*, `qwen2.5-coder:7b` for *"refactor this function"*, `qwen3:ohm` for deep reasoning, all in milliseconds.
+- ⏱ **Hardware-aware model recommendations.** Setup wizard fingerprints your chip (M1/M2/M3/M4/Intel/AMD Zen) + estimates memory bandwidth, then shows a per-model tok/s estimate coloured by fit — hides models that won't clear a 20 tok/s target on your hardware.
+- 🛠 **MCP tools out of the box.** DuckDuckGo, Brave Search, Fetch, Filesystem (**incl. a Persephone-scoped filesystem for the repo itself**), Git, SQLite, Memory, Puppeteer, Sequential Thinking — toggle on with one click; servers spawn automatically.
+- 🎬 **Reels studio.** Sidebar tab. Type a topic, pick tone + duration + aspect, and Persephone plans scenes (script + image prompt + timing per scene) via the active LLM, drives ComfyUI for stills OR your own uploaded footage, layers Kokoro voice-over OR keeps the source speaker talking, burns in captions (from the script or from a live Whisper transcript with translate-to-English), applies per-scene look effects (brightness / contrast / saturation / speed / grayscale), then ffmpeg composites a 9:16 TikTok/Reels/Shorts MP4 with sidechain-ducked background music.
+- 🎹 **Ableton Live AI composer.** Detects a running Ableton Live 12 install, one-click installs the AbletonOSC bridge + Persephone's browser patch, and exposes a **Music** tab. Track-first workflow: add / remove / edit tracks individually, ▶ preview each in solo, ⚡ apply single tracks or the whole song. **Song library** for save / browse / load. Standard composer runs on **`qwen3.6:35b-a3b`**; toggle "Deep reasoning" to swap to **`gemma4:26b`**. Both models configurable in Settings.
+- 🛰 **Background workers.** A dedicated **Workers** sidebar tab shows in-flight and idle helpers. Ships with **Memory Curator** (dedupes facts + re-extracts from rushed conversations every 15 min when idle) and **Model Warmer** (keeps the active chat model resident so big models like Llama 3.3 70B skip the 30-90s cold-load). Add your own tasks via the workers API.
+- 📝 **PDF export.** Extensive chat replies (long-form answers with headings, code, tables) auto-surface a PDF export button in their action strip. Same for research reports — one click → styled A4 PDF with editorial typography.
+- 🎙 **In-process TTS.** Kokoro-82M ONNX with 19 voices (US / UK / ES accents), auto-verified and pre-downloaded during the setup wizard so first speech is instant.
 - 📄 **Intelligent document processing.** OCR, handwriting, tables, summarise, Q&A, redact, translate — local-only.
-- 🎨 **Liquid Obsidian design system.** Five thoughtfully crafted themes (Underworld, Spring, Pomegranate, Elysian, Obsidian) with conic gradients, atmospheric grain, holographic accents, and ornamental SVG dividers.
-- 🖼 **Editorial rich-markdown rendering.** Drop caps, pull-quotes, numbered orbs, hand-drawn rough.js borders on code blocks, auto-rendered Mermaid diagrams, generative SVG covers — every response feels designed.
-- 📦 **Native macOS & Windows apps.** Ships as a code-signable Electron + bundled Python `.dmg`/`.exe` — zero-config first launch.
+- 🎨 **Liquid Obsidian design system.** Five thoughtfully crafted themes (Underworld, Spring, Pomegranate, Elysian, Obsidian) with conic gradients, atmospheric grain, holographic accents, ornamental SVG dividers, and a shared **Persephone medallion** identity across the whole app.
+- 🌫 **Ambient backdrop.** A pre-blurred watercolour painting sits behind every panel — never sharp, always atmospheric, glass panels stay fully legible on top.
+- 🖼 **Editorial rich-markdown rendering.** Drop caps, pull-quotes, numbered orbs, hand-drawn rough.js borders on code blocks (with copy-to-clipboard), auto-rendered Mermaid diagrams, auto-generated section TOC on long answers, generative SVG covers — every response feels designed.
+- 📦 **Native macOS & Windows apps.** Ships as a code-signable Electron + bundled Python `.dmg`/`.exe` — zero-config first launch. Draggable window from the sidebar header or a global top strip.
 
 ---
 
@@ -418,43 +425,95 @@ The wizard's ffmpeg check (extended `OllamaStep`) shows an emerald *"ffmpeg vers
 
 Override the host with `COMFY_HOST=http://192.168.x.x:8188` in the environment.
 
-### 10 · Ornith Coder mode
+### 10 · Browser-style tabs
 
-A one-click preset that turns Persephone into a project-aware coding assistant for **this repo**.
+The main chat window uses a **browser-style tab strip** so you can juggle several conversations at once — perfect for comparing model outputs side-by-side or keeping a long-running deep research answer parked in a tab while you chat about something else in another.
 
-Click the **Ornith Coder** button in the bottom-left of the sidebar. Persephone snapshots your current model + system prompt, then swaps in:
+- **`+ button`** at the right of the tab row (or **⌘/Ctrl+T**) → new tab
+- **`× on hover`** (or **⌘/Ctrl+W**) → close the active tab
+- **⌘/Ctrl+1…8** direct switch; **⌘/Ctrl+9** jumps to the last tab
+- **⌘/Ctrl+Shift+] / [** cycle next / previous
+- **Sidebar History** → click any saved conversation to open it as a new tab (browser-bookmark style)
+- **Per-tab streaming**: each tab has its own abort controller and `isGenerating` flag. When you send in tab 1 and then switch to tab 2, tab 2's input accepts immediately — no waiting.
+- **Parallel at Ollama too**: Persephone auto-configures `OLLAMA_NUM_PARALLEL=4` and `OLLAMA_MAX_LOADED_MODELS=2` from **Settings → Setup** (one click, restarts Ollama). Without this, Ollama would queue concurrent requests to the same model and defeat the tabs' parallelism.
+- **Tab spinner**: a background tab whose stream is still running shows a `⟳` in its tab pill so you notice without switching.
 
-- **Model:** `ornith:latest` — a Qwen3-based 9B agentic coder with 262K context and native tools + thinking. Small enough to be snappy, big enough to reason across a whole repo.
-- **System prompt:** a strict *plan → approve → diff → README → commit* workflow. Ornith must:
-  1. Read (or create) `.ornith/memory.md` — its private notebook for durable findings about the project.
-  2. Explore the relevant files via the `persephone-fs` MCP before answering — no guessing, no fake `bash ls` blocks.
-  3. Show a numbered plan and stop with **"Approve this plan? (yes / adjust)"**.
-  4. On approval, show every change as paired `(OLD)` / `(NEW)` fenced blocks per file, apply them via `persephone-fs`, then update `README.md`.
-  5. Stop again with **"Ready to commit and push? (yes / no)"**.
-  6. On approval, use the `git` MCP to stage, commit with a multi-line message explaining what/why, and push.
+State (open tab ids + active tab) persists in localStorage — tabs survive reload.
 
-Backend wiring: Ornith is recognised as a native-thinking Qwen3 model, gets a 16 384-token `num_predict` floor and a 32 K `num_ctx` on every round (a `list_directory src/` + the workflow prompt already blows the 8 K default), and has its MCP tool array **force-attached** — the usual keyword heuristic would gate tools off on requests like *"summarise Persephone"*, which is precisely when an agentic coder needs them most.
+### 11 · Auxiliary worker models
 
-Click the button again to restore your previous model and system prompt. State persists across restarts.
+Persephone runs a **dispatcher-first workflow** for offloadable tasks. In the chat input, next to the pomegranate Send button, sits an **amber Bot button** (or **⌘/Ctrl+Enter** on your keyboard):
 
-Prerequisites: the `persephone-fs` and `git` MCP servers must be enabled in **Settings → Tools**.
+- **Type + click Bot** → the judge model classifies your prompt into one of 10 categories (`quick`, `general`, `research`, `code`, `deep`, `vision`, `long_context`, `structured`, `emotional`, `creative`) and dispatches a specialist worker in the background.
+- **Main chat stays free** — you can keep chatting in the current tab while the worker runs.
+- **Right-panel Auxiliary tab** streams the worker's live progress: stage, elapsed, token count, live tok/s, tool calls (with previews), thinking chain (auto-expanding), and streaming reply with a blinking caret.
+- **When the worker finishes**, its reply lands as a new assistant message in the chat with an amber "delegated · `<model>`" badge, and stays available for reference. The user's original prompt gets a matching "sent to worker" badge.
+- **History sub-tab** in the panel lists every completed task across all conversations with expand-to-see-full-reply.
+- **Anti-hallucination guard** — if you ask for real-world facts (weather, news, prices) but no web-lookup MCP is enabled, the worker refuses to fabricate and points you at Settings → Tools instead.
 
-### 11 · Ableton Live AI composer
+**Per-category models are configurable** at **Settings → Auxiliary** (10 dropdowns, live "in use" indicator, one for each category). Defaults use the biggest MoE thinker installed:
+
+| Category | Default model |
+|---|---|
+| `quick` | `qwen3.6:35b-a3b` |
+| `general` | `qwen3.6:35b-a3b` → agentworld → Agents-A1 → llama3.3:70b |
+| `research` | `Agents-A1` (BrowseComp SOTA) → qwen3.6 → agentworld |
+| `code` | `ornith:latest` → qwen3.6 → qwen2.5-coder:7b |
+| `deep` | `deepseek-r1:70b` → qwen3.6 → gemma4:26b |
+| `vision` | `qwen2.5vl:32b` → minicpm-v → llama3.2-vision |
+| `long_context` | `llama3.3:70b` → qwen3.6 → Agents-A1 → Euryale |
+| `emotional` | `Euryale L3.3 70B` → hermes3 → gemma4:26b |
+| `creative` | `Euryale L3.3 70B` → hermes3 → qwen3.6 → gemma4:26b |
+
+Backend: `server/delegate.py` (dispatch + streaming runner), `server/main.py` (`/api/delegate/*` endpoints), frontend `src/components/delegate/DelegatePanel.tsx`.
+
+### 12 · Background workers
+
+A **dedicated Workers sidebar tab** exposes helpers that run when you're idle (>60 s since last chat), one at a time, so they never fight the active chat model for memory. Ships with:
+
+- **Memory Curator** (small model, every 15 min idle) — dedupes near-duplicate facts using `SequenceMatcher` (ratio ≥ 0.85), then re-extracts from recent conversations that missed facts on the live pass.
+- **Model Warmer** (every 8 min) — pings the active chat model with a 1-token request so it stays memory-resident. Skips 30–90 s cold-loads on large models (Agents-A1, R1 70B, Llama 3.3 70B).
+
+Each worker card shows enable toggle, last-run status, next-due countdown, latest result summary in plain English, and a "Run now" button. A **Delegated Tasks panel** on the same tab lists in-flight + recent auxiliary workers with expand-to-see-details and cancel.
+
+Add your own workers by registering into `server/workers.py` — the scheduler is idle-gated, single-run-locked, and persists state to `data_dir()/workers/state.json`.
+
+### 13 · Ornith Coder mode (dormant preset)
+
+An in-code preset that turns Persephone into a project-aware coding assistant for **this repo**. The sidebar button was removed in favour of the tab-based workflow, but the underlying preset lives on for future reactivation.
+
+When active it swaps the chat model to `ornith:latest` (Qwen3-based 9B agentic coder, 262 K context, native tools + thinking) and injects a strict *plan → approve → diff → README → commit* system prompt with `persephone-fs` + `git` MCP tools force-attached. Ornith gets a 16 384-token `num_predict` floor and a 32 K `num_ctx` on every round so `list_directory src/` + the workflow prompt don't blow the default 8 K window.
+
+Prerequisites (when reactivated): `persephone-fs` and `git` MCP servers enabled.
+
+### 14 · Ableton Live AI composer
 
 A full **AI-driven music composer** that talks to a running Ableton Live 12 session over OSC. Persephone detects a local Live install, offers a one-click bridge install ([AbletonOSC](https://github.com/ideoforms/AbletonOSC) + our own browser patch), then exposes a **Music** tab in the sidebar with:
 
-- **Composer** — describe a mood ("rainy Sunday morning, warm Rhodes, boom-bap kit"), pick a genre, and Persephone streams a `SongSpec` JSON: sections + tempo + key + tracks + clips + note-pattern archetypes.
-- **Materialise into Live** — one click and Persephone wipes existing tracks, sets tempo + time-signature, creates a MIDI track per role, auto-loads a default instrument via the browser patch (Drift, Drum Rack, 505 Core Kit, …), drops MIDI notes into the right clip slots per section.
-- **Auto-play toggle** — Ableton doesn't launch playback on its own, so Persephone fires scene 0 for you (`POST /api/ableton/fire-scene`). Stop button hits `stop-all` on the Song.
-- **Edit chat** — after the initial song lands, talk to it: *"darker chorus"*, *"add a syncopated bass"*, *"less busy verse"*. The LLM emits atomic `EditPlan` operations that mutate the current SongSpec in-place; each edit is undoable (⌘Z or the Undo button).
-- **Deep reasoning toggle** — flips the composer off the default `qwen2.5:32b` (fast dense JSON emitter) onto **`deepseek-r1:70b`** (dense 70B reasoner). Much smarter about section arrangement, dynamic contour and chord choice, but ~30–60s per compose. Edits automatically prefer `deepseek-r1:70b` too when installed, then fall back to `qwen3.6:35b-a3b` / `Hydroxide538/qwen-agentworld` / `nemotron-3-nano:30b`.
+- **Composer** — describe a mood ("rainy Sunday morning, warm Rhodes, boom-bap kit"), pick a genre, and Persephone streams a `SongSpec` JSON: sections + tempo + key + tracks + clips + note-pattern archetypes. Default model **`qwen3.6:35b-a3b`** (MoE thinker, fast + creative). Both composer + deep-reasoning slots configurable in Settings → Model Roles.
+- **Track-first workflow** — instead of one-shot generation:
+  - Each track has ✓ active toggle, ★ focus star, ▶ preview (solo, or shift+click for additive), ■ stop, ⚡ apply-just-this-track, 🗑 delete.
+  - "+ add track" mini-composer proposes a single new track (role picker + free-text description) via the LLM.
+  - "apply modified" applies only the dirty tracks; "apply all" wipes and rebuilds.
+  - Edit chat is scoped to *active* tracks (with ★ focus first) so *"make the chords darker"* only touches the ones you flagged.
+- **Song library** — save / load / browse / delete `SongSpec` records. Update button switches to a *save-as* input when the current session was loaded from a saved song; otherwise creates a new library entry.
+- **Auto-play toggle** — Ableton doesn't launch playback on its own, so Persephone fires scene 0 for you (`POST /api/ableton/fire-scene`), setting Live's clip-launch quantise to *None* first so it's instant. Stop button un-solos everything + halts transport.
+- **Edit chat with undo** — atomic `EditPlan` operations mutate the current SongSpec in-place; ⌘Z or the Undo button pops the last edit off the stack.
+- **Deep reasoning toggle** — flips the composer to **`gemma4:26b`** (or whatever you configured for the deep slot in Settings). Much smarter about section arrangement, dynamic contour, chord choice, at the cost of speed.
 - **Auto-instruments** — Persephone ships an `AbletonOSC` browser patch (`server/ableton_patches/browser.py`) exposing `/live/browser/load_named` + `/live/browser/load_first` so the composer can populate every track with an instrument without the user dragging anything. Diagnostic probe endpoint (`POST /api/ableton/browser-probe`) walks Live 12 Intro's default `Drift` / `Drum Sampler` / `505 Core Kit` names and reports any misses.
 
-Backend wiring lives in `server/ableton_composer.py` (planner + editor prefs), `server/ableton_client.py` (async OSC with request/reply correlation via FIFO waiters), `server/song_translator.py` (SongSpec → real Live tracks/clips), `server/style_adapters.py` (deterministic Note generators per pattern archetype — `boom_bap`, `four_on_floor`, `tresillo`, `walking`, `arpeggio_up`, …), and `server/music_theory.py` (Roman-numeral progressions, cadences, scales).
+Backend wiring lives in `server/ableton_composer.py` (planner + editor prefs, JSON salvage layer), `server/ableton_client.py` (async OSC with per-track fire/stop/solo/mute), `server/song_translator.py` (SongSpec → real Live tracks/clips + single-track apply), `server/ableton_library.py` (song persistence), `server/style_adapters.py` (deterministic Note generators per pattern archetype), and `server/music_theory.py` (Roman-numeral progressions, cadences, scales).
 
 Prerequisite: Ableton Live 12 with the AbletonOSC control surface enabled (Live → Preferences → Link/Tempo/MIDI → Control Surface). Persephone's setup helper handles the install for you.
 
-### 12 · Five themes
+### 15 · PDF export
+
+- **Research reports** — each generated Deep Research report has a **PDF** button in its header that downloads a styled A4 PDF (`GET /api/research/runs/{id}/pdf`).
+- **Extensive chat replies** — Persephone auto-detects "report-like" answers (≥ 600 chars AND at least two of: headings, lists, tables, code blocks) and surfaces a small `FileDown` icon in the message action strip. One click → styled PDF with the reply's first heading as filename.
+
+Rendered by `server/pdf_export.py` — pure ReportLab (no system deps), editorial typography: serif body, sans headings, monospace code panels, italic blockquotes with pomegranate side-rule, ordered/unordered lists, footer with page numbers + timestamp.
+
+### 16 · Five themes
 
 - **Underworld** — Polished obsidian veined with pomegranate fire (default)
 - **Spring Goddess** — Iridescent dawn, light theme
@@ -600,21 +659,56 @@ POST   /api/ableton/install-bridge   clone AbletonOSC + apply browser patch
 POST   /api/ableton/launch           spawn Live if not already running
 POST   /api/ableton/ping             OSC round-trip to the bridge
 POST   /api/ableton/compose          SSE stream of LLM-generated SongSpec
-                                     (accepts `model` override — e.g. deepseek-r1:70b
-                                      for "Deep reasoning" mode)
+                                     (accepts `deep: bool` for the deep-reasoning slot)
 POST   /api/ableton/apply-song       SSE: materialise SongSpec into a Live session
-POST   /api/ableton/edit             SSE: iterative EditPlan (undo-able)
+POST   /api/ableton/apply-track      SSE: apply a single track (add-new or refresh existing)
+POST   /api/ableton/add-track        SSE: LLM proposes one new track for the current song
+POST   /api/ableton/delete-track     remove a Live track
+POST   /api/ableton/edit             SSE: iterative EditPlan (undo-able), accepts
+                                     active_track_ids/focus_track_id for scoped edits
 POST   /api/ableton/apply-edit       apply the last plan
 POST   /api/ableton/undo             pop last edit off the stack
 GET    /api/ableton/session          current SongSpec + undo depth
 GET    /api/ableton/patterns         pattern archetype vocabulary
 POST   /api/ableton/set-pattern      swap a clip's pattern archetype
 POST   /api/ableton/fire-scene       launch a Session-view scene
-POST   /api/ableton/stop-all         stop transport + all running clips
+POST   /api/ableton/fire-clip        preview one track's clip (solo or additive)
+POST   /api/ableton/stop-track       stop a single track's clip + un-solo
+POST   /api/ableton/set-solo         solo / un-solo a track
+POST   /api/ableton/stop-all         stop transport + all running clips + un-solo all
 POST   /api/ableton/browser-probe    end-to-end auto-load diagnostic
+GET    /api/ableton/song/library     saved SongSpec metadata list
+POST   /api/ableton/song/save        persist current session under a name
+GET    /api/ableton/song/{id}        full saved song record
+POST   /api/ableton/song/{id}/load   hydrate a saved song into the session
+DELETE /api/ableton/song/{id}        remove from library
+POST   /api/ableton/song/new         clear session (+ optional Live wipe)
+
+POST   /api/chat/message/pdf         export a chat reply as styled A4 PDF
+GET    /api/research/runs/{id}/pdf   export a research report as styled A4 PDF
+
+GET    /api/delegate/config          per-category configured + resolved models
+POST   /api/delegate/config          set per-category model override
+POST   /api/delegate/send            user-triggered worker dispatch (judge picks category)
+GET    /api/delegate/tasks           list workers (filter by conv + status)
+POST   /api/delegate/{id}/cancel     cancel a running worker
+GET    /api/delegate/{id}/progress   live streaming state (content + thinking + tools)
+
+GET    /api/workers/status           background workers state + idle info
+GET    /api/workers/logs             recent worker events (ring buffer)
+POST   /api/workers/{id}/enable      toggle a worker on/off
+POST   /api/workers/{id}/run-now     fire a worker immediately (bypasses idle gate)
 
 GET    /api/setup/hardware           CPU/GPU/RAM/tier
-GET    /api/setup/recommendations    tier-filtered model catalog
+GET    /api/setup/hardware-profile   extended fingerprint: chip family, variant,
+                                     memory bandwidth, perf cores
+GET    /api/setup/recommendations    tier-filtered model catalog (legacy)
+GET    /api/setup/optimized-models   per-model tok/s estimates + fit rating for the
+                                     current hardware (default target: 20 tok/s)
+GET    /api/setup/tts-status         Kokoro package + ONNX model install state
+POST   /api/setup/tts-install        force-download Kokoro model + voice pack
+GET    /api/setup/ollama-parallel    current OLLAMA_NUM_PARALLEL + MAX_LOADED
+POST   /api/setup/ollama-parallel    set both + auto-restart Ollama (mac/Linux/Win)
 POST   /api/setup/complete           persist wizard choices
 POST   /api/setup/reset              re-run the wizard
 ```

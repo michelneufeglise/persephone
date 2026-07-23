@@ -16,7 +16,22 @@ export function AppLayout() {
 
   return (
     <div className="relative flex h-screen w-screen overflow-hidden bg-[var(--bg-primary)]">
+      {/* Electron drag strip — invisible 28px band across the top of the
+          window. Lets the user drag the window from anywhere along it,
+          not just the tiny area around the macOS traffic-light buttons.
+          Sits BELOW the traffic lights (they get natural click precedence
+          via the OS) and ABOVE the app content (via z-50). */}
+      <div
+        className="window-drag pointer-events-auto fixed top-0 left-0 right-0 h-7 z-50"
+        aria-hidden
+      />
+
       {/* ── Atmospheric layers (fixed under shell) ─────────────────────── */}
+      {/* Backdrop illustration sits DEEPEST — the aurora / vignette / grain
+          stack on top of it so the artwork feels absorbed into the theme
+          rather than pasted on. Chat/sidebar/right-panel glass surfaces
+          sit above via `z-10` and stay legible via backdrop-blur. */}
+      <div className="atmos atmos-backdrop" />
       <div className="atmos atmos-aurora" />
       <div className="atmos atmos-vignette" />
       <div className="atmos atmos-grain" />

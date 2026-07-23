@@ -1,19 +1,26 @@
 import { useState, useRef, useEffect } from 'react'
-import { Send, Square, Bot } from 'lucide-react'
+import { Send, Square } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useAppStore } from '@/store/appStore'
 
 interface ChatInputProps {
   onSend: (text: string) => void
-  onSendToWorker: (text: string) => void
   onStop: () => void
 }
 
-export function ChatInput({ onSend, onSendToWorker, onStop }: ChatInputProps) {
+export function ChatInput({ onSend, onStop }: ChatInputProps) {
   const [value, setValue] = useState('')
-  const [sendingToWorker, setSendingToWorker] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
-  const { isGenerating } = useAppStore()
+  // Gate ONLY on the active tab. If a different tab is streaming, this
+  // one should still accept a new message so the user can compare in
+  // parallel — the whole point of the tab strip.
+  //
+  // Subscribe directly to the two slices we care about so React re-renders
+  // when generatingConvs changes; a plain isConvGenerating() call wouldn't
+  // trigger a subscription.
+  const activeConversationId = useAppStore(s => s.activeConversationId)
+  const generatingConvs      = useAppStore(s => s.generatingConvs)
+  const isGenerating = !!activeConversationId && generatingConvs.includes(activeConversationId)
 
   useEffect(() => {
     const ta = textareaRef.current
@@ -25,9 +32,7 @@ export function ChatInput({ onSend, onSendToWorker, onStop }: ChatInputProps) {
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      // Cmd/Ctrl+Enter → send to worker; plain Enter → send to chat.
-      if (e.metaKey || e.ctrlKey) handleSendToWorker()
-      else                        handleSend()
+      handleSend()
     }
   }
 
@@ -38,20 +43,11 @@ export function ChatInput({ onSend, onSendToWorker, onStop }: ChatInputProps) {
     onSend(text)
   }
 
-  async function handleSendToWorker() {
-    const text = value.trim()
-    if (!text || sendingToWorker) return
-    setSendingToWorker(true)
-    setValue('')
-    try {
-      onSendToWorker(text)
-    } finally {
-      // Small delay so the button flash is visible even on instant dispatch.
-      setTimeout(() => setSendingToWorker(false), 300)
-    }
-  }
-
   return (
+    // items-end pins children to the bottom — same bottom line as the
+    // textarea. The buttons match the textarea's single-line height so
+    // they visually centre alongside a one-line message and hang from
+    // the bottom cleanly when the textarea grows tall.
     <div className="relative flex items-end gap-2 p-4 border-t border-[var(--border)] bg-[var(--bg-glass-strong)] rounded-b-3xl">
       {/* hairline gradient above the input — implies depth */}
       <span
@@ -88,7 +84,7 @@ export function ChatInput({ onSend, onSendToWorker, onStop }: ChatInputProps) {
             animate={{ scale: 1, opacity: 1 }}
             exit={{ scale: 0.8, opacity: 0 }}
             onClick={onStop}
-            className="flex-shrink-0 w-11 h-11 rounded-2xl text-white flex items-center justify-center transition-all duration-200"
+            className="flex-shrink-0 w-12 h-12 rounded-2xl text-white flex items-center justify-center transition-all duration-200"
             style={{
               background: 'linear-gradient(135deg, #ef4444, #b91c1c)',
               boxShadow: '0 8px 22px -8px rgba(239,68,68,0.6), inset 0 1px 0 rgba(255,255,255,0.2)',
@@ -98,46 +94,27 @@ export function ChatInput({ onSend, onSendToWorker, onStop }: ChatInputProps) {
             <Square className="w-4 h-4 fill-current" />
           </motion.button>
         ) : (
-          <motion.div
-            key="send-buttons"
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-            className="flex-shrink-0 flex items-center gap-1.5"
+          <motion.button
+            key="send"
+            initial={{ scale: 0.8, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            exit={{ scale: 0.8, opacity: 0 }}
+            whileHover={{ scale: value.trim() ? 1.04 : 1 }}
+            whileTap={{ scale: 0.96 }}
+            onClick={handleSend}
+            disabled={!value.trim()}
+            className="flex-shrink-0 w-12 h-12 rounded-2xl text-white flex items-center justify-center
+              transition-all duration-300 disabled:opacity-40 disabled:cursor-not-allowed"
+            style={{
+              background: 'linear-gradient(135deg, var(--accent), var(--accent-deep))',
+              boxShadow: value.trim()
+                ? '0 8px 22px -8px var(--accent-glow), 0 0 28px -6px var(--accent-glow), inset 0 1px 0 rgba(255,255,255,0.2)'
+                : 'inset 0 1px 0 rgba(255,255,255,0.06)',
+            }}
+            title="Send (Enter)"
           >
-            {/* Send to worker */}
-            <motion.button
-              whileHover={{ scale: value.trim() ? 1.04 : 1 }}
-              whileTap={{ scale: 0.96 }}
-              onClick={handleSendToWorker}
-              disabled={!value.trim() || sendingToWorker}
-              className={`w-11 h-11 rounded-2xl flex items-center justify-center transition-all duration-300 border disabled:opacity-40 disabled:cursor-not-allowed ${
-                sendingToWorker
-                  ? 'border-amber-400 bg-amber-400/20 text-amber-300'
-                  : 'border-amber-400/40 bg-amber-400/10 text-amber-300 hover:bg-amber-400/20'
-              }`}
-              title="Send to auxiliary worker model (⌘/Ctrl+Enter). Judge picks the best fit; runs in background; result appears in right panel."
-            >
-              <Bot className="w-4 h-4" />
-            </motion.button>
-
-            {/* Send to main chat */}
-            <motion.button
-              whileHover={{ scale: value.trim() ? 1.04 : 1 }}
-              whileTap={{ scale: 0.96 }}
-              onClick={handleSend}
-              disabled={!value.trim()}
-              className="w-11 h-11 rounded-2xl text-white flex items-center justify-center
-                transition-all duration-300 disabled:opacity-40 disabled:cursor-not-allowed"
-              style={{
-                background: 'linear-gradient(135deg, var(--accent), var(--accent-deep))',
-                boxShadow: value.trim()
-                  ? '0 8px 22px -8px var(--accent-glow), 0 0 28px -6px var(--accent-glow), inset 0 1px 0 rgba(255,255,255,0.2)'
-                  : 'inset 0 1px 0 rgba(255,255,255,0.06)',
-              }}
-              title="Send to main chat (Enter)"
-            >
-              <Send className="w-4 h-4" />
-            </motion.button>
-          </motion.div>
+            <Send className="w-4 h-4" />
+          </motion.button>
         )}
       </AnimatePresence>
     </div>

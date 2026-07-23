@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
-  User, Cpu, Boxes, Brain, Database, Wrench, Palette, Volume2, Bot,
+  User, Cpu, Boxes, Brain, Database, Wrench, Palette, Volume2, Bot, Sparkles,
 } from 'lucide-react'
 import { CharacterSection } from './sections/CharacterSection'
 import { ModelSection } from './sections/ModelSection'
@@ -11,8 +11,9 @@ import { MemorySection } from './sections/MemorySection'
 import { McpSection } from './sections/McpSection'
 import { ThemeSection } from './sections/ThemeSection'
 import { VoiceSection } from './sections/VoiceSection'
+import { SetupSection } from './sections/SetupSection'
 
-type Tab = 'character' | 'modelRoles' | 'auxiliary' | 'model' | 'voice' | 'memory' | 'mcp' | 'theme'
+type Tab = 'character' | 'modelRoles' | 'auxiliary' | 'model' | 'voice' | 'memory' | 'mcp' | 'theme' | 'setup'
 
 const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: 'character',   label: 'Character',  icon: User },
@@ -23,6 +24,7 @@ const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: 'memory',      label: 'Memory',     icon: Brain },
   { id: 'mcp',         label: 'Tools',      icon: Wrench },
   { id: 'theme',       label: 'Theme',      icon: Palette },
+  { id: 'setup',       label: 'Setup',      icon: Sparkles },
 ]
 
 export function SettingsView() {
@@ -73,6 +75,7 @@ export function SettingsView() {
             {activeTab === 'memory'     && <MemorySection />}
             {activeTab === 'mcp'        && <McpSection />}
             {activeTab === 'theme'      && <ThemeSection />}
+            {activeTab === 'setup'      && <SetupSection />}
           </motion.div>
         </AnimatePresence>
       </div>

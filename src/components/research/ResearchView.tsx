@@ -2,9 +2,10 @@ import { useEffect, useState, useRef, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
   Microscope, Search, Sparkles, Globe, FileText, Loader2, Library,
-  Trash2, RefreshCw, X, ExternalLink, ChevronRight,
+  Trash2, RefreshCw, X, ExternalLink, ChevronRight, FileDown,
 } from 'lucide-react'
 import { Panel } from '@/components/ui/Panel'
+import { PersephoneIcon } from '@/components/PersephoneIcon'
 import { clsx } from 'clsx'
 import { RichMarkdown } from '@/components/markdown/RichMarkdown'
 import { CoverArt } from '@/components/markdown/CoverArt'
@@ -59,17 +60,7 @@ export function ResearchView() {
       <div className="px-6 py-4 border-b border-[var(--border)] bg-[var(--bg-glass-strong)]">
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="relative w-10 h-10">
-              <div className="absolute inset-0 rounded-full blur-md opacity-60"
-                style={{ background: 'conic-gradient(from 220deg, var(--orb-color-1), var(--orb-color-3), var(--orb-color-2), var(--orb-color-1))' }} />
-              <div className="relative w-10 h-10 rounded-full flex items-center justify-center"
-                style={{
-                  background: 'radial-gradient(circle at 30% 25%, rgba(255,255,255,0.4), transparent 35%), conic-gradient(from 220deg, var(--orb-color-1), var(--orb-color-3), var(--orb-color-2), var(--orb-color-1))',
-                  boxShadow: 'inset 0 -3px 6px rgba(0,0,0,0.4), inset 0 2px 3px rgba(255,255,255,0.3), 0 0 14px var(--accent-glow)',
-                }}>
-                <Microscope className="w-5 h-5 text-white" />
-              </div>
-            </div>
+            <PersephoneIcon size={40} />
             <div>
               <h2 className="font-display text-2xl text-[var(--text-primary)] leading-none">Research</h2>
               <p className="text-xs text-[var(--text-muted)] font-mono mt-1 tracking-wider">
@@ -381,6 +372,20 @@ function RunDetail({ run, onClose }: { run: RunFull; onClose: () => void }) {
             <div className="text-[10px] font-mono uppercase tracking-[0.28em] text-[var(--text-muted)]">Research run</div>
             <div className="text-base text-[var(--text-primary)] font-display mt-0.5">{run.query}</div>
           </div>
+          {run.reportMd && (
+            <a
+              href={`/api/research/runs/${encodeURIComponent(run.id)}/pdf`}
+              download
+              title="Download this report as a PDF"
+              className="flex items-center gap-1.5 px-2.5 py-1.5 rounded text-[11px] font-medium
+                border border-[var(--border)] text-[var(--text-muted)]
+                hover:text-[var(--accent)] hover:border-[var(--accent)] hover:bg-[var(--accent-dim)]/40
+                transition-colors"
+            >
+              <FileDown className="w-3.5 h-3.5" />
+              PDF
+            </a>
+          )}
           <button onClick={onClose} className="p-1.5 rounded text-[var(--text-muted)] hover:text-[var(--text-secondary)]">
             <X className="w-4 h-4" />
           </button>

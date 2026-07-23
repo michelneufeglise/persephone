@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import { Cpu, MemoryStick, Zap, CheckCircle } from 'lucide-react'
+import { PersephoneIcon } from '@/components/PersephoneIcon'
 
 interface HardwareInfo {
   os: string
@@ -32,22 +33,45 @@ export function WelcomeStep() {
 
   return (
     <div className="flex flex-col items-center gap-8 max-w-xl mx-auto text-center">
-      {/* Orb */}
-      <motion.div
-        className="relative w-40 h-40"
-        animate={{ scale: [1, 1.04, 1] }}
-        transition={{ duration: 4, repeat: Infinity, ease: 'easeInOut' }}
-      >
-        <div className="absolute inset-0 rounded-full bg-gradient-to-br from-[var(--orb-color-1)] via-[var(--orb-color-2)] to-transparent
-          shadow-2xl shadow-[var(--accent-glow)]" />
-        <div className="absolute inset-4 rounded-full bg-gradient-to-tl from-transparent to-white/20" />
-        <div className="absolute inset-0 flex items-center justify-center text-5xl select-none">⚘</div>
-      </motion.div>
+      {/* Persephone medallion — Art Nouveau line-art on a warm cream disc,
+          framed with a slow-turning halo that echoes the ornamental swirls
+          in the illustration. */}
+      <div className="relative w-48 h-48 flex items-center justify-center">
+        <motion.span
+          aria-hidden
+          className="absolute inset-0 rounded-full pointer-events-none"
+          style={{
+            background: 'conic-gradient(from 210deg, var(--orb-color-1), var(--orb-color-3), var(--orb-color-2), var(--orb-color-1))',
+            filter:     'blur(22px)',
+            opacity:    0.55,
+          }}
+          animate={{ rotate: 360 }}
+          transition={{ duration: 40, repeat: Infinity, ease: 'linear' }}
+        />
+        <motion.span
+          aria-hidden
+          className="absolute inset-3 rounded-full pointer-events-none border border-[var(--border-bright)]"
+          style={{
+            borderStyle: 'dashed',
+            borderColor: 'rgba(139,34,82,0.35)',
+          }}
+          animate={{ rotate: -360 }}
+          transition={{ duration: 80, repeat: Infinity, ease: 'linear' }}
+        />
+        <motion.div
+          initial={{ scale: 0.9, opacity: 0 }}
+          animate={{ scale: 1,   opacity: 1 }}
+          transition={{ type: 'spring', stiffness: 150, damping: 15 }}
+        >
+          <PersephoneIcon size={148} />
+        </motion.div>
+      </div>
 
       <div>
         <h1 className="font-serif text-4xl text-[var(--text-primary)] mb-2">Welcome to Persephone</h1>
         <p className="text-[var(--text-secondary)] leading-relaxed max-w-sm">
-          Your local AI companion. This wizard will configure your models, voice, and account in just a few steps.
+          Your local AI companion — between light and shadow, memory and forgetting.
+          This wizard will configure your models, voice, and account in just a few steps.
         </p>
       </div>
 

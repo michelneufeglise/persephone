@@ -1,13 +1,15 @@
 import { useRef, useEffect, useCallback, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
-import { Plus, Trash2 } from 'lucide-react'
+import { Trash2 } from 'lucide-react'
 import { useAppStore } from '@/store/appStore'
+import { PersephoneIcon } from '@/components/PersephoneIcon'
 import { streamChat } from '@/lib/ollama'
 import {
   enqueueTTS, stopTTS, extractNewSentences, extractTail,
   type SentenceCursor,
 } from '@/lib/tts'
 import { MessageBubble } from './MessageBubble'
+import { ChatTabs } from './ChatTabs'
 import { ChatInput } from './ChatInput'
 import { ModelSelector } from './ModelSelector'
 import { nanoid } from '@/store/nanoid'
@@ -31,12 +33,20 @@ function syncToBackend(convId: string, conv: { title: string; model: string; upd
 export function ChatWindow() {
   const {
     settings, getActiveConversation, activeConversationId,
-    addMessage, updateMessage, setIsGenerating, isGenerating,
+    addMessage, updateMessage,
+    startGenerating, stopGenerating, isConvGenerating,
+    generatingConvs,
     createNewConversation, clearMessages, setIsSpeaking, setAudioLevel,
-    setVoicePanelOpen, setRightPanel,
   } = useAppStore()
 
-  const abortRef       = useRef<AbortController | null>(null)
+  // Per-conversation abort controllers. A `Map<convId, AbortController>`
+  // rather than a single ref, so streams in different tabs don't clobber
+  // each other's cancellation. handleStop only aborts the active tab.
+  const abortMapRef = useRef<Map<string, AbortController>>(new Map())
+  // Whether the currently-active tab is streaming. Computed inline from
+  // `generatingConvs` (already subscribed via destructure) so re-renders
+  // happen when the set changes.
+  const activeIsGenerating = !!activeConversationId && generatingConvs.includes(activeConversationId)
   const bottomRef      = useRef<HTMLDivElement>(null)
   const scrollerRef    = useRef<HTMLDivElement>(null)
   // "Stick to bottom" — true while the user is at (or near) the bottom of
@@ -86,150 +96,6 @@ export function ChatWindow() {
     if (!activeConversationId) createNewConversation()
   }, [])
 
-  // Ref-based poller for delegate-reply arrival. A single long-lived poll
-  // per conversation, robust to task-persistence races. Fires on:
-  //   * mount when the conversation opens (catches replies that landed while
-  //     the tab was closed).
-  //   * every send-to-worker click.
-  // Stops when there are no more sent-to-worker turns awaiting a reply
-  // AND no in-flight tasks — then exits gracefully.
-  const pollRef = useRef<{ cancel: () => void } | null>(null)
-
-  function startDelegatePoll(convId: string) {
-    if (pollRef.current) return   // already polling for this conv
-    let cancelled = false
-    let handle: number | null = null
-    // Track ids we've already spliced in to avoid unnecessary store writes.
-    const seenIds = new Set<string>()
-
-    async function tick() {
-      if (cancelled) return
-      try {
-        // Always pull the conversation — even if no task shows as inflight
-        // yet, the delegate result may already be in DB from a previous
-        // session where the poll wasn't running.
-        const [tRes, mRes] = await Promise.all([
-          fetch(`/api/delegate/tasks?conv_id=${encodeURIComponent(convId)}&limit=20`),
-          fetch(`/api/memory/conversations/${convId}`),
-        ])
-        const tasks = ((await tRes.json()) as { tasks?: Array<{ status: string }> }).tasks ?? []
-        const hasInflight = tasks.some(t => t.status === 'pending' || t.status === 'running')
-
-        let awaitingReply = false
-        if (mRes.ok) {
-          const mData = await mRes.json() as { messages?: Message[] }
-          const msgs = mData.messages ?? []
-          for (const m of msgs) {
-            if (!seenIds.has(m.id)) {
-              seenIds.add(m.id)
-              // Only splice in messages the store doesn't already know about.
-              const current = useAppStore.getState().getActiveConversation()
-              if (current && current.id === convId && !current.messages.some(x => x.id === m.id)) {
-                addMessage(convId, m)
-              }
-            }
-          }
-          // Look for "sent_to_worker" user turns whose delegate reply hasn't
-          // arrived yet — the presence of one keeps the poll alive.
-          for (let i = 0; i < msgs.length; i++) {
-            const m = msgs[i]
-            const isSent = m.role === 'user'
-              && (m.meta as { sent_to_worker?: boolean } | undefined)?.sent_to_worker
-            if (!isSent) continue
-            const hasReplyAfter = msgs.slice(i + 1).some(
-              n => n.role === 'assistant'
-                && (n.meta as { delegated_task_id?: string } | undefined)?.delegated_task_id,
-            )
-            if (!hasReplyAfter) { awaitingReply = true; break }
-          }
-        }
-
-        if (cancelled) return
-        if (hasInflight || awaitingReply) {
-          handle = window.setTimeout(tick, 2000)
-        } else {
-          // Nothing outstanding — stop the poll. Restart via
-          // startDelegatePoll on the next send-to-worker click.
-          pollRef.current = null
-        }
-      } catch {
-        if (!cancelled) handle = window.setTimeout(tick, 5000)
-      }
-    }
-
-    pollRef.current = {
-      cancel: () => {
-        cancelled = true
-        if (handle != null) clearTimeout(handle)
-      },
-    }
-    void tick()
-  }
-
-  // Start the poll whenever we open a conversation. Cheap: tick will exit
-  // fast if there's nothing to wait for.
-  useEffect(() => {
-    if (!activeConversationId) return
-    startDelegatePoll(activeConversationId)
-    return () => {
-      pollRef.current?.cancel()
-      pollRef.current = null
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeConversationId])
-
-  // Send-to-worker: user clicked the amber Bot button.
-  //   1. Add the user's prompt to the chat as a user message tagged
-  //      `sent_to_worker: true` (badge in MessageBubble).
-  //   2. POST to /api/delegate/send — backend uses the judge to pick a
-  //      category, dispatches the worker, returns instantly.
-  //   3. Auto-expand the right panel + switch to Auxiliary tab for live
-  //      progress.
-  //   4. Kick the delegate poll so the reply is caught the instant it
-  //      lands (in case the useEffect version already exited).
-  async function handleSendToWorker(text: string) {
-    const prompt = text.trim()
-    if (!prompt) return
-
-    let convId = activeConversationId
-    if (!convId) {
-      convId = createNewConversation()
-    }
-
-    const userMsg: Message = {
-      id:        nanoid(),
-      role:      'user',
-      content:   prompt,
-      timestamp: Date.now(),
-      meta:      { sent_to_worker: true },
-    }
-    addMessage(convId, userMsg)
-    syncToBackend(convId, {
-      title:     conv?.title ?? 'New conversation',
-      model:     settings.activeModel,
-      updatedAt: Date.now(),
-    }, userMsg)
-
-    try {
-      await fetch('/api/delegate/send', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          prompt,
-          conv_id:       convId,
-          source_msg_id: userMsg.id,
-        }),
-      })
-      setVoicePanelOpen(true)
-      setRightPanel('delegate')
-      // Make sure the poll is running (it may have exited if the previous
-      // task finished quickly).
-      startDelegatePoll(convId)
-    } catch {
-      /* silent — user will see a missing entry in the Auxiliary panel */
-    }
-  }
-
   // Manual "Read aloud" — read latest voice/speed/volume from store at call-time.
   const handleSpeak = useCallback((text: string) => {
     const tts = useAppStore.getState().settings.tts
@@ -249,6 +115,9 @@ export function ChatWindow() {
   async function handleSend(text: string) {
     if (!activeConversationId) return
     const convId = activeConversationId
+    // Refuse if THIS tab is already generating — but a stream in a
+    // different tab is fine.
+    if (isConvGenerating(convId)) return
 
     const userMsg: Message = {
       id: nanoid(),
@@ -269,12 +138,17 @@ export function ChatWindow() {
       isStreaming: true,
     }
     addMessage(convId, aiMsg)
-    setIsGenerating(true)
+    startGenerating(convId)
 
-    // Stop any in-flight TTS from previous turn
+    // Stop TTS from any previous turn (TTS is a single audio pipeline,
+    // so we accept it being global — the active tab drives voice).
     stopTTS()
 
-    abortRef.current = new AbortController()
+    // Per-conversation abort controller. Aborting the ACTIVE tab from
+    // handleStop only cancels this stream; concurrent streams in other
+    // tabs keep going.
+    const controller = new AbortController()
+    abortMapRef.current.set(convId, controller)
 
     // Streaming-TTS state
     const cursor: SentenceCursor = { pos: 0 }
@@ -311,7 +185,7 @@ export function ChatWindow() {
         history,
         settings.character.systemPrompt,
         settings.model,
-        abortRef.current.signal,
+        controller.signal,
         settings.toolModel,
         convId,
         userMsg.id,
@@ -425,13 +299,18 @@ export function ChatWindow() {
         }
       }
     } finally {
-      setIsGenerating(false)
+      stopGenerating(convId)
+      abortMapRef.current.delete(convId)
     }
   }
 
   function handleStop() {
-    abortRef.current?.abort()
-    setIsGenerating(false)
+    // Stop only the ACTIVE tab's stream. Other tabs keep streaming.
+    if (!activeConversationId) return
+    const controller = abortMapRef.current.get(activeConversationId)
+    controller?.abort()
+    abortMapRef.current.delete(activeConversationId)
+    stopGenerating(activeConversationId)
     stopTTS()
     setIsSpeaking(false)
     setAudioLevel(0)
@@ -453,19 +332,15 @@ export function ChatWindow() {
           <button
             onClick={() => activeConversationId && clearMessages(activeConversationId)}
             className="p-2 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors"
-            title="Clear messages"
+            title="Clear messages in this tab"
           >
             <Trash2 className="w-4 h-4" />
           </button>
-          <button
-            onClick={createNewConversation}
-            className="p-2 rounded-lg text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--accent-dim)] transition-colors"
-            title="New conversation"
-          >
-            <Plus className="w-4 h-4" />
-          </button>
         </div>
       </div>
+
+      {/* Browser-style tabs — switch between open conversations */}
+      <ChatTabs />
 
       {/* Messages */}
       <div
@@ -487,7 +362,7 @@ export function ChatWindow() {
 
         {/* "Jump to latest" pill — visible when the user has scrolled up while
             new tokens are still arriving. Clicking re-engages sticky-bottom. */}
-        {!stickBottom && (isGenerating || (lastMsg?.isStreaming ?? false)) && (
+        {!stickBottom && (activeIsGenerating || (lastMsg?.isStreaming ?? false)) && (
           <button
             onClick={() => {
               setStickBottom(true)
@@ -506,7 +381,7 @@ export function ChatWindow() {
         )}
       </div>
 
-      <ChatInput onSend={handleSend} onSendToWorker={handleSendToWorker} onStop={handleStop} />
+      <ChatInput onSend={handleSend} onStop={handleStop} />
     </div>
   )
 }
@@ -519,26 +394,10 @@ function EmptyState() {
       transition={{ duration: 0.6, ease: [0.22, 1, 0.36, 1] }}
       className="flex flex-col items-center justify-center h-full min-h-[320px] gap-6 text-center px-8"
     >
-      {/* Holographic flower orb */}
-      <div className="relative w-28 h-28">
-        <div
-          className="absolute inset-0 rounded-full blur-3xl opacity-70"
-          style={{
-            background:
-              'conic-gradient(from 180deg at 50% 50%, var(--orb-color-1), var(--orb-color-3), var(--orb-color-2), var(--orb-color-1))',
-          }}
-        />
-        <div
-          className="relative w-28 h-28 rounded-full flex items-center justify-center text-5xl animate-float select-none"
-          style={{
-            background:
-              'radial-gradient(circle at 30% 25%, rgba(255,255,255,0.45), transparent 35%), conic-gradient(from 220deg at 50% 50%, var(--orb-color-1), var(--orb-color-3), var(--orb-color-2), var(--orb-color-1))',
-            boxShadow:
-              'inset 0 -8px 16px rgba(0,0,0,0.35), inset 0 3px 4px rgba(255,255,255,0.3), 0 0 60px var(--accent-glow)',
-          }}
-        >
-          ⚘
-        </div>
+      {/* Persephone medallion — replaces the old holographic orb so the
+          empty-chat state uses the same branding as the sidebar + wizard. */}
+      <div className="animate-float">
+        <PersephoneIcon size={112} />
       </div>
 
       <div className="space-y-2 max-w-md">

@@ -1,21 +1,20 @@
 import { useEffect, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { MessageCircle, Settings, Plus, Trash2, Pin, Brain, Microscope, Code2, Clapperboard, FileText, Music4, Bot } from 'lucide-react'
+import { MessageCircle, Settings, Plus, Trash2, Pin, Brain, Microscope, Clapperboard, FileText, Music4, Bot } from 'lucide-react'
 import { useAppStore } from '@/store/appStore'
+import { PersephoneIcon } from '@/components/PersephoneIcon'
 import type { Conversation } from '@/types'
 
 export function Sidebar() {
   const {
     conversations,
     activeConversationId,
-    setActiveConversation,
+    openTab,
     deleteConversation,
     updateConversation,
     createNewConversation,
     currentView,
     setCurrentView,
-    ornithMode,
-    toggleOrnithMode,
   } = useAppStore()
 
   // Only show the Music tab if Ableton is detected on this machine.
@@ -40,14 +39,19 @@ export function Sidebar() {
     <div className="w-64 flex-shrink-0 flex flex-col h-full glass border-r border-[var(--border)]"
          style={{ borderRadius: 0 }}>
       {/* ── Logo + wordmark ─────────────────────────────────────────── */}
-      <div className="relative flex items-center gap-3 px-5 py-5 border-b border-[var(--border)]">
-        <LogoOrb />
+      {/* Extra top padding (pt-10 instead of py-5) so the logo sits below
+          the macOS Electron traffic-light buttons. Marked `window-drag`
+          so the user can grab this whole header to move the window —
+          matches native macOS app behaviour where the title bar area is
+          draggable. */}
+      <div className="window-drag relative flex items-center gap-3 px-5 pt-10 pb-5 border-b border-[var(--border)]">
+        <PersephoneIcon size={40} />
         <div className="flex flex-col leading-none">
           <span className="font-display text-xl tracking-tight text-[var(--text-primary)]">
             Persephone
           </span>
           <span className="font-mono text-[9px] uppercase tracking-[0.28em] text-[var(--text-muted)] mt-1">
-            v1 · liquid obsidian
+            queen between worlds
           </span>
         </div>
       </div>
@@ -133,7 +137,9 @@ export function Sidebar() {
                   conv={conv}
                   isActive={conv.id === activeConversationId}
                   onSelect={() => {
-                    setActiveConversation(conv.id)
+                    // openTab activates + folds into the tab strip so
+                    // sidebar picks feel like browser bookmarks.
+                    openTab(conv.id)
                     setCurrentView('chat')
                   }}
                   onDelete={() => deleteConversation(conv.id)}
@@ -151,64 +157,6 @@ export function Sidebar() {
         </>
       )}
 
-      {/* ── Ornith Coder preset — bottom-left dock ─────────────────── */}
-      <div className="mt-auto px-3 py-3 border-t border-[var(--border)]">
-        <button
-          onClick={() => {
-            if (currentView !== 'chat') setCurrentView('chat')
-            toggleOrnithMode()
-          }}
-          title={ornithMode
-            ? 'Ornith Coder mode is ON — click to restore previous model'
-            : 'Activate Ornith Coder — switches model to ornith:latest with a plan-then-approve coding prompt'
-          }
-          className={`group relative flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-300 text-left overflow-hidden
-            ${ornithMode
-              ? 'text-[var(--text-primary)] bg-[var(--bg-tertiary)] shadow-[var(--shadow-soft)]'
-              : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/40 hover:text-[var(--text-primary)]'
-            }`}
-        >
-          {ornithMode && (
-            <span
-              className="absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-full"
-              style={{
-                background: 'linear-gradient(180deg, var(--accent), var(--holo))',
-                boxShadow: '0 0 12px var(--accent-glow)',
-              }}
-            />
-          )}
-          <Code2 className={`w-4 h-4 flex-shrink-0 transition-colors ${ornithMode ? 'text-[var(--accent)]' : ''}`} />
-          <div className="flex flex-col leading-tight">
-            <span className="tracking-tight">Ornith Coder</span>
-            <span className="font-mono text-[9px] uppercase tracking-[0.22em] text-[var(--text-muted)]">
-              {ornithMode ? 'active · plan → approve' : 'preset · off'}
-            </span>
-          </div>
-        </button>
-      </div>
-    </div>
-  )
-}
-
-/* ─── Holographic logo orb ─────────────────────────────────────────── */
-function LogoOrb() {
-  return (
-    <div className="relative w-10 h-10 flex-shrink-0">
-      {/* outer pulsing halo */}
-      <div className="absolute inset-0 rounded-full animate-pulse-ring" />
-      {/* gradient sphere */}
-      <div
-        className="relative w-10 h-10 rounded-full flex items-center justify-center text-white text-sm"
-        style={{
-          background: `
-            radial-gradient(circle at 30% 25%, rgba(255,255,255,0.5), transparent 35%),
-            conic-gradient(from 220deg at 50% 50%, var(--orb-color-1), var(--orb-color-3), var(--orb-color-2), var(--orb-color-1))`,
-          boxShadow:
-            'inset 0 -4px 8px rgba(0,0,0,0.35), inset 0 2px 3px rgba(255,255,255,0.25), 0 0 18px var(--accent-glow), 0 0 32px -10px var(--holo)',
-        }}
-      >
-        <span className="font-display text-base translate-y-[-1px]">⚘</span>
-      </div>
     </div>
   )
 }

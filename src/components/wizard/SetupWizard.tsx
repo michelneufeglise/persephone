@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ChevronRight, ChevronLeft, Sparkles } from 'lucide-react'
 import { useAppStore } from '@/store/appStore'
+import { PersephoneIcon } from '@/components/PersephoneIcon'
 import { WelcomeStep }  from './steps/WelcomeStep'
 import { AccountStep }  from './steps/AccountStep'
 import { ModelStep }    from './steps/ModelStep'
@@ -142,10 +143,7 @@ export function SetupWizard() {
       {/* Header */}
       <div className="relative z-10 flex items-center justify-between px-8 py-5 border-b border-[var(--border)]">
         <div className="flex items-center gap-2">
-          <div className="w-7 h-7 rounded-full bg-gradient-to-br from-[var(--orb-color-1)] to-[var(--orb-color-2)]
-            flex items-center justify-center text-sm shadow-md shadow-[var(--accent-glow)]">
-            ⚘
-          </div>
+          <PersephoneIcon size={28} glow={false} />
           <span className="font-serif text-lg text-[var(--text-primary)]">Persephone Setup</span>
         </div>
 

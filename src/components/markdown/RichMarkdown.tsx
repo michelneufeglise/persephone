@@ -1,6 +1,7 @@
 import ReactMarkdown, { type Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { useMemo } from 'react'
+import { useMemo, useState } from 'react'
+import { Copy, Check } from 'lucide-react'
 import { Mermaid } from './Mermaid'
 import { SketchBorder } from './SketchBorder'
 import { OrnamentalDivider } from './OrnamentalDivider'
@@ -76,7 +77,10 @@ function buildComponents(variant: 'chat' | 'report'): Components {
       firstParagraphDone = true
       return (
         <p className={clsx(
-          'leading-relaxed my-2.5 text-[var(--text-primary)]',
+          // Slightly more breathing room than before (was my-2.5) — dense
+          // reply-length answers were feeling cramped, especially with
+          // list + paragraph interleaves.
+          'leading-relaxed my-3.5 text-[var(--text-primary)]',
           apply && 'rich-md__lede',
         )}>
           {children}
@@ -103,11 +107,12 @@ function buildComponents(variant: 'chat' | 'report'): Components {
     ),
 
     ul: ({ children }) => (
-      <ul className="my-2 space-y-1 list-none pl-2">{children}</ul>
+      // A little more room between items so dense bullet lists breathe.
+      <ul className="my-3 space-y-1.5 list-none pl-2">{children}</ul>
     ),
 
     ol: ({ children }) => (
-      <ol className="my-2 space-y-1.5 list-none pl-2 rich-md__ol counter-reset-rich">
+      <ol className="my-3 space-y-2 list-none pl-2 rich-md__ol counter-reset-rich">
         {children}
       </ol>
     ),
@@ -160,24 +165,7 @@ function buildComponents(variant: 'chat' | 'report'): Components {
         return <Mermaid source={raw} />
       }
 
-      return (
-        <SketchBorder
-          stroke="var(--accent)"
-          fillStyle="solid"
-          fill="rgba(0,0,0,0.35)"
-          padding={14}
-          className="my-3 overflow-x-auto"
-        >
-          <div className="relative">
-            <span className="absolute -top-1 -left-1 text-[8px] font-mono uppercase tracking-[0.28em] text-[var(--text-muted)]">
-              {lang || 'code'}
-            </span>
-            <pre className="mt-3 text-[12.5px] leading-relaxed font-mono text-[var(--text-primary)] overflow-x-auto whitespace-pre">
-              {children}
-            </pre>
-          </div>
-        </SketchBorder>
-      )
+      return <CodeBlock lang={lang} raw={raw}>{children}</CodeBlock>
     },
 
     table: ({ children }) => (
@@ -214,4 +202,57 @@ function buildComponents(variant: 'chat' | 'report'): Components {
       <em className="font-display-italic text-[var(--text-primary)]">{children}</em>
     ),
   }
+}
+
+
+// ── Code block with a copy button on hover ────────────────────────────────
+function CodeBlock({
+  lang, raw, children,
+}: {
+  lang: string
+  raw: string
+  children: React.ReactNode
+}) {
+  const [copied, setCopied] = useState(false)
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(raw)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1400)
+    } catch { /* silent */ }
+  }
+  return (
+    <SketchBorder
+      stroke="var(--accent)"
+      fillStyle="solid"
+      fill="rgba(0,0,0,0.35)"
+      padding={14}
+      className="my-3 overflow-x-auto group/code"
+    >
+      <div className="relative">
+        <span className="absolute -top-1 -left-1 text-[8px] font-mono uppercase tracking-[0.28em] text-[var(--text-muted)]">
+          {lang || 'code'}
+        </span>
+        <button
+          onClick={copy}
+          title={copied ? 'Copied!' : 'Copy code'}
+          className={clsx(
+            'absolute -top-1 -right-1 flex items-center gap-1 px-1.5 py-0.5 rounded',
+            'text-[9px] font-mono uppercase tracking-widest transition-opacity',
+            'opacity-0 group-hover/code:opacity-100 focus-visible:opacity-100',
+            copied
+              ? 'text-emerald-300 bg-emerald-500/10 border border-emerald-500/30'
+              : 'text-[var(--text-muted)] bg-[var(--bg-tertiary)] border border-[var(--border)] hover:text-[var(--accent)] hover:border-[var(--accent)]',
+          )}
+        >
+          {copied
+            ? <><Check className="w-2.5 h-2.5" /> copied</>
+            : <><Copy  className="w-2.5 h-2.5" /> copy</>}
+        </button>
+        <pre className="mt-3 text-[12.5px] leading-relaxed font-mono text-[var(--text-primary)] overflow-x-auto whitespace-pre">
+          {children}
+        </pre>
+      </div>
+    </SketchBorder>
+  )
 }

@@ -112,6 +112,59 @@ body {
 }
 
 /* ─────────────────────────────────────────────────────────────────
+   Persephone backdrop — the CC0 mythology illustration used as a
+   watermark behind the whole app. Sits below the aurora + vignette
+   so it feels atmospheric rather than dominant. All glass panels
+   above are opaque enough to keep chat text crisply legible.
+   Drop the file at /public/persephone-background.png — until it's
+   there this layer degrades silently to a solid colour.
+   ────────────────────────────────────────────────────────────────── */
+/* Consistent, always-blurred ambient backdrop.
+   The image is heavily blurred at the source so it reads as coloured
+   atmosphere — never as a sharp picture. Because it's pre-blurred, panels
+   on top don't need to fight it with their own backdrop-filter, and it
+   looks identical everywhere (sidebar, right panel, main content) — no
+   more "sharp in one place, blurry in another" inconsistency. */
+.atmos-backdrop {
+  /* Slightly scaled-up so the 30px blur doesn't feather in visible
+     hard edges at the viewport boundary. */
+  background-image:    url("/persephone-background.png");
+  background-size:     cover;
+  background-position: center;
+  background-repeat:   no-repeat;
+  /* The star of the show: strong Gaussian blur turns the flower field
+     into painterly colour clouds. Saturate keeps it vivid instead of
+     muddy; the hue-rotate keeps it in the pomegranate/holo palette. */
+  filter: blur(38px) saturate(140%) hue-rotate(-4deg);
+  transform: scale(1.15);   /* hides blur edge feathering */
+  transform-origin: center;
+  opacity: 0.9;
+  /* Slow drift so it feels alive instead of static wallpaper. */
+  animation: backdrop-drift 60s ease-in-out infinite alternate;
+  will-change: transform;
+}
+
+/* Aurora / vignette / grain compete visually with the ambient blur —
+   dim them so the backdrop reads as one consistent atmosphere. */
+.atmos-backdrop ~ .atmos-aurora   { opacity: 0.22; }
+.atmos-backdrop ~ .atmos-vignette { opacity: 0.30; }
+.atmos-backdrop ~ .atmos-grain    { opacity: 0.10; }
+
+/* Light themes get a milder wash. The blur is the same; only the
+   opacity and saturation dial down so a pale UI isn't overwhelmed. */
+[data-theme='spring'] .atmos-backdrop,
+[data-theme='elysian'] .atmos-backdrop {
+  filter: blur(38px) saturate(85%) hue-rotate(-4deg);
+  opacity: 0.55;
+}
+
+@keyframes backdrop-drift {
+  0%   { transform: translate3d(0, 0, 0)     scale(1.02); }
+  50%  { transform: translate3d(-1.5%, 1%, 0) scale(1.04); }
+  100% { transform: translate3d(1%, -1%, 0)   scale(1.06); }
+}
+
+/* ─────────────────────────────────────────────────────────────────
    Scrollbars — thin, accent-coloured, fade-on-hover
    ────────────────────────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
@@ -165,19 +218,48 @@ input[type='range'] { -webkit-appearance: none; appearance: none; }
    Reusable utility classes
    ────────────────────────────────────────────────────────────────── */
 
-/* Liquid glass surface — used for sidebar/right-panel/chat shell */
+/* Electron window drag regions — the app uses `titleBarStyle: hiddenInset`
+   so macOS/Windows don't render a native title bar we could drag by.
+   Marking a top strip as `-webkit-app-region: drag` lets the user grab
+   the window from anywhere along that strip. Interactive elements inside
+   the drag region need `.window-no-drag` to remain clickable. */
+.window-drag {
+  -webkit-app-region: drag;
+}
+.window-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+
+/* Liquid glass surface — used for sidebar/right-panel/chat shell.
+   The backdrop is already blurred at the source (see .atmos-backdrop),
+   so we DON'T need heavy backdrop-blur here anymore. Instead we lean on
+   a slightly higher inner opacity + a small backdrop-blur for the frosted
+   feel. This keeps documents and long chat replies fully readable. */
 .glass {
   position: relative;
-  background: var(--bg-glass);
-  backdrop-filter: blur(20px) saturate(160%);
-  -webkit-backdrop-filter: blur(20px) saturate(160%);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in oklab, var(--bg-primary) 78%, transparent) 0%,
+      color-mix(in oklab, var(--bg-primary) 72%, transparent) 100%
+    ),
+    var(--bg-glass);
+  backdrop-filter: blur(6px) saturate(140%);
+  -webkit-backdrop-filter: blur(6px) saturate(140%);
   border: 1px solid var(--border-glass);
   box-shadow: var(--shadow-deep);
 }
 .glass-strong {
-  background: var(--bg-glass-strong);
-  backdrop-filter: blur(28px) saturate(180%);
-  -webkit-backdrop-filter: blur(28px) saturate(180%);
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in oklab, var(--bg-primary) 88%, transparent) 0%,
+      color-mix(in oklab, var(--bg-primary) 82%, transparent) 100%
+    ),
+    var(--bg-glass-strong);
+  backdrop-filter: blur(10px) saturate(150%);
+  -webkit-backdrop-filter: blur(10px) saturate(150%);
 }
 
 /* Hairline highlight along the top edge of any glass surface */

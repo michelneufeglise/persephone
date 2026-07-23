@@ -1,10 +1,11 @@
 import { useEffect, useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
-  Brain, MessageSquare, Trash2, Sparkles, RefreshCw, Tag,
+  MessageSquare, Trash2, Sparkles, RefreshCw, Tag,
   Hash, Pin, Plus, X,
 } from 'lucide-react'
 import { useAppStore } from '@/store/appStore'
+import { PersephoneIcon } from '@/components/PersephoneIcon'
 import { Panel } from '@/components/ui/Panel'
 import { clsx } from 'clsx'
 
@@ -86,17 +87,7 @@ export function MemoryView() {
       <div className="px-6 py-4 border-b border-[var(--border)] bg-[var(--bg-glass-strong)]">
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <div className="relative w-10 h-10">
-              <div className="absolute inset-0 rounded-full blur-md opacity-60"
-                style={{ background: 'conic-gradient(from 220deg, var(--orb-color-1), var(--orb-color-3), var(--orb-color-2), var(--orb-color-1))' }} />
-              <div className="relative w-10 h-10 rounded-full flex items-center justify-center"
-                style={{
-                  background: 'radial-gradient(circle at 30% 25%, rgba(255,255,255,0.4), transparent 35%), conic-gradient(from 220deg, var(--orb-color-1), var(--orb-color-3), var(--orb-color-2), var(--orb-color-1))',
-                  boxShadow: 'inset 0 -3px 6px rgba(0,0,0,0.4), inset 0 2px 3px rgba(255,255,255,0.3), 0 0 14px var(--accent-glow)',
-                }}>
-                <Brain className="w-5 h-5 text-white" />
-              </div>
-            </div>
+            <PersephoneIcon size={40} />
             <div>
               <h2 className="font-display text-2xl text-[var(--text-primary)] leading-none">Memory</h2>
               <p className="text-xs text-[var(--text-muted)] font-mono mt-1 tracking-wider">

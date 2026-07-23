@@ -158,6 +158,13 @@ interface AppState {
   setActiveConversation: (id: string | null) => void
   getActiveConversation: () => Conversation | null
 
+  // Browser-style tab strip above the chat window. Persisted so tabs
+  // survive reload. Ordering matters — left→right = oldest→newest.
+  openTabIds: string[]
+  openTab:  (id: string) => void   // activate + add if missing
+  closeTab: (id: string) => void   // remove; falls back to another tab
+  moveTab:  (from: number, to: number) => void
+
   // Messages
   addMessage: (convId: string, msg: Message) => void
   updateMessage: (convId: string, msgId: string, update: Partial<Message>) => void
@@ -173,8 +180,16 @@ interface AppState {
   updateMcpSettings: (partial: Partial<AppSettings['mcp']>) => void
 
   // UI state (not persisted)
+  // `isGenerating` is retained for backwards compat with any consumer that
+  // just wants a "something is streaming somewhere" hint. For tab-aware
+  // gating (send button, stop button) use `generatingConvs`/`isConvGenerating`.
   isGenerating: boolean
   setIsGenerating: (v: boolean) => void
+  /** Ids of conversations currently streaming a response. Multiple can run in parallel. */
+  generatingConvs: string[]
+  startGenerating: (convId: string) => void
+  stopGenerating:  (convId: string) => void
+  isConvGenerating: (convId: string | null) => boolean
   isSpeaking: boolean
   setIsSpeaking: (v: boolean) => void
   audioLevel: number
@@ -228,11 +243,17 @@ export const useAppStore = create<AppState>()(
         })),
 
       deleteConversation: id =>
-        set(s => ({
-          conversations: s.conversations.filter(c => c.id !== id),
-          activeConversationId:
-            s.activeConversationId === id ? null : s.activeConversationId,
-        })),
+        set(s => {
+          const tabs = s.openTabIds.filter(t => t !== id)
+          return {
+            conversations: s.conversations.filter(c => c.id !== id),
+            activeConversationId:
+              s.activeConversationId === id
+                ? (tabs[tabs.length - 1] ?? null)
+                : s.activeConversationId,
+            openTabIds: tabs,
+          }
+        }),
 
       setActiveConversation: id => set({ activeConversationId: id }),
 
@@ -240,6 +261,41 @@ export const useAppStore = create<AppState>()(
         const { conversations, activeConversationId } = get()
         return conversations.find(c => c.id === activeConversationId) ?? null
       },
+
+      // ── Tab strip ───────────────────────────────────────────────────
+      openTabIds: [],
+
+      openTab: id =>
+        set(s => {
+          if (!s.conversations.some(c => c.id === id)) return { activeConversationId: id }
+          const already = s.openTabIds.includes(id)
+          return {
+            activeConversationId: id,
+            openTabIds: already ? s.openTabIds : [...s.openTabIds, id],
+          }
+        }),
+
+      closeTab: id =>
+        set(s => {
+          const remaining = s.openTabIds.filter(t => t !== id)
+          let nextActive = s.activeConversationId
+          if (s.activeConversationId === id) {
+            // Prefer the tab that was to the right; else the last remaining.
+            const idx = s.openTabIds.indexOf(id)
+            nextActive = remaining[idx] ?? remaining[remaining.length - 1] ?? null
+          }
+          return { openTabIds: remaining, activeConversationId: nextActive }
+        }),
+
+      moveTab: (from, to) =>
+        set(s => {
+          if (from === to || from < 0 || to < 0) return {}
+          if (from >= s.openTabIds.length || to >= s.openTabIds.length) return {}
+          const next = [...s.openTabIds]
+          const [moved] = next.splice(from, 1)
+          next.splice(to, 0, moved)
+          return { openTabIds: next }
+        }),
 
       addMessage: (convId, msg) =>
         set(s => ({
@@ -304,6 +360,18 @@ export const useAppStore = create<AppState>()(
       // Transient UI state
       isGenerating: false,
       setIsGenerating: v => set({ isGenerating: v }),
+      generatingConvs: [],
+      startGenerating: convId =>
+        set(s => s.generatingConvs.includes(convId)
+          ? {}
+          : { generatingConvs: [...s.generatingConvs, convId], isGenerating: true }),
+      stopGenerating:  convId =>
+        set(s => {
+          const next = s.generatingConvs.filter(c => c !== convId)
+          return { generatingConvs: next, isGenerating: next.length > 0 }
+        }),
+      isConvGenerating: convId =>
+        !!convId && get().generatingConvs.includes(convId),
       isSpeaking: false,
       setIsSpeaking: v => set({ isSpeaking: v }),
       audioLevel: 0,
@@ -362,6 +430,8 @@ export const useAppStore = create<AppState>()(
         set(s => ({
           conversations: [conv, ...s.conversations],
           activeConversationId: id,
+          // New conversation always becomes a new tab, appended right.
+          openTabIds: [...s.openTabIds, id],
         }))
         return id
       },
@@ -371,6 +441,7 @@ export const useAppStore = create<AppState>()(
       partialize: state => ({
         conversations: state.conversations,
         activeConversationId: state.activeConversationId,
+        openTabIds: state.openTabIds,
         settings: state.settings,
         wizardCompleted: state.wizardCompleted,
         account: state.account,

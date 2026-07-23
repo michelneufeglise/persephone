@@ -34,6 +34,7 @@ import idp_engine as _idp
 import mcp_catalog as _mcp
 import mcp_manager as _mcp_mgr
 import ollama_setup as _ollama
+import ollama_parallel as _ollama_par
 import research as _research
 import research_db as _rdb
 import embeddings as _emb
@@ -353,12 +354,43 @@ class ChatRequest(BaseModel):
 _CTX_TTL_S = 20.0
 _memory_ctx_cache: tuple[float, str] = (0.0, "")
 _mcp_ctx_cache:    tuple[float, str] = (0.0, "")
+_user_ctx_cache:   tuple[float, str] = (0.0, "")
 
 
 def invalidate_context_cache() -> None:
-    global _memory_ctx_cache, _mcp_ctx_cache
+    global _memory_ctx_cache, _mcp_ctx_cache, _user_ctx_cache
     _memory_ctx_cache = (0.0, "")
     _mcp_ctx_cache    = (0.0, "")
+    _user_ctx_cache   = (0.0, "")
+
+
+async def _build_user_context() -> str:
+    """Tell every model who the human on the other end is.
+
+    Pulled from `app_config.account_name` — set in the setup wizard and stored
+    in SQLite so it survives restarts and applies to chat, vision, code, and
+    every auxiliary role.
+    """
+    global _user_ctx_cache
+    now = time.monotonic()
+    ts, cached = _user_ctx_cache
+    if cached and now - ts < _CTX_TTL_S:
+        return cached
+    try:
+        name = (await _db.get_config("account_name")) or ""
+    except Exception:
+        return ""
+    name = name.strip()
+    if not name:
+        _user_ctx_cache = (now, "")
+        return ""
+    out = (
+        f"\n\n## Who you are talking to\n"
+        f"The human user's name is {name}. Address them as {name} when it feels "
+        f"natural; don't repeat the name every message."
+    )
+    _user_ctx_cache = (now, out)
+    return out
 
 
 async def _build_memory_context() -> str:
@@ -677,6 +709,21 @@ def _ctx_floor(model: str) -> int:
     if not model:
         return 0
     lower = model.lower()
+    # AGENTIC MoE thinkers — 64K minimum. These specifically need room for
+    # THREE things simultaneously:
+    #   1. Tool result payloads (persephone-fs list_directory on a big repo
+    #      can return 30-80K chars; MCP web searches can dump 20K chars).
+    #   2. The model's own long <think> chain (agentic reasoning + tool
+    #      dispatch decisions — 8-16K tokens is common).
+    #   3. The visible reply.
+    # 32K used to trip constantly on tasks like "what files can you read?"
+    # where the tool listing + thinking + reply all had to fit at once.
+    if (
+        "agentworld"          in lower
+        or "agents-a1"        in lower
+        or lower.startswith("ornith")
+    ):
+        return 65536
     # Frontier long-context MoE / thinker families — 32K minimum. These
     # models were trained on 128K-262K contexts and comfortably serve 32K
     # without VRAM pressure on M-series unified memory.
@@ -686,10 +733,7 @@ def _ctx_floor(model: str) -> int:
         or lower.startswith("nemotron-3-nano")
         or lower.startswith("nemotron-3")
         or lower.startswith("deepseek-r1")
-        or lower.startswith("ornith")
         or lower.startswith("gemma4")
-        or "agentworld" in lower
-        or "agents-a1" in lower               # InternScience Agents-A1 (262K native)
         or "internscience/agents-a1" in lower
     ):
         return 32768
@@ -1184,20 +1228,24 @@ async def _augment_messages(model: str, messages: list[dict]) -> list[dict]:
     """
     trivial = _is_trivial_turn(messages)
     if trivial:
-        # parallel still — mcp + thinking are cheap
-        mcp_ctx, _ = await asyncio.gather(_build_mcp_context(), asyncio.sleep(0))
+        # parallel still — mcp + user are cheap
+        mcp_ctx, user_ctx = await asyncio.gather(
+            _build_mcp_context(),
+            _build_user_context(),
+        )
         memory_ctx = ""
     else:
-        memory_ctx, mcp_ctx = await asyncio.gather(
+        memory_ctx, mcp_ctx, user_ctx = await asyncio.gather(
             _build_memory_context(),
             _build_mcp_context(),
+            _build_user_context(),
         )
     think_ctx = _thinking_block() if _wants_thinking(model) else ""
     # Tiny formatting hint — the UI renders rich markdown into illustrations,
     # so encourage models to use it. Skipped for trivial turns to keep them
     # snappy and prevent acks from emitting headings.
     visual_ctx = "" if trivial else _VISUAL_HINT
-    addendum  = (memory_ctx + mcp_ctx + think_ctx + visual_ctx).strip()
+    addendum  = (user_ctx + memory_ctx + mcp_ctx + think_ctx + visual_ctx).strip()
 
     if not addendum:
         return _trim_history(messages)
@@ -1387,21 +1435,46 @@ async def _stream_one_round(
     elif _supports_native_thinking(model):
         payload["think"] = True
 
-    async with client.stream("POST", f"{OLLAMA_BASE}/api/chat", json=payload) as resp:
-        if resp.status_code != 200:
+    # One-shot retry when Ollama rejects with exceed_context_size_error —
+    # bump num_ctx to the next bucket and re-send. This catches the case
+    # where the auto-scaler + floor got close but a giant tool payload +
+    # long <think> pushed the round-2 prompt over the top.
+    async def _do_request(current_payload: dict):
+        return client.stream("POST", f"{OLLAMA_BASE}/api/chat", json=current_payload)
+
+    for attempt in (1, 2):
+        async with await _do_request(payload) as resp:
+            if resp.status_code == 200:
+                async for raw_line in resp.aiter_lines():
+                    if not raw_line.strip():
+                        continue
+                    try:
+                        chunk = json.loads(raw_line)
+                    except json.JSONDecodeError:
+                        continue
+                    yield raw_line, chunk
+                return   # normal completion — no retry
             body = (await resp.aread()).decode(errors="replace")
+            # Only retry if it's the specific context-size error and we
+            # haven't already retried. The auto-scaler + _ctx_floor should
+            # prevent this in the vast majority of cases; this is the
+            # safety net.
+            is_ctx_error = ("exceed_context_size" in body
+                            or "context size" in body.lower())
+            if resp.status_code == 400 and is_ctx_error and attempt == 1:
+                current_ctx = int((payload.get("options") or {}).get("num_ctx", 8192) or 8192)
+                bumped = _next_ctx_bucket(current_ctx * 2 + 1)
+                if bumped > current_ctx:
+                    log.warning(
+                        "Ollama 400 exceed_context_size — retrying with num_ctx %d → %d",
+                        current_ctx, bumped,
+                    )
+                    payload["options"]["num_ctx"] = bumped
+                    continue  # loop for retry
+            # Non-recoverable — surface the error and stop.
             log.warning("Ollama chat returned %d: %s", resp.status_code, body[:300])
             yield body, {"error": body, "done": True}
             return
-
-        async for raw_line in resp.aiter_lines():
-            if not raw_line.strip():
-                continue
-            try:
-                chunk = json.loads(raw_line)
-            except json.JSONDecodeError:
-                continue
-            yield raw_line, chunk
 
 
 async def _stream_ollama_chat(
@@ -1647,6 +1720,27 @@ async def _stream_ollama_chat(
 
                 content_for_model = value if not err else f"[tool error: {err}]"
                 preview           = (value or err or "")[:600]
+
+                # Cap the tool result the MODEL sees. A `list_directory` on
+                # ~/ or a Puppeteer page dump can be 50-200K chars — that
+                # burns 15-50K tokens of context and reliably crashes even
+                # 32-64K windows on agentic MoEs. Truncate to a generous
+                # but bounded slice and tell the model it was cut, so it
+                # can re-query more narrowly if needed.
+                _TOOL_RESULT_CAP = 20_000   # ~5K tokens
+                if isinstance(content_for_model, str) and len(content_for_model) > _TOOL_RESULT_CAP:
+                    truncated = len(content_for_model) - _TOOL_RESULT_CAP
+                    content_for_model = (
+                        content_for_model[:_TOOL_RESULT_CAP]
+                        + f"\n\n[... {truncated} chars truncated. "
+                          f"Re-query with a narrower scope (a specific "
+                          f"path / smaller depth / different filter) if you "
+                          f"need the rest. ...]"
+                    )
+                    log.info(
+                        "tool result truncated: %s from %d chars → %d chars (kept)",
+                        name, len(value or ""), _TOOL_RESULT_CAP,
+                    )
 
                 yield f"data: {json.dumps({'tool_event': 'end', 'id': call_id, 'name': name, 'preview': preview, 'error': err})}\n\n"
 
@@ -3444,6 +3538,37 @@ async def delete_message(msg_id: str):
     return {"ok": True}
 
 
+class ChatMessagePdfRequest(BaseModel):
+    content: str
+    title:   str = ""
+    model:   str = ""
+
+
+@app.post("/api/chat/message/pdf")
+async def chat_message_pdf(req: ChatMessagePdfRequest):
+    """
+    Export a chat assistant reply as a styled PDF. Called from the
+    MessageBubble action strip when the reply looks report-like. Body is
+    posted as-is so the frontend can supply the rendered markdown even
+    for messages that weren't persisted (e.g. streaming just finished).
+    """
+    body = (req.content or "").strip()
+    if not body:
+        raise HTTPException(400, "content is required")
+    from pdf_export import markdown_to_pdf
+    title    = (req.title or body.splitlines()[0][:80] or "Chat export").strip()
+    when     = time.strftime("%Y-%m-%d %H:%M")
+    subtitle = f"Persephone chat · {req.model or 'model'} · {when}" if req.model \
+               else f"Persephone chat · {when}"
+    pdf      = markdown_to_pdf(body, title=title, subtitle=subtitle,
+                               footer="Persephone chat")
+    safe = re.sub(r"[^a-zA-Z0-9-]+", "-", title.lower()).strip("-")[:60] or "chat"
+    return Response(
+        content=pdf, media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{safe}.pdf"'},
+    )
+
+
 # ── /api/memory/facts — persistent user-facts memory ─────────────────────────
 @app.get("/api/memory/facts")
 async def memory_facts():
@@ -3682,6 +3807,9 @@ async def setup_complete(req: WizardCompleteRequest):
     ]
     for k, v in pairs:
         await _db.set_config(k, v)
+    # Drop cached system-prompt addenda so the new account_name (and MCP
+    # server list) reach the next chat turn without a 20s cache lag.
+    invalidate_context_cache()
     return {"ok": True}
 
 
@@ -3851,6 +3979,30 @@ async def delete_model(model_name: str):
     return {"ok": r.status_code in (200, 204)}
 
 
+# ── /api/setup/ollama-parallel — concurrent-tab throughput ─────────────────
+# Reads/writes OLLAMA_NUM_PARALLEL + OLLAMA_MAX_LOADED_MODELS. Without
+# these, concurrent tab requests queue at Ollama and defeat the whole
+# tab-strip parallelism.
+
+@app.get("/api/setup/ollama-parallel")
+async def setup_ollama_parallel():
+    return _ollama_par.read_config()
+
+
+class OllamaParallelUpdate(BaseModel):
+    num_parallel: int = 4
+    max_loaded:   int = 2
+
+
+@app.post("/api/setup/ollama-parallel")
+async def setup_ollama_parallel_apply(req: OllamaParallelUpdate):
+    result = await _ollama_par.apply_config(req.num_parallel, req.max_loaded)
+    # Return the freshly-read config alongside so the UI reflects the
+    # new state without a second round-trip.
+    result["config"] = _ollama_par.read_config()
+    return result
+
+
 # ── /api/setup/ollama — cross-platform install & lifecycle ───────────────────
 @app.get("/api/setup/ollama")
 async def ollama_status():
@@ -3997,6 +4149,30 @@ async def research_run(run_id: str):
     if not run:
         raise HTTPException(404, "run not found")
     return run
+
+
+@app.get("/api/research/runs/{run_id}/pdf")
+async def research_run_pdf(run_id: str):
+    """Render the run's Markdown report to a downloadable PDF."""
+    run = await _rdb.get_run(run_id)
+    if not run:
+        raise HTTPException(404, "run not found")
+    body = run.get("reportMd") or ""
+    if not body.strip():
+        raise HTTPException(400, "this run has no report to export yet")
+    from pdf_export import markdown_to_pdf
+    title    = (run.get("query") or "Research report")[:120]
+    finished = run.get("finishedAt")
+    when     = time.strftime("%Y-%m-%d %H:%M", time.localtime((finished or 0) / 1000)) \
+               if finished else time.strftime("%Y-%m-%d %H:%M")
+    subtitle = f"Deep research · {when}"
+    pdf      = markdown_to_pdf(body, title=title, subtitle=subtitle,
+                               footer="Persephone research")
+    safe = re.sub(r"[^a-zA-Z0-9-]+", "-", title.lower()).strip("-")[:60] or "report"
+    return Response(
+        content=pdf, media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{safe}.pdf"'},
+    )
 
 
 @app.delete("/api/research/runs/{run_id}")
