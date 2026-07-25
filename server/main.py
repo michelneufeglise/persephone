@@ -43,6 +43,8 @@ import reels_render as _reels
 import workers as _workers
 import delegate as _delegate
 import skills as _skills
+import planner as _planner
+import read_bridge as _read_bridge
 from dataclasses import dataclass
 
 
@@ -277,7 +279,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     except Exception as exc:
         log.warning("Delegate setup failed: %s", exc)
 
+    # Task planner — user-scheduled prompts. Shares workers._run_lock so
+    # scheduled runs don't collide with the active chat model.
+    try:
+        _planner.install_hooks(
+            db             = _db,
+            workers        = _workers,
+            run_chat_turn  = _run_chat_turn,
+        )
+        await _planner.start()
+        log.info("Task planner scheduler started")
+    except Exception as exc:
+        log.warning("Planner startup failed: %s", exc)
+
     yield
+
+    try:
+        await _planner.stop()
+    except Exception:
+        pass
 
     # Shut down MCP processes on exit
     try:
@@ -1246,12 +1266,21 @@ def _trim_history(messages: list[dict]) -> list[dict]:
     return messages[-_HISTORY_TURN_CAP:]
 
 
-async def _augment_messages(model: str, messages: list[dict]) -> list[dict]:
+async def _augment_messages(
+    model: str,
+    messages: list[dict],
+    *,
+    forced_skill_names: list[str] | None = None,
+) -> list[dict]:
     """Inject memory, MCP context, and thinking instructions into the system message.
 
     Builds the two heavy context blocks in parallel via asyncio.gather. Memory
     is skipped entirely for trivial turns (greetings/acks) to save tokens and
     prompt-eval time.
+
+    `forced_skill_names` (when non-None) bypasses the skill selector and injects
+    exactly those skills. Used by the planner: each scheduled task ships with
+    its own explicit skill allowlist.
     """
     trivial = _is_trivial_turn(messages)
     if trivial:
@@ -1267,12 +1296,23 @@ async def _augment_messages(model: str, messages: list[dict]) -> list[dict]:
         # Skills is a heuristic pre-filter + judge pass — cheap when nothing
         # matches (zero LLM call), ~200 ms when it does.
         latest_user_text = _latest_user_text(messages)
-        memory_ctx, mcp_ctx, user_ctx, skills_selected = await asyncio.gather(
-            _build_memory_context(),
-            _build_mcp_context(),
-            _build_user_context(),
-            _select_skills(latest_user_text),
-        )
+        if forced_skill_names is not None:
+            # Explicit allowlist — skip judge, resolve names directly.
+            skills_selected = [
+                sk for sk in (_skills.get_skill(n) for n in forced_skill_names) if sk
+            ]
+            memory_ctx, mcp_ctx, user_ctx = await asyncio.gather(
+                _build_memory_context(),
+                _build_mcp_context(),
+                _build_user_context(),
+            )
+        else:
+            memory_ctx, mcp_ctx, user_ctx, skills_selected = await asyncio.gather(
+                _build_memory_context(),
+                _build_mcp_context(),
+                _build_user_context(),
+                _select_skills(latest_user_text),
+            )
     think_ctx = _thinking_block() if _wants_thinking(model) else ""
     # Tiny formatting hint — the UI renders rich markdown into illustrations,
     # so encourage models to use it. Skipped for trivial turns to keep them
@@ -1321,6 +1361,148 @@ async def _select_skills(user_text: str) -> list[_skills.Skill]:
 
 
 _MAX_TOOL_ITERATIONS = 5
+
+
+async def _maybe_ocr_intercept(tool_name: str, args: dict) -> str | None:
+    """Route filesystem read tools through the OCR / IDP bridge when the
+    target file is a PDF/DOCX/XLSX/CSV/image. Returns extracted text if we
+    handled the call, or None to let the MCP call proceed normally."""
+    return await _read_bridge.maybe_intercept(
+        tool_name, args,
+        resolve_ocr_model  = lambda: _resolve_doc_model("ocr"),
+        ollama_vision_call = _idp._ollama_vision_call,  # noqa: SLF001
+    )
+
+
+async def _run_chat_turn(
+    model: str,
+    messages: list[dict],
+    *,
+    allowed_tool_names: list[str] | None = None,
+    forced_skill_names: list[str] | None = None,
+    options: dict | None = None,
+    timeout_s: float = 300.0,
+) -> dict:
+    """
+    Non-streaming one-shot chat turn. Used by the planner to execute a
+    scheduled task and capture the final assistant text.
+
+    - `allowed_tool_names` — if given, only these MCP tool ids can be called.
+      If None, all globally-enabled tools are available.
+    - `forced_skill_names` — if given, these skills are injected verbatim
+      instead of running the skill selector.
+
+    Loops up to _MAX_TOOL_ITERATIONS to resolve tool calls, then returns
+    {'content': str, 'error': str | None, 'tool_events': list, 'model': str}.
+    """
+    merged_opts = {**OLLAMA_DEFAULTS, **(options or {})}
+    augmented   = await _augment_messages(
+        model, messages, forced_skill_names=forced_skill_names,
+    )
+    convo = list(augmented)
+
+    all_tools = _mcp_mgr.manager.list_tools_for_ollama()
+    if allowed_tool_names is not None:
+        allowset = set(allowed_tool_names)
+        all_tools = [t for t in all_tools if t["function"]["name"] in allowset]
+
+    tool_events: list[dict] = []
+    final_text = ""
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout_s, connect=10.0)) as client:
+        for _ in range(_MAX_TOOL_ITERATIONS):
+            payload = {
+                "model":    model,
+                "messages": convo,
+                "options":  merged_opts,
+                "stream":   False,
+                "keep_alive": "10m",
+            }
+            if all_tools:
+                payload["tools"] = all_tools
+
+            try:
+                r = await client.post(f"{OLLAMA_BASE}/api/chat", json=payload)
+            except httpx.HTTPError as exc:
+                return {"content": "", "error": f"ollama request failed: {exc}",
+                        "tool_events": tool_events, "model": model}
+            if r.status_code != 200:
+                return {"content": "", "error": f"ollama HTTP {r.status_code}: {r.text[:400]}",
+                        "tool_events": tool_events, "model": model}
+
+            data = r.json()
+            msg  = data.get("message") or {}
+            content    = msg.get("content", "") or ""
+            tool_calls = msg.get("tool_calls") or []
+
+            if not tool_calls:
+                final_text = content
+                break
+
+            # Record the assistant's tool-call turn so tool results can attach.
+            convo.append({
+                "role":       "assistant",
+                "content":    content,
+                "tool_calls": tool_calls,
+            })
+
+            for i, tc in enumerate(tool_calls):
+                fn   = (tc.get("function") or {}) if isinstance(tc, dict) else {}
+                name = fn.get("name", "")
+                args = fn.get("arguments", {})
+                if isinstance(args, str):
+                    try: args = json.loads(args)
+                    except Exception: args = {}
+                call_id = tc.get("id") or f"call-{i}"
+
+                err   = None
+                value = ""
+                if allowed_tool_names is not None and name not in allowset:
+                    err = f"tool '{name}' not in this task's allowlist"
+                else:
+                    # OCR bridge: if the model asked to read a binary file,
+                    # substitute the MCP call with our extracted text.
+                    try:
+                        intercepted = await _maybe_ocr_intercept(name, args)
+                    except Exception as exc:
+                        log.warning("ocr intercept failed for %s: %s", name, exc)
+                        intercepted = None
+                    if intercepted is not None:
+                        value = intercepted
+                    else:
+                        try:
+                            value = await asyncio.wait_for(
+                                _mcp_mgr.manager.call(name, args), timeout=45.0,
+                            )
+                        except asyncio.TimeoutError:
+                            err = f"tool '{name}' timed out"
+                        except Exception as exc:
+                            err = str(exc)
+
+                content_for_model = value if not err else f"[tool error: {err}]"
+                if isinstance(content_for_model, str) and len(content_for_model) > 20_000:
+                    content_for_model = content_for_model[:20_000] + "\n[... truncated]"
+
+                tool_events.append({
+                    "id":     call_id,
+                    "name":   name,
+                    "args":   args,
+                    "preview": (str(value) if not err else "")[:400],
+                    "error":  err,
+                })
+                convo.append({
+                    "role":         "tool",
+                    "tool_call_id": call_id,
+                    "content":      content_for_model,
+                })
+        else:
+            # Ran out of iterations without a final answer
+            return {"content": final_text,
+                    "error": f"exceeded {_MAX_TOOL_ITERATIONS} tool iterations without a final answer",
+                    "tool_events": tool_events, "model": model}
+
+    return {"content": final_text, "error": None,
+            "tool_events": tool_events, "model": model}
 
 _FALLBACK_SYNTH_PREF = [
     "qwen2.5:7b", "qwen2.5:14b", "gemma4:12b",
@@ -1770,15 +1952,25 @@ async def _stream_ollama_chat(
                     )
                     log.warning("ornith scope-lock: rejected tool call %s", name)
 
-                try:
-                    if err is None:
-                        value = await asyncio.wait_for(
-                            _mcp_mgr.manager.call(name, args), timeout=45.0,
-                        )
-                except asyncio.TimeoutError:
-                    err = f"Tool '{name}' timed out"
-                except Exception as exc:
-                    err = str(exc)
+                if err is None:
+                    # OCR bridge: intercept binary-file reads and hand
+                    # extracted text to the chat model instead of raw bytes.
+                    try:
+                        intercepted = await _maybe_ocr_intercept(name, args)
+                    except Exception as exc:
+                        log.warning("ocr intercept failed for %s: %s", name, exc)
+                        intercepted = None
+                    if intercepted is not None:
+                        value = intercepted
+                    else:
+                        try:
+                            value = await asyncio.wait_for(
+                                _mcp_mgr.manager.call(name, args), timeout=45.0,
+                            )
+                        except asyncio.TimeoutError:
+                            err = f"Tool '{name}' timed out"
+                        except Exception as exc:
+                            err = str(exc)
 
                 content_for_model = value if not err else f"[tool error: {err}]"
                 preview           = (value or err or "")[:600]
@@ -4705,6 +4897,173 @@ async def workers_run_now(worker_id: str):
     """Fire a worker immediately, bypassing the idle-gate + enabled flag."""
     result = await _workers.run_now(worker_id)
     return result
+
+
+# ── /api/planner — user-scheduled tasks ──────────────────────────────────────
+class PlannerTaskBody(BaseModel):
+    name:           str
+    prompt:         str
+    model:          str
+    scheduleKind:   str          # once|daily|weekly|every_n_min|cron
+    scheduleValue:  str
+    toolIds:        list[str] = []
+    skillNames:     list[str] = []
+    enabled:        bool = True
+
+
+class PlannerTaskPatch(BaseModel):
+    name:           str | None = None
+    prompt:         str | None = None
+    model:          str | None = None
+    scheduleKind:   str | None = None
+    scheduleValue:  str | None = None
+    toolIds:        list[str] | None = None
+    skillNames:     list[str] | None = None
+    enabled:        bool | None = None
+
+
+def _planner_task_out(task: dict) -> dict:
+    """Add a human-readable schedule string + a wall-clock nextRunAt."""
+    out = dict(task)
+    out["scheduleDescription"] = _planner.describe_schedule(
+        task["scheduleKind"], task["scheduleValue"],
+    )
+    if task.get("nextRunTs"):
+        out["nextRunAt"] = int(task["nextRunTs"] * 1000)
+    else:
+        out["nextRunAt"] = None
+    return out
+
+
+@app.get("/api/planner/tasks")
+async def planner_list_tasks():
+    tasks = await _db.list_planned_tasks()
+    return {"tasks": [_planner_task_out(t) for t in tasks]}
+
+
+@app.get("/api/planner/tasks/{task_id}")
+async def planner_get_task(task_id: str):
+    t = await _db.get_planned_task(task_id)
+    if not t:
+        raise HTTPException(404, "task not found")
+    runs = await _db.list_task_runs(task_id, limit=20)
+    return {**_planner_task_out(t), "runs": runs}
+
+
+@app.post("/api/planner/tasks")
+async def planner_create_task(req: PlannerTaskBody):
+    # Validate schedule up-front so bad specs fail at save-time.
+    try:
+        _planner.validate_schedule(req.scheduleKind, req.scheduleValue)
+        next_ts = _planner.compute_next_run(req.scheduleKind, req.scheduleValue, time.time())
+    except Exception as exc:
+        raise HTTPException(400, f"invalid schedule: {exc}")
+
+    now = time.time()
+    task_id = f"ptask-{uuid_hex()}"
+    task = {
+        "id":            task_id,
+        "name":          req.name.strip() or "Untitled task",
+        "prompt":        req.prompt,
+        "model":         req.model,
+        "scheduleKind":  req.scheduleKind,
+        "scheduleValue": req.scheduleValue,
+        "toolIds":       req.toolIds,
+        "skillNames":    req.skillNames,
+        "enabled":       req.enabled,
+        "nextRunTs":     next_ts,
+        "lastRunTs":     None,
+        "lastStatus":    "",
+        "lastConvId":    "",
+        "createdAt":     now * 1000,
+        "updatedAt":     now * 1000,
+    }
+    await _db.upsert_planned_task(task)
+    return {"ok": True, "task": _planner_task_out(task)}
+
+
+@app.patch("/api/planner/tasks/{task_id}")
+async def planner_patch_task(task_id: str, req: PlannerTaskPatch):
+    existing = await _db.get_planned_task(task_id)
+    if not existing:
+        raise HTTPException(404, "task not found")
+
+    updated = dict(existing)
+    for field in ("name", "prompt", "model", "scheduleKind", "scheduleValue",
+                  "toolIds", "skillNames", "enabled"):
+        val = getattr(req, field)
+        if val is not None:
+            updated[field] = val
+
+    # Recompute next_run_ts whenever schedule OR enabled changes.
+    schedule_changed = (
+        req.scheduleKind  is not None or req.scheduleValue is not None
+    )
+    if schedule_changed or (req.enabled is not None):
+        if updated["enabled"]:
+            try:
+                _planner.validate_schedule(updated["scheduleKind"], updated["scheduleValue"])
+                updated["nextRunTs"] = _planner.compute_next_run(
+                    updated["scheduleKind"], updated["scheduleValue"], time.time(),
+                )
+            except Exception as exc:
+                raise HTTPException(400, f"invalid schedule: {exc}")
+        else:
+            updated["nextRunTs"] = None
+
+    await _db.upsert_planned_task(updated)
+    return {"ok": True, "task": _planner_task_out(updated)}
+
+
+@app.delete("/api/planner/tasks/{task_id}")
+async def planner_delete_task(task_id: str):
+    ok = await _db.delete_planned_task(task_id)
+    if not ok:
+        raise HTTPException(404, "task not found")
+    return {"ok": True}
+
+
+@app.post("/api/planner/tasks/{task_id}/run")
+async def planner_run_task(task_id: str):
+    t = await _db.get_planned_task(task_id)
+    if not t:
+        raise HTTPException(404, "task not found")
+    result = await _planner.run_task_now(t)
+    return result
+
+
+@app.get("/api/planner/tasks/{task_id}/runs")
+async def planner_task_runs(task_id: str, limit: int = 20):
+    return {"runs": await _db.list_task_runs(task_id, limit=limit)}
+
+
+@app.get("/api/planner/available")
+async def planner_available():
+    """Everything the editor needs to populate its dropdowns / checkbox lists."""
+    tools = _mcp_mgr.manager.list_tools_for_ollama()
+    tool_options = [
+        {
+            "id":   t["function"]["name"],
+            "name": t["function"]["name"],
+            "description": (t["function"].get("description") or "")[:180],
+        }
+        for t in tools
+    ]
+    skills = [
+        {"name": sk.name, "description": sk.description}
+        for sk in _skills.list_skills()
+    ]
+    installed = sorted(await _installed_models())
+    return {
+        "mcp_tools": tool_options,
+        "skills":    skills,
+        "models":    installed,
+    }
+
+
+def uuid_hex() -> str:
+    import uuid as _uuid
+    return _uuid.uuid4().hex[:14]
 
 
 # ── Serve built frontend (production) ─────────────────────────────────────────

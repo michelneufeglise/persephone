@@ -85,6 +85,39 @@ CREATE TABLE IF NOT EXISTS delegated_tasks (
 );
 CREATE INDEX IF NOT EXISTS idx_deltasks_conv    ON delegated_tasks(conversation_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_deltasks_status  ON delegated_tasks(status);
+
+-- Planned tasks: user-scheduled prompts executed by the planner loop.
+-- Each successful run posts its output into a fresh conversation.
+CREATE TABLE IF NOT EXISTS planned_tasks (
+    id             TEXT PRIMARY KEY,
+    name           TEXT NOT NULL,
+    prompt         TEXT NOT NULL,
+    model          TEXT NOT NULL,
+    schedule_kind  TEXT NOT NULL,                   -- once|daily|weekly|every_n_min|cron
+    schedule_value TEXT NOT NULL,                   -- ISO datetime | 'HH:MM' | 'MON 09:30' | '30' | cron expr
+    tool_ids       TEXT NOT NULL DEFAULT '[]',      -- JSON list of MCP tool names
+    skill_names    TEXT NOT NULL DEFAULT '[]',      -- JSON list of skill names
+    enabled        INTEGER NOT NULL DEFAULT 1,
+    next_run_ts    REAL,
+    last_run_ts    REAL,
+    last_status    TEXT NOT NULL DEFAULT '',        -- ''|running|succeeded|failed
+    last_conv_id   TEXT NOT NULL DEFAULT '',
+    created_at     REAL NOT NULL,
+    updated_at     REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ptasks_due ON planned_tasks(enabled, next_run_ts);
+
+CREATE TABLE IF NOT EXISTS planned_task_runs (
+    id             TEXT PRIMARY KEY,
+    task_id        TEXT NOT NULL,
+    started_at     REAL NOT NULL,
+    finished_at    REAL,
+    status         TEXT NOT NULL,                   -- running|succeeded|failed
+    conv_id        TEXT NOT NULL DEFAULT '',
+    output_preview TEXT NOT NULL DEFAULT '',
+    error          TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_ptruns_task ON planned_task_runs(task_id, started_at DESC);
 """
 
 
@@ -316,3 +349,208 @@ async def clear_user_facts() -> int:
         cur = await db.execute("DELETE FROM user_facts")
         await db.commit()
         return cur.rowcount
+
+
+# ── Planned tasks ──────────────────────────────────────────────────────────
+def _row_to_task(r: aiosqlite.Row) -> dict:
+    def _load_json(raw: Any, fallback: list) -> list:
+        if not raw:
+            return fallback
+        try:
+            parsed = json.loads(raw)
+            return parsed if isinstance(parsed, list) else fallback
+        except (ValueError, TypeError):
+            return fallback
+
+    return {
+        "id":            r["id"],
+        "name":          r["name"],
+        "prompt":        r["prompt"],
+        "model":         r["model"],
+        "scheduleKind":  r["schedule_kind"],
+        "scheduleValue": r["schedule_value"],
+        "toolIds":       _load_json(r["tool_ids"], []),
+        "skillNames":    _load_json(r["skill_names"], []),
+        "enabled":       bool(r["enabled"]),
+        "nextRunTs":     r["next_run_ts"],
+        "lastRunTs":     r["last_run_ts"],
+        "lastStatus":    r["last_status"] or "",
+        "lastConvId":    r["last_conv_id"] or "",
+        "createdAt":     int(r["created_at"] * 1000),
+        "updatedAt":     int(r["updated_at"] * 1000),
+    }
+
+
+async def list_planned_tasks() -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT * FROM planned_tasks
+               ORDER BY enabled DESC,
+                        CASE WHEN next_run_ts IS NULL THEN 1 ELSE 0 END,
+                        next_run_ts ASC,
+                        updated_at DESC"""
+        ) as cur:
+            rows = await cur.fetchall()
+    return [_row_to_task(r) for r in rows]
+
+
+async def get_planned_task(task_id: str) -> dict | None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM planned_tasks WHERE id=?", (task_id,),
+        ) as cur:
+            row = await cur.fetchone()
+    return _row_to_task(row) if row else None
+
+
+async def list_due_planned_tasks(now_ts: float) -> list[dict]:
+    """Enabled tasks whose next_run_ts is set and <= now."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT * FROM planned_tasks
+               WHERE enabled=1 AND next_run_ts IS NOT NULL AND next_run_ts <= ?
+               ORDER BY next_run_ts ASC""",
+            (now_ts,),
+        ) as cur:
+            rows = await cur.fetchall()
+    return [_row_to_task(r) for r in rows]
+
+
+async def upsert_planned_task(t: dict) -> None:
+    now = time.time()
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """INSERT INTO planned_tasks
+                 (id, name, prompt, model, schedule_kind, schedule_value,
+                  tool_ids, skill_names, enabled,
+                  next_run_ts, last_run_ts, last_status, last_conv_id,
+                  created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               ON CONFLICT(id) DO UPDATE SET
+                 name=excluded.name,
+                 prompt=excluded.prompt,
+                 model=excluded.model,
+                 schedule_kind=excluded.schedule_kind,
+                 schedule_value=excluded.schedule_value,
+                 tool_ids=excluded.tool_ids,
+                 skill_names=excluded.skill_names,
+                 enabled=excluded.enabled,
+                 next_run_ts=excluded.next_run_ts,
+                 last_run_ts=excluded.last_run_ts,
+                 last_status=excluded.last_status,
+                 last_conv_id=excluded.last_conv_id,
+                 updated_at=excluded.updated_at""",
+            (
+                t["id"],
+                t.get("name", "Untitled task"),
+                t.get("prompt", ""),
+                t.get("model", ""),
+                t.get("scheduleKind", "once"),
+                t.get("scheduleValue", ""),
+                json.dumps(t.get("toolIds") or []),
+                json.dumps(t.get("skillNames") or []),
+                1 if t.get("enabled", True) else 0,
+                t.get("nextRunTs"),
+                t.get("lastRunTs"),
+                t.get("lastStatus", ""),
+                t.get("lastConvId", ""),
+                t.get("createdAt", now * 1000) / 1000,
+                now,
+            ),
+        )
+        await db.commit()
+
+
+async def update_planned_task_run_bookkeeping(
+    task_id: str,
+    *,
+    next_run_ts: float | None,
+    last_run_ts: float,
+    last_status: str,
+    last_conv_id: str,
+) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """UPDATE planned_tasks SET
+                 next_run_ts=?,
+                 last_run_ts=?,
+                 last_status=?,
+                 last_conv_id=?,
+                 updated_at=?
+               WHERE id=?""",
+            (next_run_ts, last_run_ts, last_status, last_conv_id, time.time(), task_id),
+        )
+        await db.commit()
+
+
+async def delete_planned_task(task_id: str) -> bool:
+    async with aiosqlite.connect(DB_PATH) as db:
+        cur = await db.execute("DELETE FROM planned_tasks WHERE id=?", (task_id,))
+        await db.execute("DELETE FROM planned_task_runs WHERE task_id=?", (task_id,))
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def record_task_run_start(run: dict) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """INSERT INTO planned_task_runs
+                 (id, task_id, started_at, finished_at, status, conv_id, output_preview, error)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (
+                run["id"],
+                run["task_id"],
+                run["started_at"],
+                None,
+                run.get("status", "running"),
+                run.get("conv_id", ""),
+                run.get("output_preview", ""),
+                run.get("error", ""),
+            ),
+        )
+        await db.commit()
+
+
+async def record_task_run_finish(
+    run_id: str,
+    *,
+    status: str,
+    conv_id: str,
+    output_preview: str,
+    error: str,
+) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            """UPDATE planned_task_runs SET
+                 finished_at=?, status=?, conv_id=?, output_preview=?, error=?
+               WHERE id=?""",
+            (time.time(), status, conv_id, output_preview, error, run_id),
+        )
+        await db.commit()
+
+
+async def list_task_runs(task_id: str, limit: int = 20) -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            """SELECT * FROM planned_task_runs
+               WHERE task_id=? ORDER BY started_at DESC LIMIT ?""",
+            (task_id, max(1, min(200, limit))),
+        ) as cur:
+            rows = await cur.fetchall()
+    return [
+        {
+            "id":             r["id"],
+            "taskId":         r["task_id"],
+            "startedAt":      int(r["started_at"] * 1000),
+            "finishedAt":     int(r["finished_at"] * 1000) if r["finished_at"] else None,
+            "status":         r["status"],
+            "convId":         r["conv_id"] or "",
+            "outputPreview":  r["output_preview"] or "",
+            "error":          r["error"] or "",
+        }
+        for r in rows
+    ]

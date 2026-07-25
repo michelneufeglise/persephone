@@ -4,7 +4,7 @@
 
 # Persephone
 
-**A local-first AI companion with deep research, persistent memory, browser-style tabs, background workers, and an editorial sense of design.**
+**A local-first AI companion with deep research, persistent memory, scheduled tasks, skills, browser-style tabs, background workers, and an editorial sense of design.**
 
 *Queen of the underworld, herald of spring — your private, offline‑capable AI workspace that runs entirely on your own machine via [Ollama](https://ollama.com).*
 
@@ -30,8 +30,13 @@ Persephone wraps the speed of local Ollama models in a thoughtful, beautifully d
 - 🎹 **Ableton Live AI composer.** Detects a running Ableton Live 12 install, one-click installs the AbletonOSC bridge + Persephone's browser patch, and exposes a **Music** tab. Track-first workflow: add / remove / edit tracks individually, ▶ preview each in solo, ⚡ apply single tracks or the whole song. **Song library** for save / browse / load. Standard composer runs on **`qwen3.6:35b-a3b`**; toggle "Deep reasoning" to swap to **`gemma4:26b`**. Both models configurable in Settings.
 - 🛰 **Background workers.** A dedicated **Workers** sidebar tab shows in-flight and idle helpers. Ships with **Memory Curator** (dedupes facts + re-extracts from rushed conversations every 15 min when idle) and **Model Warmer** (keeps the active chat model resident so big models like Llama 3.3 70B skip the 30-90s cold-load). Add your own tasks via the workers API.
 - 📝 **PDF export.** Extensive chat replies (long-form answers with headings, code, tables) auto-surface a PDF export button in their action strip. Same for research reports — one click → styled A4 PDF with editorial typography.
+- ⏰ **Task planner.** A **Tasks** sidebar tab schedules prompts to fire on their own — one-shot, daily, weekly, every N minutes, or full cron. Pick a model + MCP tool allowlist + skill allowlist per task; each run creates a fresh chat conversation with the reply.
+- ✨ **Skills.** Reusable instruction bundles (`.md` files with YAML frontmatter) live in `server/skills/` or `~/.persephone/skills/`. Every non-trivial user turn runs a tiny **skill-selector** that picks 0..3 skills whose triggers match, injects them into the system prompt, and lets the main model execute. Ships with `weather-forecast`, `code-review`, `recipe-formatter`, `meeting-notes`, `travel-planner`, `explain-simply`.
+- 🖼 **Inline icons in replies.** Models can drop `:sun:` `:cloud-rain:` `:trend-up:` `:warning:` and ~180 more shortcodes anywhere in prose — they render as inline lucide icons colour-matched to the theme.
 - 🎙 **In-process TTS.** Kokoro-82M ONNX with 19 voices (US / UK / ES accents), auto-verified and pre-downloaded during the setup wizard so first speech is instant.
-- 📄 **Intelligent document processing.** OCR, handwriting, tables, summarise, Q&A, redact, translate — local-only.
+- 📄 **Intelligent document processing.** OCR, handwriting, tables, summarise, Q&A, redact, translate, **humanise** (rewrite AI-flavoured text to sound human) — local-only.
+- 🔎 **Auto-OCR on file reads.** When the chat model calls a filesystem read tool on a PDF/DOCX/XLSX/image, Persephone transparently routes through the IDP engine (or your configured OCR model) so the model receives extracted text instead of raw bytes — no extra prompting needed.
+- ♿ **Display & accessibility.** A dedicated Settings tab covers text size (S → Huge), line & letter spacing, font family (incl. **dyslexia-friendly**), overall zoom, motion preference (Full / Reduced / None), high-contrast mode, bold text, underline-all-links, focus-outline visibility — all persisted per device and applied instantly.
 - 🎨 **Liquid Obsidian design system.** Five thoughtfully crafted themes (Underworld, Spring, Pomegranate, Elysian, Obsidian) with conic gradients, atmospheric grain, holographic accents, ornamental SVG dividers, and a shared **Persephone medallion** identity across the whole app.
 - 🌫 **Ambient backdrop.** A pre-blurred watercolour painting sits behind every panel — never sharp, always atmospheric, glass panels stay fully legible on top.
 - 🖼 **Editorial rich-markdown rendering.** Drop caps, pull-quotes, numbered orbs, hand-drawn rough.js borders on code blocks (with copy-to-clipboard), auto-rendered Mermaid diagrams, auto-generated section TOC on long answers, generative SVG covers — every response feels designed.
@@ -349,7 +354,7 @@ For chat models that *can't* natively call tools, set a **tool_model** override 
 
 The right panel hosts a document viewer with:
 - Upload any PDF, image, scan
-- **OCR** with your chosen vision/OCR model (MiniCPM-V, Qwen 2.5 VL, Granite Vision)
+- **OCR** with your chosen vision/OCR model (MiniCPM-V, Qwen 2.5 VL, Granite Vision, **DeepSeek-OCR** via `frob/unlimited-ocr:q8_0`)
 - **Summarize** (brief / detailed)
 - **Q&A** — ask questions about a document's contents
 - **Tables** — extract tables as JSON
@@ -357,9 +362,20 @@ The right panel hosts a document viewer with:
 - **Classify** — categorize the document
 - **Translate** to a target language
 - **Redact** specified categories
+- **Humanise** — rewrite AI-flavoured text into natural, varied human prose. Picks a tone (natural / casual / professional / academic) and a rewrite strength (light / medium / heavy). Anti-tell blocklist (no more "delve", "furthermore", "tapestry"), preserves facts/quotes/language/structure.
 - **Export** as Markdown / TXT / PDF / JSON / XLSX / CSV
 
 All processing is local. Each operation routes to the model you configured during the wizard for that category.
+
+**Auto-OCR bridge for the chat model.** When the main chat model calls a filesystem MCP tool (`filesystem__read_file`, `persephone-fs__read_file`, `_read_media_file`, `_read_multiple_files`) on a **non-text** file, Persephone intercepts BEFORE the MCP call and routes through the IDP engine:
+
+| File | Handler |
+|---|---|
+| `.pdf` `.docx` `.xlsx` `.csv` | Native text extractor (no model call, ~600 ms on a small PDF) |
+| `.png` `.jpg` `.webp` `.tiff` `.bmp` `.gif` | Your configured **OCR model** (`Settings → Models → OCR`) |
+| `.md` `.txt` `.py` `.json` `.yaml` … | Passthrough — MCP reads them raw |
+
+The chat model sees a normal text string as the tool result (`[Extracted from report.pdf (1,432 bytes, 0.6s)]\n\n<text>`). Cached per `(path, size, mtime)` so re-reads are free. Cap at 20 KB per read matches the standard tool result cap. Applies uniformly to streaming chat, delegate specialists, and scheduled Task-Planner runs.
 
 ### 7 · Voice (TTS)
 
@@ -390,6 +406,7 @@ Every model reply is rendered with custom React-Markdown components:
 - ```` ```mermaid ```` **blocks** — auto-rendered as real diagrams in the theme palette, with a defensive sanitiser that auto-fixes common LLM syntax mistakes (trailing `;`, unquoted multi-word labels, bare multi-word node IDs) on a silent retry
 - **Auto-TOC for extensive answers** — any assistant reply with 3+ H2 sections gets a compact `Contents · N` strip above the body listing every section as a click-to-scroll chip (collapsible)
 - **PDF export chip** appears in the message action strip when the reply is "report-like" (≥ 600 chars AND two-plus of {headings, lists, tables, code}) — one click downloads a styled A4 PDF
+- **Inline icons** — models can drop `:sun:` `:cloud-rain:` `:trend-up:` `:warning:` `:check:` `:code:` `:coffee:` and ~180 more shortcodes anywhere in prose. They render as inline lucide-react icons at the baseline, colour-matched to the current theme's accent. The visual hint teaches the model when to use them (weather forecasts, status lists, categorised bullets). Unknown shortcodes render as plain text — safe to guess.
 
 Plus **generative SVG cover art** at the top of research reports — deterministic from the query hash, so the same query always produces the same cover; theme-aware colours.
 
@@ -563,9 +580,75 @@ Switch any time in Settings → Theme. Every accent, shadow, and gradient update
 
 **Draggable window**: because `titleBarStyle: 'hiddenInset'` hides the native macOS title bar, Persephone adds a global 28 px `-webkit-app-region: drag` strip at the top of the window plus a draggable sidebar header. The `.window-drag` / `.window-no-drag` utility classes let you mark any custom region.
 
+### 17 · Skills — reusable instruction bundles
+
+A **skill** is a Markdown file with YAML frontmatter that Persephone can inject into the system prompt when it's likely to help:
+
+```markdown
+---
+name: weather-forecast
+description: Structured weather reply with icons and temperature ranges.
+category: general
+enabled: true
+triggers:
+  keywords: [weather, forecast, rain, snow, humidity, ...]
 ---
 
-## Technical details
+# Body: instructions written directly to the assistant.
+```
+
+**Loading.** Bundled skills live in `server/skills/` (currently ships six: `weather-forecast`, `code-review`, `explain-simply`, `meeting-notes`, `recipe-formatter`, `travel-planner`). User-authored skills live in `~/.persephone/skills/` and override bundled skills of the same name. Files are re-read on change.
+
+**Selection.** Every non-trivial user turn runs a two-stage pipeline:
+1. **Heuristic pre-filter** — keyword substring match narrows the pool in < 1 ms. Zero hits → no LLM call, no latency added.
+2. **Judge pass** — the same tiny model class the auto-router uses reads the user turn plus the candidate menu and picks up to 3 skill names (strict-JSON enum-constrained). Instructed to prefer zero over speculative activations.
+
+**Settings → Skills** lists every discovered skill with an on/off toggle, description, source (builtin vs user), path, and expandable body preview. Toggles persist in the `skills_disabled` config key.
+
+Endpoints: `GET /api/skills`, `GET /api/skills/{name}`, `PATCH /api/skills/{name}`.
+
+### 18 · Task planner — scheduled prompts
+
+A dedicated **Tasks** sidebar tab (icon: `CalendarClock`) between Workers and Settings. Author a prompt + model + schedule; the planner fires it on its own and posts the result as a fresh chat conversation you can open later.
+
+**Schedule types** (author with a 5-tab picker + human-readable next-run preview under each choice):
+
+| Kind | UX | Example |
+|---|---|---|
+| Once | `<input type="datetime-local">` | "2027-01-15 09:00" |
+| Daily | Time picker | "Daily at 09:00" |
+| Weekly | Weekday dropdown + time picker | "Weekly on MON at 09:30" |
+| Every N min | Number stepper | "Every 30 minutes" |
+| Cron | Raw 5-field string | `0 9 * * MON-FRI` |
+
+**Per-task allowlists.** Checkbox grids for the MCP tools and skills the task is allowed to use — the task runs with only that subset attached (sharper focus, lower token cost). Empty allowlist = no tools.
+
+**Delivery.** Each run creates a fresh conversation titled `{task.name} · {timestamp}` with the prompt as the user message and the model's reply as the assistant message. From the task detail view, click any run to jump straight into the resulting chat.
+
+**Missed-run policy.** If the app was closed at the scheduled moment, the planner rolls `next_run_ts` forward on startup — no burst of back-fires, no dropped runs on the next tick either.
+
+**Scheduler.** 5-second tick loop in `server/planner.py` shares the same `_run_lock` as the background-workers swarm so a scheduled task can't fight the active chat model for unified memory. Each task-run is captured in `planned_task_runs` (status, output preview, error, conv_id).
+
+Endpoints: `GET /api/planner/tasks`, `POST /api/planner/tasks`, `PATCH /api/planner/tasks/{id}`, `DELETE /api/planner/tasks/{id}`, `POST /api/planner/tasks/{id}/run`, `GET /api/planner/tasks/{id}/runs`, `GET /api/planner/available` (for the editor's dropdowns).
+
+### 19 · Display & accessibility
+
+Because Persephone should be comfortable to read for **everyone** — a new **Display** tab (first in Settings) covers:
+
+| Setting | Options |
+|---|---|
+| **Text size** | Small (14 px) / Normal (16 px) / Large (18 px) / Extra Large (20 px) / Huge (24 px) |
+| **Line spacing** | Compact / Normal / Relaxed |
+| **Letter spacing** | Tight / Normal / Wide |
+| **Font family** | Designed pairing (Manrope + Fraunces) / System UI / Serif (Georgia) / Monospace (JetBrains Mono) / **Dyslexia-friendly** (Verdana + weighted forms) |
+| **Overall zoom** | 75 % – 150 % slider that scales the whole app (spacing, buttons, icons) |
+| **Motion** | Full / Reduced / None (kills the aurora + backdrop drift) |
+| **Contrast** | Normal / High (brighter text, thicker borders, muted backdrop) |
+| **Focus outline** | Subtle (2 px) / Prominent (3 px) / Hidden |
+| **Bold text everywhere** | Toggle |
+| **Underline all links** | Toggle |
+
+Every setting is persisted in `localStorage` under `persephone-appearance` and applied via CSS variables + `data-*` attributes on `<html>` — no page reload needed. Live preview card at the top of the page shows the effect immediately. A single **Reset** button restores defaults.
 
 ### Performance optimisations
 
@@ -584,10 +667,10 @@ Switch any time in Settings → Theme. Every accent, shadow, and gradient update
 ### Stack
 
 - **Frontend** — React 18, Vite 6, Tailwind 3, Framer Motion 11, Zustand, React Markdown, Mermaid 11, Rough.js, Sharp (icon gen)
-- **Backend** — FastAPI, Uvicorn, httpx, aiosqlite, sqlite-vec, ReportLab (PDF export), NumPy, SciPy, Pillow (Reels caption PNGs), ffmpeg-python (helper layer over native ffmpeg), openai-whisper (Reels transcription + translation), kokoro-onnx (TTS)
+- **Backend** — FastAPI, Uvicorn, httpx, aiosqlite, sqlite-vec, ReportLab (PDF export), PyYAML (skills), croniter (planner), NumPy, SciPy, Pillow (Reels caption PNGs), ffmpeg-python (helper layer over native ffmpeg), openai-whisper (Reels transcription + translation), kokoro-onnx (TTS)
 - **Desktop** — Electron 33, electron-builder 25
 - **Reels media** — native `ffmpeg` on `PATH` (h264 + AAC + `overlay` + `zoompan` + `eq` + `setpts` + `sidechaincompress` + `hue` filters), optional `h264_videotoolbox` hardware encoder on macOS. ComfyUI (Stable Diffusion) as an *optional* external local process on `:8188` — Persephone can auto-install it (`git clone` + venv + pip + SDXL Base 1.0) on first Reels tab open.
-- **Models** — Any Ollama-compatible: Qwen 2.5 / 3 / 3.6 (incl. AgentWorld), Gemma 3 / 4, Llama 3.1 / 3.2 / 3.3, Nemotron / Nemotron 3 Nano, Mistral, **DeepSeek R1** (8b / 14b / 32b / 70b distills), **DeepSeek-OCR** (`frob/unlimited-ocr`), Phi-4, Hermes 3, MiniCPM-V / MiniCPM-O, Granite, **Agents-A1** (InternScience 35B MoE agentic), **Euryale L3.3 70B** (Sao10K companion), **Ornith** (Qwen3 coder, 262K ctx), **olmOCR 2**, GLM-OCR. Catalog lives in `server/model_catalog.py`.
+- **Models** — Any Ollama-compatible: Qwen 2.5 / 3 / 3.6 (incl. AgentWorld), Gemma 3 / 4, Llama 3.1 / 3.2 / 3.3, Nemotron / Nemotron 3 Nano, Mistral, **DeepSeek R1** (7b / 8b / 14b / 32b / 70b distills), **DeepSeek-OCR** (`frob/unlimited-ocr`), Phi-4, Hermes 3, MiniCPM-V / MiniCPM-O, Granite, **Agents-A1** (InternScience 35B MoE agentic), **Euryale L3.3 70B** (Sao10K companion), **Ornith** (Qwen3 coder, 262K ctx), **olmOCR 2**, GLM-OCR. Catalog lives in `server/model_catalog.py`.
 - **Embeddings** — `mxbai-embed-large` (1024-dim, MixedBread AI) via Ollama `/api/embed`
 - **Vector store** — `sqlite-vec` virtual table (KNN via `WHERE embedding MATCH ? AND k = ?`)
 - **TTS** — Kokoro-82M ONNX (24 kHz, 19 voices, ≈10× real-time), in-process Python
@@ -607,7 +690,7 @@ persephone/
 │   ├── research.py         ← deep research engine
 │   ├── research_db.py      ← sqlite-vec KB storage
 │   ├── embeddings.py       ← Ollama /api/embed wrapper
-│   ├── db.py               ← aiosqlite layer (convs / messages / facts / config / delegated_tasks)
+│   ├── db.py               ← aiosqlite layer (convs / messages / facts / config / delegated_tasks / planned_tasks)
 │   ├── mcp_*.py            ← MCP catalog + client + manager (JSON-RPC over stdio)
 │   ├── idp_engine.py       ← document processing
 │   ├── tts_engine.py       ← Kokoro ONNX runtime
@@ -624,6 +707,10 @@ persephone/
 │   ├── delegate.py         ← auxiliary worker dispatcher (judge → specialist)
 │   ├── workers.py          ← background workers scheduler (idle-gated)
 │   ├── workers_impl.py     ← Memory Curator + Model Warmer
+│   ├── planner.py          ← task planner (5s tick, once|daily|weekly|every_n_min|cron)
+│   ├── read_bridge.py      ← OCR bridge — auto-extracts PDF/DOCX/image tool-reads
+│   ├── skills.py           ← skill loader + heuristic + judge selector + prompt injector
+│   ├── skills/             ← 6 bundled skill.md files (weather, code-review, …)
 │   ├── ableton_composer.py ← SongSpec generation + edit chat
 │   ├── ableton_client.py   ← async OSC client (fire / stop / solo / mute per track)
 │   ├── ableton_bridge.py   ← install AbletonOSC + browser patch
@@ -643,20 +730,21 @@ persephone/
 │   │   │                   ChatInput, ModelSelector, ThinkingPanel, ToolCallList
 │   │   ├── delegate/     ← DelegatePanel (right-panel Auxiliary tab)
 │   │   ├── workers/      ← WorkersView (sidebar tab, activity log, delegated tasks)
+│   │   ├── tasks/        ← TasksView (planner list + editor + detail + run history)
 │   │   ├── ableton/      ← AbletonView (track cards, song library, edit chat, undo)
 │   │   ├── reels/        ← ReelsView (studio · master video · per-scene editing · effects · preview · history)
 │   │   ├── research/     ← ResearchView (run / history / KB search / detail overlay + PDF button)
 │   │   ├── memory/       ← MemoryView (facts + history)
-│   │   ├── markdown/     ← RichMarkdown (+ copy button + TOC), Mermaid, SketchBorder, OrnamentalDivider, CoverArt
+│   │   ├── markdown/     ← RichMarkdown (+ copy button + TOC + InlineIcons), Mermaid, SketchBorder, OrnamentalDivider, CoverArt
 │   │   ├── wizard/       ← 15-step setup wizard with tok/s badges + TTS auto-install
-│   │   ├── settings/     ← character / models / auxiliary / model params / voice / memory / tools / theme / setup
+│   │   ├── settings/     ← display / character / models / auxiliary / skills / voice / memory / tools / theme / setup
 │   │   ├── documents/    ← IDP panel
 │   │   ├── voice/        ← VoicePanel (Kokoro voices, sphere waveform)
 │   │   ├── layout/       ← AppLayout, Sidebar, RightPanel (Voice · Auxiliary tabs)
 │   │   └── ui/           ← Button, Input, Slider, Toggle, Panel, Badge, Select
 │   ├── assets/           ← persephone-icon.jpg (medallion source)
 │   ├── themes/           ← 5 themes as CSS-variable bundles
-│   ├── lib/              ← ollama (stream chat), tts, idp, modelMeta
+│   ├── lib/              ← ollama (stream chat), tts, idp, modelMeta, planner, skills, appearance
 │   ├── store/            ← Zustand store (persisted to localStorage) with openTabIds + generatingConvs
 │   ├── types/
 │   └── vite-env.d.ts     ← image import module declarations
@@ -699,6 +787,7 @@ POST   /api/idp/qa                   ask a question
 POST   /api/idp/tables               extract tables
 POST   /api/idp/translate            translate
 POST   /api/idp/redact               redact PII / categories
+POST   /api/idp/humanize             rewrite text as human-authored (tone + intensity)
 POST   /api/idp/export/{fmt}         export as md/txt/pdf/json/xlsx/csv
 
 POST   /api/tts                      synthesize speech (WAV)
@@ -768,6 +857,19 @@ GET    /api/workers/logs             recent worker events (ring buffer)
 POST   /api/workers/{id}/enable      toggle a worker on/off
 POST   /api/workers/{id}/run-now     fire a worker immediately (bypasses idle gate)
 
+GET    /api/skills                   discovered skills + effective enabled state
+GET    /api/skills/{name}            full skill body + metadata
+PATCH  /api/skills/{name}            toggle skill enabled/disabled
+
+GET    /api/planner/tasks            list all scheduled tasks
+POST   /api/planner/tasks            create a task
+GET    /api/planner/tasks/{id}       task + last N runs
+PATCH  /api/planner/tasks/{id}       partial update (name/prompt/schedule/enabled/tools/skills)
+DELETE /api/planner/tasks/{id}       delete task + run history
+POST   /api/planner/tasks/{id}/run   fire immediately (returns conv_id of the new chat)
+GET    /api/planner/tasks/{id}/runs  execution history
+GET    /api/planner/available        installed models + MCP tools + skills (editor dropdowns)
+
 GET    /api/setup/hardware           CPU/GPU/RAM/tier
 GET    /api/setup/hardware-profile   extended fingerprint: chip family, variant,
                                      memory bandwidth, perf cores
@@ -823,6 +925,22 @@ The wizard's Voice step calls `/setup/tts-install` which downloads the Kokoro-82
 ### Background workers
 
 `Settings → Auxiliary → Background workers` schedules idle-gated jobs (Memory Curator, Model Warmer). They only fire when no chat is streaming, and each worker holds a single-run lock so overlapping ticks are a no-op.
+
+### Skills
+
+Bundled skill files live in `server/skills/`. Drop your own `.md` files with YAML frontmatter (see `server/skills/README.md`) into `~/.persephone/skills/` — they hot-load at startup and override bundled skills of the same name. Toggle any skill on/off in **Settings → Skills**; the setting persists in the `skills_disabled` config key.
+
+Max active skills per turn defaults to 3 (see `MAX_ACTIVE_SKILLS` in `server/skills.py`).
+
+### Task planner
+
+Tasks persist in the `planned_tasks` SQLite table and their execution history in `planned_task_runs`. The scheduler ticks every 5 s (`_TICK_S` in `server/planner.py`) and shares `workers._run_lock` — a scheduled run never collides with a live chat, a delegate run, or a Memory-Curator pass.
+
+Cron parsing uses the `croniter` library. Missed runs (app closed while due) are silently rolled forward — no back-fire burst on startup.
+
+### Display & accessibility
+
+All accessibility preferences persist in `localStorage` under `persephone-appearance` (see `src/lib/appearance.ts`). They apply via CSS variables + `data-*` attributes on `<html>` — no page reload needed. Reset any time in **Settings → Display**.
 
 ### Theme tokens
 

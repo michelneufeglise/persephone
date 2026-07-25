@@ -194,8 +194,8 @@ interface AppState {
   setIsSpeaking: (v: boolean) => void
   audioLevel: number
   setAudioLevel: (v: number) => void
-  currentView: 'chat' | 'reels' | 'documents' | 'music' | 'settings' | 'memory' | 'research' | 'workers'
-  setCurrentView: (v: 'chat' | 'reels' | 'documents' | 'music' | 'settings' | 'memory' | 'research' | 'workers') => void
+  currentView: 'chat' | 'reels' | 'documents' | 'music' | 'settings' | 'memory' | 'research' | 'workers' | 'tasks'
+  setCurrentView: (v: 'chat' | 'reels' | 'documents' | 'music' | 'settings' | 'memory' | 'research' | 'workers' | 'tasks') => void
   voicePanelOpen: boolean
   setVoicePanelOpen: (v: boolean) => void
 

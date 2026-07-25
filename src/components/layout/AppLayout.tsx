@@ -10,6 +10,7 @@ import { ReelsView } from '@/components/reels/ReelsView'
 import { DocumentsPanel } from '@/components/documents/DocumentsPanel'
 import { AbletonView } from '@/components/ableton/AbletonView'
 import { WorkersView } from '@/components/workers/WorkersView'
+import { TasksView } from '@/components/tasks/TasksView'
 
 export function AppLayout() {
   const { currentView } = useAppStore()
@@ -131,6 +132,17 @@ export function AppLayout() {
                 className="flex-1 overflow-hidden"
               >
                 <WorkersView />
+              </motion.div>
+            ) : currentView === 'tasks' ? (
+              <motion.div
+                key="tasks"
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -6 }}
+                transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
+                className="flex-1 p-4 overflow-hidden"
+              >
+                <TasksView />
               </motion.div>
             ) : (
               <motion.div

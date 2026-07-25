@@ -48,6 +48,102 @@
   /* motion easing */
   --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-spring:    cubic-bezier(0.5, 1.5, 0.5, 1);
+
+  /* ── Appearance controls (overridden at runtime by the Display tab) ── */
+  --ui-scale:         1;               /* multiplies the base rem  */
+  --font-size-base:   16px;            /* body font-size baseline  */
+  --line-height-base: 1.55;
+  --letter-spacing-base: -0.005em;
+  --font-family-body: 'Manrope', system-ui, sans-serif;
+  --font-family-display: 'Fraunces', serif;
+  --text-weight-base: 400;
+  --focus-ring-width: 2px;
+  --focus-ring-offset: 2px;
+  --focus-ring-color: var(--accent-hover);
+  --link-decoration:  none;
+}
+
+/* UI-scale zoom: acts like OS zoom but scoped to the app so external
+   Electron chrome stays crisp. Multiplies the root font-size, so rem-based
+   spacing scales too. */
+html { font-size: calc(16px * var(--ui-scale)); }
+
+/* ── Motion preferences ──────────────────────────────────────────────
+   'reduced' keeps CSS behaviour semantically the same but effectively
+   instant. 'none' also disables scroll-linked animations. Framer Motion
+   respects `prefers-reduced-motion`, which we mirror below via a media
+   query when the user picks 'reduced' or 'none'. */
+html[data-motion="reduced"] *,
+html[data-motion="reduced"] *::before,
+html[data-motion="reduced"] *::after {
+  animation-duration:  0.001ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.001ms !important;
+  scroll-behavior:     auto !important;
+}
+html[data-motion="none"] *,
+html[data-motion="none"] *::before,
+html[data-motion="none"] *::after {
+  animation: none !important;
+  transition: none !important;
+}
+/* Cool the aurora & backdrop drift too — biggest source of motion. */
+html[data-motion="reduced"] .atmos-backdrop,
+html[data-motion="none"] .atmos-backdrop,
+html[data-motion="reduced"] .atmos-aurora,
+html[data-motion="none"] .atmos-aurora {
+  animation: none !important;
+}
+
+/* ── High-contrast mode ──────────────────────────────────────────────
+   Bumps text colours to pure white / near-white and thickens borders.
+   Keeps the theme's accent (users can still recognise their palette). */
+html[data-contrast="high"] {
+  --text-primary:   #ffffff;
+  --text-secondary: #f2ecff;
+  --text-muted:     #c8bbe0;
+  --border:         rgba(255,255,255,0.35);
+  --border-bright:  rgba(255,255,255,0.7);
+}
+html[data-contrast="high"] .atmos-backdrop,
+html[data-contrast="high"] .atmos-aurora,
+html[data-contrast="high"] .atmos-grain,
+html[data-contrast="high"] .atmos-vignette {
+  opacity: 0.15 !important;
+}
+
+/* ── Bold text ─────────────────────────────────────────────────────── */
+html[data-bold-text="true"] {
+  --text-weight-base: 600;
+}
+html[data-bold-text="true"] p,
+html[data-bold-text="true"] span,
+html[data-bold-text="true"] li,
+html[data-bold-text="true"] td,
+html[data-bold-text="true"] th,
+html[data-bold-text="true"] button,
+html[data-bold-text="true"] a,
+html[data-bold-text="true"] label,
+html[data-bold-text="true"] input,
+html[data-bold-text="true"] textarea,
+html[data-bold-text="true"] select {
+  font-weight: 600;
+}
+
+/* ── Underline links ───────────────────────────────────────────────── */
+html[data-underline-links="true"] a {
+  text-decoration: underline !important;
+  text-underline-offset: 2px;
+}
+
+/* ── Focus rings ───────────────────────────────────────────────────── */
+html[data-focus-ring="prominent"] :focus-visible {
+  outline: 3px solid var(--focus-ring-color) !important;
+  outline-offset: 3px !important;
+  border-radius: 4px;
+}
+html[data-focus-ring="hidden"] :focus-visible {
+  outline: none !important;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -59,13 +155,16 @@ html, body, #root {
 }
 
 body {
-  font-family: 'Manrope', system-ui, sans-serif;
+  font-family: var(--font-family-body);
   font-feature-settings: 'ss01', 'cv11';
   color: var(--text-primary);
   background: var(--bg-primary);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  letter-spacing: -0.005em;
+  font-size: var(--font-size-base);
+  line-height: var(--line-height-base);
+  letter-spacing: var(--letter-spacing-base);
+  font-weight: var(--text-weight-base);
 }
 
 /* ─────────────────────────────────────────────────────────────────

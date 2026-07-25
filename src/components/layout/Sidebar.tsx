@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { MessageCircle, Settings, Plus, Trash2, Pin, Brain, Microscope, Clapperboard, FileText, Music4, Bot } from 'lucide-react'
+import { MessageCircle, Settings, Plus, Trash2, Pin, Brain, Microscope, Clapperboard, FileText, Music4, Bot, CalendarClock } from 'lucide-react'
 import { useAppStore } from '@/store/appStore'
 import { PersephoneIcon } from '@/components/PersephoneIcon'
 import type { Conversation } from '@/types'
@@ -101,6 +101,12 @@ export function Sidebar() {
           label="Workers"
           active={currentView === 'workers'}
           onClick={() => setCurrentView('workers')}
+        />
+        <NavItem
+          icon={CalendarClock}
+          label="Tasks"
+          active={currentView === 'tasks'}
+          onClick={() => setCurrentView('tasks')}
         />
         <NavItem
           icon={Settings}

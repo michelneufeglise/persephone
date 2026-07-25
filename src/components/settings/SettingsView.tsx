@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
-  User, Cpu, Boxes, Brain, Database, Wrench, Palette, Volume2, Bot, Sparkles, Wand2,
+  User, Cpu, Boxes, Brain, Database, Wrench, Palette, Volume2, Bot, Sparkles, Wand2, Eye,
 } from 'lucide-react'
 import { CharacterSection } from './sections/CharacterSection'
 import { ModelSection } from './sections/ModelSection'
@@ -11,12 +11,14 @@ import { MemorySection } from './sections/MemorySection'
 import { McpSection } from './sections/McpSection'
 import { SkillsSection } from './sections/SkillsSection'
 import { ThemeSection } from './sections/ThemeSection'
+import { AppearanceSection } from './sections/AppearanceSection'
 import { VoiceSection } from './sections/VoiceSection'
 import { SetupSection } from './sections/SetupSection'
 
-type Tab = 'character' | 'modelRoles' | 'auxiliary' | 'model' | 'voice' | 'memory' | 'mcp' | 'skills' | 'theme' | 'setup'
+type Tab = 'character' | 'modelRoles' | 'auxiliary' | 'model' | 'voice' | 'memory' | 'mcp' | 'skills' | 'theme' | 'display' | 'setup'
 
 const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
+  { id: 'display',     label: 'Display',    icon: Eye },
   { id: 'character',   label: 'Character',  icon: User },
   { id: 'modelRoles',  label: 'Models',     icon: Boxes },
   { id: 'auxiliary',   label: 'Auxiliary',  icon: Bot },
@@ -69,6 +71,7 @@ export function SettingsView() {
             exit={{ opacity: 0, x: -10 }}
             transition={{ duration: 0.2 }}
           >
+            {activeTab === 'display'    && <AppearanceSection />}
             {activeTab === 'character'  && <CharacterSection />}
             {activeTab === 'modelRoles' && <ModelRolesSection />}
             {activeTab === 'auxiliary'  && <AuxiliarySection />}
