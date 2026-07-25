@@ -107,3 +107,29 @@ export async function getAvailable(): Promise<PlannerAvailable> {
   if (!r.ok) return { mcp_tools: [], skills: [], models: [] }
   return await r.json()
 }
+
+/**
+ * Fetch a conversation the planner created server-side and shape it into
+ * the frontend's `Conversation` type so it can be dropped into the local
+ * Zustand store. Returns null if the conversation doesn't exist.
+ *
+ * The planner writes convs via `_db.upsert_conversation` + `upsert_message`,
+ * but the frontend's `conversations` array is a purely-local Zustand slice
+ * (persisted to localStorage). Without this hydration step, tasks would
+ * post their results into a conv the sidebar / tabs never see.
+ */
+export async function fetchServerConversation(convId: string): Promise<{
+  id: string; title: string; model: string
+  createdAt: number; updatedAt: number
+  messages: {
+    id: string; role: 'user' | 'assistant' | 'system' | 'tool'
+    content: string; thinkingContent?: string
+    model: string; timestamp: number
+    meta?: Record<string, unknown>
+  }[]
+} | null> {
+  const r = await fetch(`/api/memory/conversations/${encodeURIComponent(convId)}`)
+  if (!r.ok) return null
+  return await r.json()
+}
+

@@ -23,6 +23,54 @@ log = logging.getLogger("mcp_client")
 _PROTOCOL_VERSION = "2024-11-05"
 _CLIENT_INFO = {"name": "persephone", "version": "1.0"}
 
+# Hard ceiling on a single JSON-RPC line. MCP responses are usually a few
+# KB but some (list_directory on a huge tree, read_file on a real file)
+# blow past 64 KB, 1 MB, or even 10 MB. 50 MB is comfortably higher than
+# any legitimate tool result and still bounded so a runaway server can't
+# OOM the app.
+_MAX_JSON_LINE_BYTES = 50 * 1024 * 1024
+
+
+async def _read_json_line(stream: asyncio.StreamReader) -> bytes:
+    """
+    Read one newline-terminated JSON-RPC message from an MCP subprocess.
+
+    `StreamReader.readline()` has a hard 64 KB buffer and raises
+    `LimitOverrunError` on longer lines — which is common for MCP tool
+    results (directory listings, file contents, page dumps). We work around
+    it by catching the overrun, draining the buffered bytes with
+    `readexactly`, and continuing until we see the newline.
+
+    Returns the full line including the trailing '\\n', or b'' on clean EOF.
+    Raises EOFError if the stream is exhausted mid-line.
+    """
+    buf = bytearray()
+    while True:
+        try:
+            chunk = await stream.readuntil(b"\n")
+            buf.extend(chunk)
+            return bytes(buf)
+        except asyncio.LimitOverrunError as e:
+            # Drain the buffered prefix and keep going. `e.consumed` tells
+            # us exactly how many bytes are sitting in the reader waiting
+            # to be pulled out.
+            part = await stream.readexactly(e.consumed)
+            buf.extend(part)
+            if len(buf) > _MAX_JSON_LINE_BYTES:
+                raise ValueError(
+                    f"MCP line exceeded {_MAX_JSON_LINE_BYTES} bytes — dropping to "
+                    f"avoid memory blow-up. Ask the server for a narrower query."
+                )
+        except asyncio.IncompleteReadError as e:
+            # Stream closed without a trailing newline. Return what we have
+            # if non-empty, otherwise signal clean EOF.
+            if e.partial:
+                buf.extend(e.partial)
+                return bytes(buf)
+            if buf:
+                return bytes(buf)
+            raise EOFError()
+
 
 class MCPError(RuntimeError):
     pass
@@ -160,7 +208,10 @@ class MCPClient:
         assert self.proc and self.proc.stdout
         try:
             while not self._stopped:
-                line = await self.proc.stdout.readline()
+                try:
+                    line = await _read_json_line(self.proc.stdout)
+                except EOFError:
+                    break
                 if not line:
                     break
                 line = line.strip()

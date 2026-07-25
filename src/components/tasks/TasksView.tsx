@@ -9,10 +9,65 @@ import { Toggle } from '@/components/ui/Toggle'
 import { useAppStore } from '@/store/appStore'
 import {
   listTasks, getTask, createTask, patchTask, deleteTask, runTaskNow,
-  getAvailable,
+  getAvailable, fetchServerConversation,
   type PlannedTask, type PlannedTaskCreate, type PlannedTaskRun,
   type PlannerAvailable, type ScheduleKind,
 } from '@/lib/planner'
+import type { Conversation, Message } from '@/types'
+
+/**
+ * Hydrate a server-side conversation into the local Zustand store, or no-op
+ * if it's already there. Planner-created convs live on the backend only
+ * until the frontend explicitly fetches them — without this the sidebar
+ * "Conversations" list and the tab strip both silently ignore them.
+ *
+ * Concurrent polls could race past the "already exists" check and double-add,
+ * so we track in-flight ids in a module-scope Set and double-check right
+ * before insert.
+ */
+const _hydrating = new Set<string>()
+
+async function hydrateServerConv(convId: string): Promise<boolean> {
+  if (!convId) return false
+  if (useAppStore.getState().conversations.some(c => c.id === convId)) return true
+  if (_hydrating.has(convId)) return true // another call is already fetching this one
+  _hydrating.add(convId)
+
+  try {
+    const raw = await fetchServerConversation(convId)
+    if (!raw) return false
+
+    // Race check: another concurrent call may have added it while we were
+    // awaiting the network round-trip. addConversation would silently dupe.
+    if (useAppStore.getState().conversations.some(c => c.id === convId)) return true
+
+    const messages: Message[] = raw.messages
+      .filter((m): m is (typeof m) & { role: 'user' | 'assistant' | 'system' } =>
+        m.role !== 'tool',
+      )
+      .map(m => ({
+        id:              m.id,
+        role:            m.role,
+        content:         m.content,
+        thinkingContent: m.thinkingContent ?? '',
+        model:           m.model,
+        timestamp:       m.timestamp,
+        meta:            m.meta as any,
+      }))
+    const conv: Conversation = {
+      id:        raw.id,
+      title:     raw.title,
+      model:     raw.model,
+      messages,
+      createdAt: raw.createdAt,
+      updatedAt: raw.updatedAt,
+    }
+    useAppStore.getState().addConversation(conv)
+    return true
+  } finally {
+    _hydrating.delete(convId)
+  }
+}
 
 type ViewMode = { kind: 'empty' } | { kind: 'detail'; taskId: string } | { kind: 'editor'; taskId: string | null }
 
@@ -28,6 +83,16 @@ export function TasksView() {
       const [ts, av] = await Promise.all([listTasks(), getAvailable()])
       setTasks(ts)
       setAvailable(av)
+      // Hydrate any planner-created conversations we don't yet have in
+      // the local store — so auto-fired runs show up in the sidebar list
+      // and can be re-opened as chat tabs later.
+      const known = new Set(useAppStore.getState().conversations.map(c => c.id))
+      const missing = Array.from(new Set(
+        ts.map(t => t.lastConvId).filter((id): id is string => !!id && !known.has(id)),
+      ))
+      if (missing.length) {
+        await Promise.all(missing.map(id => hydrateServerConv(id)))
+      }
     } finally {
       setLoading(false)
     }
@@ -264,7 +329,9 @@ function TaskDetail({
       await reload()
       await refreshList()
       if (r.ok && r.conv_id) {
-        // Give the user immediate feedback — open the conv in a chat tab.
+        // Hydrate the server-side conv into the local store BEFORE opening
+        // the tab — openTab silently drops unknown convIds otherwise.
+        await hydrateServerConv(r.conv_id)
         openTab(r.conv_id)
         setCurrentView('chat')
       }
@@ -369,8 +436,11 @@ function TaskDetail({
               <RunRow
                 key={run.id}
                 run={run}
-                onOpenConv={() => {
-                  if (run.convId) { openTab(run.convId); setCurrentView('chat') }
+                onOpenConv={async () => {
+                  if (!run.convId) return
+                  await hydrateServerConv(run.convId)
+                  openTab(run.convId)
+                  setCurrentView('chat')
                 }}
               />
             ))}
