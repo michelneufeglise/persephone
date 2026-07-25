@@ -341,6 +341,20 @@ MODELS: list[dict] = [
         "size_gb": 5.2, "tiers": ["ultra", "high", "mid", "low"],
     },
     {
+        "id": "deepseek-r1:7b", "name": "DeepSeek R1 7B", "family": "DeepSeek",
+        "params": "7B", "ram_min_gb": 5, "quant": "Q4_K_M",
+        "category": "chat",
+        "description": (
+            "Qwen 2.5 7B distillation of R1. Slightly leaner than the 8B "
+            "Llama distill and often stronger on math + code benchmarks. "
+            "Great default when a 16GB laptop wants visible <think> reasoning "
+            "without paying the 14B RAM cost."
+        ),
+        "tags": ["reasoning", "thinking", "compact", "recommended"],
+        "hf_url": "https://huggingface.co/deepseek-ai/DeepSeek-R1-Distill-Qwen-7B",
+        "size_gb": 4.7, "tiers": ["ultra", "high", "mid", "low"],
+    },
+    {
         "id": "llama3.2:3b", "name": "Llama 3.2 3B", "family": "Meta",
         "params": "3B", "ram_min_gb": 2, "quant": "Q4_K_M",
         "category": "chat",
