@@ -289,6 +289,27 @@ const FAMILIES: Record<string, ModelMeta> = {
     tagline: 'Efficient open chat from DeepSeek.',
   },
 
+  // ── DeepSeek-OCR "unlimited" community variant (frob) ──
+  // Small (3B) specialised OCR VLM. FAMILY_KEYS is sorted longest-first so
+  // this specific key wins over a shorter 'deepseek' prefix match.
+  'frob/unlimited-ocr': {
+    family: 'deepseek-ocr',
+    displayName: 'DeepSeek-OCR (Unlimited)',
+    type: 'vision',
+    paramsLabel: '3B',
+    contextK: 32,
+    releasedYear: 2025,
+    vendor: 'DeepSeek · community quant by frob',
+    license: 'MIT',
+    strengths: [
+      'Purpose-built OCR — receipts, forms, dense scans',
+      'No output-token cap — long documents in one call',
+      'Small footprint (4 GB Q8)',
+    ],
+    bestFor: 'Extracting a lot of text from an image or a multi-page document in a single pass.',
+    tagline: 'Compact OCR specialist — reads whole documents at once.',
+  },
+
   // ── Euryale (Sao10K's L3.3 70B, via mradermacher/bartowski GGUF repos) ──
   'hf.co/mradermacher/l3.3-70b-euryale-v2.3-gguf': {
     family: 'euryale',

@@ -42,6 +42,7 @@ import comfy_client as _comfy
 import reels_render as _reels
 import workers as _workers
 import delegate as _delegate
+import skills as _skills
 from dataclasses import dataclass
 
 
@@ -753,6 +754,32 @@ _VISUAL_HINT = (
     "- and embed a small mermaid diagram when explaining a flow, comparison, or hierarchy.\n"
     "For short factual answers, plain prose is fine — don't force structure.\n"
     "\n"
+    "INLINE ICONS: You can drop small vector icons anywhere in your prose "
+    "using the syntax `:icon-name:` (colons around a lowercase, hyphenated name). "
+    "They render inline at the size of surrounding text and colour-match the theme. "
+    "Use them lightly — one or two per section, not on every line — to make weather, "
+    "status, categories, and lists more scannable. Never wrap them in code fences.\n"
+    "Available icons include:\n"
+    "- Weather: :sun: :moon: :cloud: :cloud-sun: :cloud-rain: :cloud-snow: :cloud-lightning: "
+    ":wind: :snowflake: :umbrella: :thermometer: :hot: :cold: :sunrise: :sunset: :rainbow: :fog:\n"
+    "- Status & feedback: :check: :x: :warning: :info: :help: :shield: :star: :heart: :fire: :bolt: :sparkles:\n"
+    "- Trends & arrows: :trend-up: :trend-down: :right: :left: :up: :down:\n"
+    "- Time & place: :clock: :calendar: :pin: :globe: :map:\n"
+    "- Travel: :home: :car: :plane: :train: :ship: :rocket:\n"
+    "- Media & study: :book: :idea: :brain: :music: :film: :camera: :headphones: :pen:\n"
+    "- Food & drink: :coffee: :food: :pizza:\n"
+    "- Nature: :dog: :cat: :bird: :leaf: :tree: :flower: :mountain: :wave:\n"
+    "- Tech & dev: :laptop: :phone: :wifi: :code: :terminal: :database: :github: :branch:\n"
+    "- Comms: :mail: :chat: :send: :users:\n"
+    "- Money: :dollar: :euro: :pound: :coins: :cart: :chart: :pie:\n"
+    "- Tools & UI: :search: :settings: :lock: :key: :download: :upload: :eye:\n"
+    "- Celebration & health: :trophy: :award: :gift: :party: :health: :pill: :medical:\n"
+    "- Files & art: :file: :folder: :palette:\n"
+    "- Emotion: :like: :dislike: :smile: :sad: :happy:\n"
+    "Example weather forecast: 'Tomorrow will be :cloud-sun: mostly sunny with a high of "
+    ":thermometer: 21°C, and a slight chance of :cloud-rain: showers in the evening.'\n"
+    "If a shortcode isn't in the list, it renders as plain text — safe to skip.\n"
+    "\n"
     "MERMAID syntax (when you use it):\n"
     "- NO trailing semicolons. `A --> B`, not `A --> B;`\n"
     "- Quote any label with spaces: `A((\"Start node\"))`, `subgraph \"My Group\"`\n"
@@ -1234,11 +1261,17 @@ async def _augment_messages(model: str, messages: list[dict]) -> list[dict]:
             _build_user_context(),
         )
         memory_ctx = ""
+        skills_selected: list[_skills.Skill] = []
     else:
-        memory_ctx, mcp_ctx, user_ctx = await asyncio.gather(
+        # Run memory, MCP, user-context, and skill selection in parallel.
+        # Skills is a heuristic pre-filter + judge pass — cheap when nothing
+        # matches (zero LLM call), ~200 ms when it does.
+        latest_user_text = _latest_user_text(messages)
+        memory_ctx, mcp_ctx, user_ctx, skills_selected = await asyncio.gather(
             _build_memory_context(),
             _build_mcp_context(),
             _build_user_context(),
+            _select_skills(latest_user_text),
         )
     think_ctx = _thinking_block() if _wants_thinking(model) else ""
     # Tiny formatting hint — the UI renders rich markdown into illustrations,
@@ -1246,6 +1279,8 @@ async def _augment_messages(model: str, messages: list[dict]) -> list[dict]:
     # snappy and prevent acks from emitting headings.
     visual_ctx = "" if trivial else _VISUAL_HINT
     addendum  = (user_ctx + memory_ctx + mcp_ctx + think_ctx + visual_ctx).strip()
+    if skills_selected:
+        addendum = _skills.inject_into_system(addendum, skills_selected)
 
     if not addendum:
         return _trim_history(messages)
@@ -1256,6 +1291,33 @@ async def _augment_messages(model: str, messages: list[dict]) -> list[dict]:
         return _trim_history([new_sys, *messages[1:]])
 
     return _trim_history([{"role": "system", "content": addendum}, *messages])
+
+
+def _latest_user_text(messages: list[dict]) -> str:
+    for m in reversed(messages):
+        if m.get("role") == "user":
+            c = m.get("content")
+            if isinstance(c, str):
+                return c
+            if isinstance(c, list):  # multimodal — pull the text parts
+                return " ".join(
+                    part.get("text", "")
+                    for part in c if isinstance(part, dict) and part.get("type") == "text"
+                )
+    return ""
+
+
+async def _select_skills(user_text: str) -> list[_skills.Skill]:
+    if not user_text.strip():
+        return []
+    try:
+        installed = await _installed_models()
+        return await _skills.select_skills(
+            user_text, db=_db, installed_models=installed, ollama_base=OLLAMA_BASE,
+        )
+    except Exception as exc:  # never let skill selection break the chat path
+        log.warning("skill selection failed: %s", exc)
+        return []
 
 
 _MAX_TOOL_ITERATIONS = 5
@@ -4343,6 +4405,18 @@ async def idp_redact(req: IDPRequest):
     return {"text": await _run_idp(_idp.redact(doc, model, cats)), "model": model}
 
 
+@app.post("/api/idp/humanize")
+async def idp_humanize(req: IDPRequest):
+    doc       = _idp_guard(req.doc_id)
+    model     = await _resolve_doc_model("text")
+    tone      = req.options.get("tone", "natural")
+    intensity = req.options.get("intensity", "medium")
+    return {
+        "text":  await _run_idp(_idp.humanize(doc, model, tone, intensity)),
+        "model": model,
+    }
+
+
 @app.post("/api/idp/export/{fmt}")
 async def idp_export(fmt: str, req: IDPRequest):
     from fastapi.responses import Response
@@ -4484,6 +4558,65 @@ async def delegate_send(req: DelegateSendRequest):
         source_msg_id = req.source_msg_id,
     )
     return {"ok": True, **ack}
+
+
+# ── /api/skills — reusable instruction bundles ──────────────────────────────
+@app.get("/api/skills")
+async def skills_list():
+    """
+    Enumerate every discovered skill (builtin + user), with the effective
+    enabled/disabled state for this installation.
+    """
+    disabled = await _skills._enabled_set(_db)  # noqa: SLF001 — small helper reuse
+    return {
+        "skills": [
+            {
+                "name":            sk.name,
+                "description":     sk.description,
+                "category":        sk.category,
+                "source":          sk.source,
+                "path":            sk.path,
+                "keywords":        sk.keywords,
+                "default_enabled": sk.default_enabled,
+                "enabled":         sk.name not in disabled and sk.default_enabled,
+                "body_preview":    sk.body[:400],
+            }
+            for sk in _skills.list_skills()
+        ],
+        "max_active": _skills.MAX_ACTIVE_SKILLS,
+    }
+
+
+class _SkillEnabledBody(BaseModel):
+    enabled: bool
+
+
+@app.patch("/api/skills/{name}")
+async def skills_set_enabled(name: str, body: _SkillEnabledBody):
+    sk = _skills.get_skill(name)
+    if not sk:
+        raise HTTPException(404, "Skill not found")
+    await _skills.set_enabled(name, body.enabled, _db)
+    return {"ok": True, "name": name, "enabled": body.enabled}
+
+
+@app.get("/api/skills/{name}")
+async def skills_detail(name: str):
+    sk = _skills.get_skill(name)
+    if not sk:
+        raise HTTPException(404, "Skill not found")
+    disabled = await _skills._enabled_set(_db)  # noqa: SLF001
+    return {
+        "name":            sk.name,
+        "description":     sk.description,
+        "category":        sk.category,
+        "source":          sk.source,
+        "path":            sk.path,
+        "keywords":        sk.keywords,
+        "default_enabled": sk.default_enabled,
+        "enabled":         sk.name not in disabled and sk.default_enabled,
+        "body":            sk.body,
+    }
 
 
 # ── /api/delegate — main-model → specialist async subtasks ───────────────────

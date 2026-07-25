@@ -1,16 +1,16 @@
 {
   "memory_curator": {
     "enabled": true,
-    "last_run_ts": 1784767724.0481799,
-    "last_duration_s": 6.820230707991868,
+    "last_run_ts": 1784821000.1896052,
+    "last_duration_s": 9.47275208379142,
     "last_result": {
       "dedup": {
-        "scanned": 44,
-        "removed": 1
+        "scanned": 47,
+        "removed": 0
       },
       "reextract": {
         "conversations": 2,
-        "new_facts": 1,
+        "new_facts": 0,
         "model": "qwen2.5:1.5b"
       }
     },
@@ -18,12 +18,12 @@
   },
   "model_warmer": {
     "enabled": true,
-    "last_run_ts": 1784768173.086565,
-    "last_duration_s": 8.938475667033345,
+    "last_run_ts": 1784821280.91111,
+    "last_duration_s": 0.6504970830865204,
     "last_result": {
       "model": "Hydroxide538/qwen-agentworld-35b-a3b:q4_k_m",
       "ok": true,
-      "latency_ms": 8923
+      "latency_ms": 627
     },
     "last_error": ""
   }

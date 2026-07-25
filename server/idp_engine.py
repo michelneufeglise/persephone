@@ -566,6 +566,41 @@ async def redact(doc: Document, model: str, categories: list[str]) -> str:
     return await _ollama_text_call(model, prompt, num_predict=4096)
 
 
+async def humanize(doc: Document, model: str, tone: str = "natural", intensity: str = "medium") -> str:
+    tone_hint = {
+        "natural":       "warm, conversational, but still polished",
+        "casual":        "relaxed and informal, like a friendly email",
+        "professional":  "clear and confident, like a well-written business memo",
+        "academic":      "considered and precise, but without stiff or robotic phrasing",
+    }.get(tone, "warm, conversational, but still polished")
+
+    intensity_hint = {
+        "light":  "Keep most of the wording. Only smooth out the most obvious AI tics (repetitive transitions, over-hedging, empty filler).",
+        "medium": "Substantially rework sentences so the rhythm varies. Break up parallel structures. Cut hollow phrases. Prefer concrete verbs and specific nouns.",
+        "heavy":  "Rewrite freely. Vary sentence length dramatically (some short, some long). Use idioms where natural. Add small imperfections a real writer would leave (a hedge, a slight tangent, an aside). Never sound formulaic.",
+    }.get(intensity, "Substantially rework sentences so the rhythm varies. Break up parallel structures. Cut hollow phrases. Prefer concrete verbs and specific nouns.")
+
+    prompt = (
+        "You are rewriting a passage so it reads as if a real human wrote it — not an AI. "
+        f"Target tone: {tone_hint}.\n\n"
+        f"{intensity_hint}\n\n"
+        "Specifically:\n"
+        "- Avoid AI tells: 'delve', 'furthermore', 'moreover', 'in conclusion', 'it is important to note', "
+        "'navigate the landscape', 'a testament to', 'in today's fast-paced world', 'tapestry', 'realm', "
+        "'crucial', 'pivotal', 'multifaceted', 'holistic'.\n"
+        "- Do not open with 'In today's', 'In the world of', 'It is important', 'Let's explore', or 'This article'.\n"
+        "- Vary sentence length. Include at least one short sentence per paragraph.\n"
+        "- Prefer active voice. Use contractions where natural (it's, don't, we're).\n"
+        "- Cut redundant qualifiers (very, really, quite, extremely) unless they add real meaning.\n"
+        "- Keep every fact, number, name, and quote intact. Do not invent details.\n"
+        "- Preserve the original language of the document. Do not translate.\n"
+        "- Preserve headings, lists, and paragraph breaks.\n\n"
+        "Output ONLY the rewritten text — no preamble, no explanation, no markdown fences.\n\n"
+        f"--- DOCUMENT ---\n{doc.text[:24000]}\n--- END ---"
+    )
+    return await _ollama_text_call(model, prompt, num_predict=4096)
+
+
 # ── Exports ────────────────────────────────────────────────────────────────────
 def export_markdown(doc: Document) -> bytes:
     md = f"# {doc.filename}\n\n"

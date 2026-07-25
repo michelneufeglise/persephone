@@ -57,6 +57,8 @@ export const idp = {
   classify:  (id: string)                              => callIdp<IDPClassify>('classify', id),
   translate: (id: string, target: string)              => callIdp<IDPResult>('translate', id, { target }),
   redact:    (id: string, categories: string[])        => callIdp<IDPResult>('redact',    id, { categories }),
+  humanize:  (id: string, tone: string, intensity: string) =>
+    callIdp<IDPResult>('humanize', id, { tone, intensity }),
 }
 
 export function exportUrl(id: string, fmt: string): string {

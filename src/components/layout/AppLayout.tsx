@@ -95,7 +95,7 @@ export function AppLayout() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -6 }}
                 transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
-                className="flex-1 overflow-hidden"
+                className="flex-1 p-4 overflow-hidden"
               >
                 <DocumentsPanel />
               </motion.div>

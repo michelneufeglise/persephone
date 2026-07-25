@@ -114,23 +114,30 @@ graph TB
     end
 
     subgraph "Local backend FastAPI on 127.0.0.1"
-        Chat["/api/chat<br/>SSE stream"]
+        Chat["/api/chat<br/>SSE stream (per-tab)"]
         Router["Auto-router<br/>heuristic + LLM judge"]
         Memory["Memory facts<br/>+ extraction"]
         Research["Research engine<br/>plan → gather → synth"]
         IDP["IDP / OCR / docs"]
-        TTS["Orpheus + SNAC TTS"]
+        TTS["Kokoro-82M ONNX TTS<br/>19 voices"]
         MCPMgr["MCP manager<br/>stdio JSON-RPC"]
+        Delegate["Delegate dispatcher<br/>judge → specialist worker"]
+        Workers["Background workers<br/>Memory Curator · Model Warmer"]
+        Ableton["Ableton composer<br/>OSC bridge + song library"]
+        PDF["PDF export<br/>reportlab · markdown → A4"]
+        HW["Hardware profile<br/>chip + bandwidth + tok/s"]
     end
 
     subgraph "Storage"
-        SQL["SQLite<br/>convs + messages + facts + runs"]
+        SQL["SQLite<br/>convs + messages + facts + runs<br/>+ delegated_tasks"]
         Vec["sqlite-vec<br/>1024-dim embeddings"]
+        FS["data_dir/<br/>kokoro/ · ableton/songs/ · workers/"]
     end
 
     subgraph "External"
         Ollama["Ollama :11434<br/>local models"]
         MCPs["MCP servers<br/>DDG, Brave, Fetch, Git, ..."]
+        Live["Ableton Live 12<br/>via AbletonOSC"]
     end
 
     UI --> Chat
@@ -138,6 +145,11 @@ graph TB
     UI --> Memory
     UI --> IDP
     UI --> TTS
+    UI --> Delegate
+    UI --> Workers
+    UI --> Ableton
+    UI --> PDF
+    UI --> HW
 
     Chat --> Router
     Router --> Ollama
@@ -147,10 +159,22 @@ graph TB
     Research --> Router
     Research --> MCPMgr
     Research --> Vec
+    Research --> PDF
+
+    Delegate --> Ollama
+    Delegate --> MCPMgr
+    Delegate --> SQL
+
+    Workers --> Ollama
+    Workers --> SQL
+
+    Ableton --> Live
+    Ableton --> FS
 
     Memory --> SQL
     IDP --> Ollama
     MCPMgr --> MCPs
+    HW --> Ollama
 
     Main -.spawns.-> Chat
 ```
@@ -339,7 +363,15 @@ All processing is local. Each operation routes to the model you configured durin
 
 ### 7 · Voice (TTS)
 
-Built-in **Orpheus** TTS with the SNAC 24kHz neural codec, loaded once at startup. Eight voices (Tara, Leo, Leah, Jess, Mia, Zac, Zoe, Zach), speed control, auto-play, sentence-streaming so audio starts as soon as the first sentence is generated.
+Built-in **Kokoro-82M** ONNX TTS at 24 kHz, loaded once at startup, ≈10× real-time on M-series. **19 voices** across three accents:
+
+- **American** — Heart (default, warmest), Bella, Nicole, Sarah, Sky, Aoede, Adam, Michael, Liam, Puck
+- **British** — Emma, Alice, Isabella, George, Daniel, Fable
+- **Castilian Spanish** — Dora, Alex, Santa
+
+Speed control, auto-play, sentence-streaming (audio starts as soon as the first sentence is generated), per-conversation mute. The **setup wizard verifies + downloads** the Kokoro ONNX model + voice pack automatically at the end of onboarding so your very first spoken sentence is instant — no surprise 360 MB download later. Live status card on the summary step: *"Voice engine — downloading Kokoro model (~360 MB)…"* → *"ready (310 MB model + 30 MB voices, warmed up)"*.
+
+Endpoints: `GET /api/setup/tts-status`, `POST /api/setup/tts-install`, `POST /api/tts`, `GET /api/tts/voices`.
 
 ### 8 · Editorial rich-markdown rendering
 
@@ -353,9 +385,11 @@ Every model reply is rendered with custom React-Markdown components:
 - **Ordered lists** — circular gradient-badge numbered orbs via CSS counters
 - **Unordered lists** — rotated diamond bullets with accent → holo gradient + glow
 - **`<hr>`** — ornamental three-diamond divider
-- **Code blocks** — hand-drawn rough.js sketch borders with language captions
+- **Code blocks** — hand-drawn rough.js sketch borders with language captions AND a **copy-to-clipboard button** that appears on hover (Check + "copied" flash on success)
 - **Tables** — hand-drawn holo-coloured rough.js frames
 - ```` ```mermaid ```` **blocks** — auto-rendered as real diagrams in the theme palette, with a defensive sanitiser that auto-fixes common LLM syntax mistakes (trailing `;`, unquoted multi-word labels, bare multi-word node IDs) on a silent retry
+- **Auto-TOC for extensive answers** — any assistant reply with 3+ H2 sections gets a compact `Contents · N` strip above the body listing every section as a click-to-scroll chip (collapsible)
+- **PDF export chip** appears in the message action strip when the reply is "report-like" (≥ 600 chars AND two-plus of {headings, lists, tables, code}) — one click downloads a styled A4 PDF
 
 Plus **generative SVG cover art** at the top of research reports — deterministic from the query hash, so the same query always produces the same cover; theme-aware colours.
 
@@ -523,6 +557,12 @@ Rendered by `server/pdf_export.py` — pure ReportLab (no system deps), editoria
 
 Switch any time in Settings → Theme. Every accent, shadow, and gradient updates instantly via CSS variables.
 
+**Shared brand identity**: the **Persephone medallion** (Art Nouveau logo on a warm cream disc, `public/persephone_logo.png`) is used everywhere the app needs a Persephone mark — sidebar top-left, wizard Welcome step, AI message avatar, chat empty state, Memory / Research headers, wizard header. The `<PersephoneIcon>` component (`src/components/PersephoneIcon.tsx`) renders it as a circular medallion that composites cleanly on every theme.
+
+**Ambient backdrop**: a pre-blurred watercolour painting (`public/persephone-background.png`) sits behind all panels via `.atmos-backdrop` — never sharp, always atmospheric. Glass panels stay legible on top thanks to a 72-88 % opaque gradient layer + a light 6px `backdrop-filter`.
+
+**Draggable window**: because `titleBarStyle: 'hiddenInset'` hides the native macOS title bar, Persephone adds a global 28 px `-webkit-app-region: drag` strip at the top of the window plus a draggable sidebar header. The `.window-drag` / `.window-no-drag` utility classes let you mark any custom region.
+
 ---
 
 ## Technical details
@@ -544,56 +584,85 @@ Switch any time in Settings → Theme. Every accent, shadow, and gradient update
 ### Stack
 
 - **Frontend** — React 18, Vite 6, Tailwind 3, Framer Motion 11, Zustand, React Markdown, Mermaid 11, Rough.js, Sharp (icon gen)
-- **Backend** — FastAPI, Uvicorn, httpx, aiosqlite, sqlite-vec, PyTorch (for SNAC TTS), SNAC, NumPy, SciPy, Pillow (Reels caption PNGs), ffmpeg-python (helper layer over native ffmpeg), openai-whisper (Reels transcription + translation)
+- **Backend** — FastAPI, Uvicorn, httpx, aiosqlite, sqlite-vec, ReportLab (PDF export), NumPy, SciPy, Pillow (Reels caption PNGs), ffmpeg-python (helper layer over native ffmpeg), openai-whisper (Reels transcription + translation), kokoro-onnx (TTS)
 - **Desktop** — Electron 33, electron-builder 25
 - **Reels media** — native `ffmpeg` on `PATH` (h264 + AAC + `overlay` + `zoompan` + `eq` + `setpts` + `sidechaincompress` + `hue` filters), optional `h264_videotoolbox` hardware encoder on macOS. ComfyUI (Stable Diffusion) as an *optional* external local process on `:8188` — Persephone can auto-install it (`git clone` + venv + pip + SDXL Base 1.0) on first Reels tab open.
-- **Models** — Any Ollama-compatible: Qwen 2.5 / 3 / 3.6 (incl. AgentWorld), Gemma 3 / 4, Llama 3.1 / 3.2 / 3.3, Nemotron / Nemotron 3 Nano, Mistral, DeepSeek, Phi-4, Hermes 3, MiniCPM-V / MiniCPM-O, Granite, **Ornith** (Qwen3 coder, 262K ctx), **olmOCR 2**, GLM-OCR, etc. Catalog lives in `server/model_catalog.py`.
+- **Models** — Any Ollama-compatible: Qwen 2.5 / 3 / 3.6 (incl. AgentWorld), Gemma 3 / 4, Llama 3.1 / 3.2 / 3.3, Nemotron / Nemotron 3 Nano, Mistral, **DeepSeek R1** (8b / 14b / 32b / 70b distills), **DeepSeek-OCR** (`frob/unlimited-ocr`), Phi-4, Hermes 3, MiniCPM-V / MiniCPM-O, Granite, **Agents-A1** (InternScience 35B MoE agentic), **Euryale L3.3 70B** (Sao10K companion), **Ornith** (Qwen3 coder, 262K ctx), **olmOCR 2**, GLM-OCR. Catalog lives in `server/model_catalog.py`.
 - **Embeddings** — `mxbai-embed-large` (1024-dim, MixedBread AI) via Ollama `/api/embed`
 - **Vector store** — `sqlite-vec` virtual table (KNN via `WHERE embedding MATCH ? AND k = ?`)
-- **TTS** — Orpheus 3B + SNAC 24kHz codec, in-process Python (no model swap)
+- **TTS** — Kokoro-82M ONNX (24 kHz, 19 voices, ≈10× real-time), in-process Python
+- **PDF** — ReportLab pure-Python A4 exporter (`server/pdf_export.py`)
+- **Tests** — pytest (`server/tests/`) — 63 tests covering chip fingerprint, memory bandwidth, tok/s estimator, catalog coverage
 
 ### Project layout
 
 ```
 persephone/
-├── electron/             ← Electron main + preload (CJS)
-├── scripts/              ← bundle-python.mjs, generate-icon.mjs, dev/electron-dev orchestrators
-├── server/               ← FastAPI backend
-│   ├── main.py           ← all HTTP endpoints + chat stream + auto-router
-│   ├── research.py       ← deep research engine
-│   ├── research_db.py    ← sqlite-vec KB storage
-│   ├── embeddings.py     ← Ollama /api/embed wrapper
-│   ├── db.py             ← aiosqlite layer for convs/messages/facts/config
-│   ├── mcp_*.py          ← MCP catalog + client + manager (JSON-RPC over stdio)
-│   ├── idp_engine.py     ← document processing
-│   ├── tts_engine.py     ← Orpheus + SNAC
-│   ├── reels_render.py   ← Reels: scene renderers, Ken Burns, effects, concat
-│   ├── ffmpeg_helper.py  ← thin ffmpeg-python wrapper (probe / concat / mix)
-│   ├── transcribe.py     ← lazy-loaded Whisper for source-audio subtitling
-│   ├── comfy_client.py   ← ComfyUI: discover, spawn, install, generate
-│   ├── hardware.py       ← M-series + tier detection
-│   ├── model_catalog.py  ← curated tier-aware model recommendations
-│   ├── ollama_setup.py   ← cross-platform install + lifecycle
+├── electron/               ← Electron main + preload (CJS)
+├── scripts/                ← bundle-python.mjs, generate-icon.mjs, dev/electron-dev orchestrators
+├── public/                 ← persephone_logo.png · persephone-background.png · persephone-icon.jpg
+├── docs/                   ← OPTIMIZED_SETUP_PLAN.md, VIDEO_EDITOR_PLAN.md, ABLETON_COMPOSER_PLAN.md
+├── server/                 ← FastAPI backend
+│   ├── main.py             ← all HTTP endpoints + chat stream + auto-router + wizard
+│   ├── research.py         ← deep research engine
+│   ├── research_db.py      ← sqlite-vec KB storage
+│   ├── embeddings.py       ← Ollama /api/embed wrapper
+│   ├── db.py               ← aiosqlite layer (convs / messages / facts / config / delegated_tasks)
+│   ├── mcp_*.py            ← MCP catalog + client + manager (JSON-RPC over stdio)
+│   ├── idp_engine.py       ← document processing
+│   ├── tts_engine.py       ← Kokoro ONNX runtime
+│   ├── reels_render.py     ← Reels: scene renderers, Ken Burns, effects, concat
+│   ├── ffmpeg_helper.py    ← thin ffmpeg-python wrapper (probe / concat / mix)
+│   ├── transcribe.py       ← lazy-loaded Whisper for source-audio subtitling
+│   ├── comfy_client.py     ← ComfyUI: discover, spawn, install, generate
+│   ├── hardware.py         ← chip fingerprint (M1..M4, Intel, AMD Zen) + bandwidth
+│   ├── benchmarks.py       ← tok/s estimator + fit rating
+│   ├── model_catalog.py    ← curated tier + tok/s-aware model recommendations
+│   ├── ollama_setup.py     ← cross-platform install + lifecycle
+│   ├── ollama_parallel.py  ← detect + set OLLAMA_NUM_PARALLEL / MAX_LOADED
+│   ├── pdf_export.py       ← markdown → styled A4 PDF (ReportLab)
+│   ├── delegate.py         ← auxiliary worker dispatcher (judge → specialist)
+│   ├── workers.py          ← background workers scheduler (idle-gated)
+│   ├── workers_impl.py     ← Memory Curator + Model Warmer
+│   ├── ableton_composer.py ← SongSpec generation + edit chat
+│   ├── ableton_client.py   ← async OSC client (fire / stop / solo / mute per track)
+│   ├── ableton_bridge.py   ← install AbletonOSC + browser patch
+│   ├── ableton_session.py  ← current SongSpec + undo stack + persistence
+│   ├── ableton_library.py  ← save / load / delete SongSpec records
+│   ├── song_translator.py  ← SongSpec → real Live tracks + single-track apply
+│   ├── song_spec.py        ← dataclasses + JSON round-trip
+│   ├── style_adapters.py   ← deterministic Note generators per pattern archetype
+│   ├── music_theory.py     ← Roman-numeral progressions, cadences, scales
+│   ├── ableton_patches/    ← browser.py — Persephone-authored AbletonOSC extension
+│   ├── tests/              ← pytest — 63 tests for hardware / benchmarks / catalog
 │   └── requirements.txt
-├── src/                  ← React frontend
+├── src/                    ← React frontend
 │   ├── components/
-│   │   ├── chat/         ← ChatWindow, MessageBubble, ChatInput, ModelSelector, ThinkingPanel, ToolCallList
+│   │   ├── PersephoneIcon.tsx  ← shared medallion (sidebar / wizard / chat / research / memory)
+│   │   ├── chat/         ← ChatWindow, ChatTabs (browser-style tabs), MessageBubble,
+│   │   │                   ChatInput, ModelSelector, ThinkingPanel, ToolCallList
+│   │   ├── delegate/     ← DelegatePanel (right-panel Auxiliary tab)
+│   │   ├── workers/      ← WorkersView (sidebar tab, activity log, delegated tasks)
+│   │   ├── ableton/      ← AbletonView (track cards, song library, edit chat, undo)
 │   │   ├── reels/        ← ReelsView (studio · master video · per-scene editing · effects · preview · history)
-│   │   ├── research/     ← ResearchView (run / history / KB search / detail overlay)
+│   │   ├── research/     ← ResearchView (run / history / KB search / detail overlay + PDF button)
 │   │   ├── memory/       ← MemoryView (facts + history)
-│   │   ├── markdown/     ← RichMarkdown, Mermaid, SketchBorder, OrnamentalDivider, CoverArt
-│   │   ├── wizard/       ← 15-step setup wizard
-│   │   ├── settings/     ← character / model / voice / memory / tools / theme
+│   │   ├── markdown/     ← RichMarkdown (+ copy button + TOC), Mermaid, SketchBorder, OrnamentalDivider, CoverArt
+│   │   ├── wizard/       ← 15-step setup wizard with tok/s badges + TTS auto-install
+│   │   ├── settings/     ← character / models / auxiliary / model params / voice / memory / tools / theme / setup
 │   │   ├── documents/    ← IDP panel
-│   │   ├── voice/        ← VoicePanel (sphere, voice picker)
-│   │   ├── layout/       ← AppLayout, Sidebar, RightPanel
+│   │   ├── voice/        ← VoicePanel (Kokoro voices, sphere waveform)
+│   │   ├── layout/       ← AppLayout, Sidebar, RightPanel (Voice · Auxiliary tabs)
 │   │   └── ui/           ← Button, Input, Slider, Toggle, Panel, Badge, Select
+│   ├── assets/           ← persephone-icon.jpg (medallion source)
 │   ├── themes/           ← 5 themes as CSS-variable bundles
 │   ├── lib/              ← ollama (stream chat), tts, idp, modelMeta
-│   ├── store/            ← Zustand store (persisted to localStorage)
-│   └── types/
-├── build/                ← icon.png + icon.icns (generated)
-└── package.json          ← electron-builder config + scripts
+│   ├── store/            ← Zustand store (persisted to localStorage) with openTabIds + generatingConvs
+│   ├── types/
+│   └── vite-env.d.ts     ← image import module declarations
+├── public/                 ← favicon assets + backdrop image
+├── build/                  ← icon.png + icon.icns (generated)
+└── package.json            ← electron-builder config + scripts
 ```
 
 ### Useful endpoints
@@ -724,6 +793,7 @@ Edit `OLLAMA_DEFAULTS` and the `keep_alive` values in `server/main.py`:
 - Chat model: `10m` (configurable)
 - Background fact extraction: `30s`
 - Auto-route judge: `5m`
+- Delegate judge & specialist: `5m`
 
 ### History sliding window
 
@@ -733,9 +803,30 @@ Edit `OLLAMA_DEFAULTS` and the `keep_alive` values in `server/main.py`:
 
 `_ROUTER_RULES` in `server/main.py` — each rule has a `match` lambda, a `ranks` priority list of model tags, a `reason` string, and a `confidence` (`high` / `low`). Add your own rule for a new domain.
 
+### Ollama parallelism
+
+Persephone auto-configures Ollama so browser-style tabs can stream in parallel. On first launch (or when hardware profile changes) the setup step in `server/ollama_parallel.py` writes:
+
+- `OLLAMA_NUM_PARALLEL` — concurrent requests per model (typically 4–8, scaled to RAM)
+- `OLLAMA_MAX_LOADED_MODELS` — how many models the daemon keeps warm at once (2–4)
+
+The env vars are persisted per-platform: `launchctl setenv` on macOS, a systemd drop-in on Linux, and `setx` on Windows. Ollama restarts automatically. Check `Settings → Setup → Ollama parallelism` for the current values.
+
+### TTS install verification
+
+The wizard's Voice step calls `/setup/tts-install` which downloads the Kokoro-82M ONNX model + voices bundle (~350 MB) into `~/.persephone/tts/`. `/setup/tts-status` reports readiness. Once installed, TTS runs in-process — no network round-trip.
+
+### Auxiliary workers
+
+`Settings → Auxiliary` picks the judge model and one specialist per delegate category (research, code, ocr, vision, math, memory, reels, ableton, tools, chat). Judge classifies each user turn, then the appropriate specialist is dispatched — the primary model composes the final answer. Toggle categories on / off individually.
+
+### Background workers
+
+`Settings → Auxiliary → Background workers` schedules idle-gated jobs (Memory Curator, Model Warmer). They only fire when no chat is streaming, and each worker holds a single-run lock so overlapping ticks are a no-op.
+
 ### Theme tokens
 
-Each theme in `src/themes/index.ts` defines ~25 CSS variables (background ramp, accent ramp, holographic edge, gold, text scale, gradient bubble backgrounds, multi-stop shadow stack). Add a sixth theme by copying any existing entry.
+Each theme in `src/themes/index.ts` defines ~25 CSS variables (background ramp, accent ramp, holographic edge, gold, text scale, gradient bubble backgrounds, multi-stop shadow stack). Add a sixth theme by copying any existing entry. The Persephone medallion (`public/persephone_logo.png`) and ambient backdrop (`public/persephone-background.png`) are theme-agnostic and live on top of the CSS-variable stack.
 
 ---
 
@@ -746,7 +837,11 @@ This is a personal project I work on in the open. PRs welcome for:
 - New themes
 - Additional MCP servers in the catalog
 - New router rules for under-served domains
-- Better-tuned model recommendations per hardware tier
+- Additional delegate categories or specialist model recommendations
+- New background workers (idle-gated jobs) in `server/workers_impl.py`
+- Style adapters for the Ableton composer (`server/style_adapters.py`)
+- Better-tuned model recommendations per hardware tier (edit `server/model_catalog.py` + `server/benchmarks.py`)
+- Additional Kokoro voice mappings
 - Localisation
 - A Linux build path
 

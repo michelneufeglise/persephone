@@ -5,6 +5,7 @@ import { Copy, Check } from 'lucide-react'
 import { Mermaid } from './Mermaid'
 import { SketchBorder } from './SketchBorder'
 import { OrnamentalDivider } from './OrnamentalDivider'
+import { withInlineIcons } from './InlineIcons'
 import { clsx } from 'clsx'
 
 interface RichMarkdownProps {
@@ -42,7 +43,7 @@ function buildComponents(variant: 'chat' | 'report'): Components {
                 background: 'linear-gradient(180deg, var(--accent), var(--holo))',
                 boxShadow: '0 0 10px var(--accent-glow)',
               }} />
-        {children}
+        {withInlineIcons(children)}
       </h1>
     ),
 
@@ -58,7 +59,7 @@ function buildComponents(variant: 'chat' | 'report'): Components {
                 background: 'radial-gradient(circle at 30% 30%, var(--holo), var(--accent))',
                 boxShadow: '0 0 8px var(--accent-glow)',
               }} />
-            <span>{children}</span>
+            <span>{withInlineIcons(children)}</span>
           </h2>
         </>
       )
@@ -67,7 +68,7 @@ function buildComponents(variant: 'chat' | 'report'): Components {
     h3: ({ children }) => (
       <h3 className="font-display text-lg text-[var(--text-primary)] mt-4 mb-2 font-semibold tracking-tight">
         <span className="text-[var(--accent)] mr-2">⊹</span>
-        {children}
+        {withInlineIcons(children)}
       </h3>
     ),
 
@@ -83,7 +84,7 @@ function buildComponents(variant: 'chat' | 'report'): Components {
           'leading-relaxed my-3.5 text-[var(--text-primary)]',
           apply && 'rich-md__lede',
         )}>
-          {children}
+          {withInlineIcons(children)}
         </p>
       )
     },
@@ -102,7 +103,7 @@ function buildComponents(variant: 'chat' | 'report'): Components {
           style={{ color: 'var(--accent)', opacity: 0.55 }}>“</span>
         <span className="absolute left-1.5 top-2 bottom-2 w-[2px] rounded-full"
           style={{ background: 'linear-gradient(180deg, var(--accent), transparent)' }} />
-        {children}
+        {withInlineIcons(children)}
       </blockquote>
     ),
 
@@ -123,7 +124,7 @@ function buildComponents(variant: 'chat' | 'report'): Components {
       return isOrdered ? (
         <li className="relative pl-9 leading-relaxed text-[var(--text-primary)]">
           <span className="rich-md__num" />
-          {children}
+          {withInlineIcons(children)}
         </li>
       ) : (
         <li className="relative pl-5 leading-relaxed text-[var(--text-primary)]">
@@ -133,7 +134,7 @@ function buildComponents(variant: 'chat' | 'report'): Components {
               background: 'linear-gradient(135deg, var(--accent), var(--holo))',
               boxShadow: '0 0 6px var(--accent-glow)',
             }} />
-          {children}
+          {withInlineIcons(children)}
         </li>
       )
     },
@@ -187,19 +188,19 @@ function buildComponents(variant: 'chat' | 'report'): Components {
     ),
     th: ({ children }) => (
       <th className="text-left px-2 py-1.5 font-semibold text-[var(--text-primary)] text-[11px] uppercase tracking-wider">
-        {children}
+        {withInlineIcons(children)}
       </th>
     ),
     td: ({ children }) => (
-      <td className="px-2 py-1.5 align-top text-[var(--text-secondary)]">{children}</td>
+      <td className="px-2 py-1.5 align-top text-[var(--text-secondary)]">{withInlineIcons(children)}</td>
     ),
 
     strong: ({ children }) => (
-      <strong className="font-semibold text-[var(--text-primary)]">{children}</strong>
+      <strong className="font-semibold text-[var(--text-primary)]">{withInlineIcons(children)}</strong>
     ),
 
     em: ({ children }) => (
-      <em className="font-display-italic text-[var(--text-primary)]">{children}</em>
+      <em className="font-display-italic text-[var(--text-primary)]">{withInlineIcons(children)}</em>
     ),
   }
 }

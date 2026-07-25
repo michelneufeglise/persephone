@@ -72,6 +72,25 @@ MODELS: list[dict] = [
         "size_gb": 7.7, "tiers": ["ultra", "high", "mid"],
     },
     {
+        # DeepSeek-OCR (3B) — a compact specialised OCR VLM. The community
+        # "unlimited-ocr" quant strips the token-cap so it can read very
+        # long documents in one pass. Ollama registers it with the
+        # deepseek2-ocr architecture; capabilities include vision.
+        "id": "frob/unlimited-ocr:q8_0", "name": "DeepSeek-OCR 3B · Unlimited (Q8)",
+        "family": "DeepSeek",
+        "params": "3B", "ram_min_gb": 5, "quant": "Q8_0",
+        "category": "ocr",
+        "description": (
+            "DeepSeek-OCR 3B in a community 'unlimited' variant that removes "
+            "the output-token cap — perfect for very long documents in one "
+            "pass. Q8 preserves fine text detail on receipts, forms, and dense "
+            "scans."
+        ),
+        "tags": ["ocr", "long-context", "q8", "deepseek", "documents"],
+        "hf_url": "https://huggingface.co/deepseek-ai/DeepSeek-OCR",
+        "size_gb": 4.0, "tiers": ["ultra", "high", "mid", "low"],
+    },
+    {
         "id": "glm-ocr:latest", "name": "GLM-OCR", "family": "Zhipu / Tsinghua",
         "params": "~4B", "ram_min_gb": 3, "quant": "Q4_K_M",
         "category": "ocr",
@@ -146,6 +165,23 @@ MODELS: list[dict] = [
         "tags": ["handwriting", "historical", "high-quality"],
         "hf_url": "https://huggingface.co/Qwen/Qwen2.5-VL-32B-Instruct",
         "size_gb": 20.0, "tiers": ["ultra", "high"],
+    },
+    {
+        # DeepSeek-OCR ('unlimited' variant) also serves handwriting well —
+        # its DocOwl-derived training data includes handwritten pages, and
+        # the removed token cap helps with long letter transcription.
+        "id": "frob/unlimited-ocr:q8_0", "name": "DeepSeek-OCR 3B (Handwriting)",
+        "family": "DeepSeek",
+        "params": "3B", "ram_min_gb": 5, "quant": "Q8_0",
+        "category": "handwriting",
+        "description": (
+            "Small, fast handwriting reader from DeepSeek. Community "
+            "'unlimited' variant removes the output-token cap so it can "
+            "transcribe multi-page letters or notebook pages in one call."
+        ),
+        "tags": ["handwriting", "notes", "long-form", "q8", "deepseek"],
+        "hf_url": "https://huggingface.co/deepseek-ai/DeepSeek-OCR",
+        "size_gb": 4.0, "tiers": ["ultra", "high", "mid", "low"],
     },
 
     # ── Tables — Excel, spreadsheets, structured data extraction ───────────
@@ -497,6 +533,24 @@ MODELS: list[dict] = [
         "tags": ["vision", "efficient", "ocr"],
         "hf_url": "https://huggingface.co/openbmb/MiniCPM-V-2_6",
         "size_gb": 5.5, "tiers": ["ultra", "high", "mid", "low"],
+    },
+    {
+        # DeepSeek-OCR ('unlimited' variant) — has a general vision path in
+        # addition to its OCR specialty, so it's a reasonable low-RAM vision
+        # option when a task is primarily text-in-image.
+        "id": "frob/unlimited-ocr:q8_0", "name": "DeepSeek-OCR 3B (Vision)",
+        "family": "DeepSeek",
+        "params": "3B", "ram_min_gb": 5, "quant": "Q8_0",
+        "category": "vision",
+        "description": (
+            "Compact DeepSeek vision model with the 'unlimited' community "
+            "variant (no output-token cap). Best when the task is dense text "
+            "extraction from an image; general natural-image scenes are better "
+            "served by MiniCPM-V or Qwen2.5-VL."
+        ),
+        "tags": ["vision", "ocr-first", "small", "q8", "deepseek"],
+        "hf_url": "https://huggingface.co/deepseek-ai/DeepSeek-OCR",
+        "size_gb": 4.0, "tiers": ["ultra", "high", "mid", "low"],
     },
     {
         "id": "qwen2.5vl:7b", "name": "Qwen 2.5 VL 7B", "family": "Alibaba / Qwen",
