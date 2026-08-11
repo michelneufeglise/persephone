@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { AppSettings, Conversation, Message, OllamaModel } from '@/types'
+import type { Flow } from '@/types/flows'
 import { nanoid } from './nanoid'
 
 /**
@@ -194,8 +195,8 @@ interface AppState {
   setIsSpeaking: (v: boolean) => void
   audioLevel: number
   setAudioLevel: (v: number) => void
-  currentView: 'chat' | 'reels' | 'documents' | 'music' | 'settings' | 'memory' | 'research' | 'workers' | 'tasks'
-  setCurrentView: (v: 'chat' | 'reels' | 'documents' | 'music' | 'settings' | 'memory' | 'research' | 'workers' | 'tasks') => void
+  currentView: 'chat' | 'reels' | 'documents' | 'music' | 'settings' | 'memory' | 'research' | 'workers' | 'tasks' | 'flows'
+  setCurrentView: (v: 'chat' | 'reels' | 'documents' | 'music' | 'settings' | 'memory' | 'research' | 'workers' | 'tasks' | 'flows') => void
   voicePanelOpen: boolean
   setVoicePanelOpen: (v: boolean) => void
 
@@ -216,6 +217,16 @@ interface AppState {
 
   // New conversation helper
   createNewConversation: () => string
+
+  // Flows — visual workflow builder
+  flows: Flow[]
+  activeFlowId: string | null
+  createFlow: (flow: Flow) => void
+  deleteFlow: (id: string) => void
+  setActiveFlow: (id: string | null) => void
+  updateFlow: (id: string, patch: Partial<Flow>) => void
+  setFlowNodes: (id: string, nodes: Flow['nodes']) => void
+  setFlowEdges: (id: string, edges: Flow['edges']) => void
 }
 
 export const useAppStore = create<AppState>()(
@@ -435,6 +446,45 @@ export const useAppStore = create<AppState>()(
         }))
         return id
       },
+
+      // Flows
+      flows: [],
+      activeFlowId: null,
+
+      createFlow: flow =>
+        set(s => ({
+          flows: [flow, ...s.flows],
+          activeFlowId: flow.id,
+        })),
+
+      deleteFlow: id =>
+        set(s => ({
+          flows: s.flows.filter(f => f.id !== id),
+          activeFlowId: s.activeFlowId === id ? (s.flows[0]?.id ?? null) : s.activeFlowId,
+        })),
+
+      setActiveFlow: id => set({ activeFlowId: id }),
+
+      updateFlow: (id, patch) =>
+        set(s => ({
+          flows: s.flows.map(f =>
+            f.id === id ? { ...f, ...patch, updatedAt: Date.now() } : f,
+          ),
+        })),
+
+      setFlowNodes: (id, nodes) =>
+        set(s => ({
+          flows: s.flows.map(f =>
+            f.id === id ? { ...f, nodes, updatedAt: Date.now() } : f,
+          ),
+        })),
+
+      setFlowEdges: (id, edges) =>
+        set(s => ({
+          flows: s.flows.map(f =>
+            f.id === id ? { ...f, edges, updatedAt: Date.now() } : f,
+          ),
+        })),
     }),
     {
       name: 'persephone-store',
@@ -447,6 +497,8 @@ export const useAppStore = create<AppState>()(
         account: state.account,
         ornithMode: state.ornithMode,
         ornithPrev: state.ornithPrev,
+        flows: state.flows,
+        activeFlowId: state.activeFlowId,
       }),
       version: 1,
       migrate: (persisted, version) => {

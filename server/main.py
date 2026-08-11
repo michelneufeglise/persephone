@@ -17,7 +17,7 @@ import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator
+from typing import Any, AsyncIterator
 
 import httpx
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
@@ -45,6 +45,7 @@ import delegate as _delegate
 import skills as _skills
 import planner as _planner
 import read_bridge as _read_bridge
+import flow_code as _flow_code
 from dataclasses import dataclass
 
 
@@ -5064,6 +5065,18 @@ async def planner_available():
 def uuid_hex() -> str:
     import uuid as _uuid
     return _uuid.uuid4().hex[:14]
+
+
+# ── /api/flows — visual node-based workflow builder ──────────────────────────
+class FlowRunCodeRequest(BaseModel):
+    code: str
+    input: Any = None
+
+
+@app.post("/api/flows/run-code")
+async def flows_run_code(req: FlowRunCodeRequest):
+    """Execute user TypeScript code in a Node subprocess."""
+    return await _flow_code.run_user_code(req.code, req.input)
 
 
 # ── Serve built frontend (production) ─────────────────────────────────────────
