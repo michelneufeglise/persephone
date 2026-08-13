@@ -8,8 +8,12 @@
     "name": "Michel Neufeglise"
   },
   "main": "electron/main.cjs",
+  "engines": {
+    "node": ">=20.19.0 <25"
+  },
   "scripts": {
     "postinstall": "node scripts/ensure-electron.mjs",
+    "bootstrap": "node scripts/install.mjs",
     "dev": "node scripts/dev.mjs",
     "build": "tsc && vite build",
     "preview": "vite preview",

@@ -14,6 +14,7 @@ import { spawn, execSync, spawnSync } from 'node:child_process'
 import net from 'node:net'
 import path from 'node:path'
 import { existsSync } from 'node:fs'
+import { resolvePython } from './python-path.mjs'
 
 const API_PORT  = 8000
 const VITE_PORT = 5173
@@ -114,7 +115,7 @@ async function main() {
 
   log(`\n${C.dim}Starting services…${C.reset}\n`)
 
-  const pyCmd = process.platform === 'win32' ? 'python' : 'python3'
+  const pyCmd = resolvePython()
   const api = spawn(pyCmd, ['server/main.py'], {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, PYTHONUNBUFFERED: '1' },

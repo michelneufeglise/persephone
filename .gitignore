@@ -2,6 +2,7 @@ node_modules
 dist
 dist-electron
 .python-cache
+.venv
 build-resources
 server/__pycache__
 server/persephone.db
