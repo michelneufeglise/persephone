@@ -4,7 +4,7 @@ import { PersephoneIcon } from '@/components/PersephoneIcon'
 import { ThinkingPanel } from './ThinkingPanel'
 import { ToolCallList } from './ToolCallList'
 import type { Message } from '@/types'
-import { Volume2, Copy, Check, Bot, ArrowUpRight, FileDown, Loader2 } from 'lucide-react'
+import { Volume2, Copy, Check, Bot, ArrowUpRight, FileDown, Loader2, FileText } from 'lucide-react'
 import { useState } from 'react'
 
 interface MessageBubbleProps {
@@ -197,6 +197,24 @@ export function MessageBubble({ message, onSpeak, isLatest }: MessageBubbleProps
             </>
           )}
         </div>
+
+        {/* Attachments — render as chips below the message content */}
+        {message.attachments && message.attachments.length > 0 && (
+          <div className="flex flex-wrap gap-2 mt-2">
+            {message.attachments.map((a, i) => (
+              <div key={i} className="flex items-center gap-1.5">
+                {a.kind === 'image' && a.preview ? (
+                  <img src={a.preview} alt={a.name} className="w-16 h-16 rounded-lg object-cover border border-[var(--border)]" />
+                ) : (
+                  <div className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border)]">
+                    <FileText className="w-3.5 h-3.5 text-[var(--text-muted)]" />
+                    <span className="text-xs text-[var(--text-secondary)] truncate max-w-[150px]">{a.name}</span>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
 
         {/* Actions + tok/s */}
         {!message.isStreaming && message.content && (

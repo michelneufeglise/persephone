@@ -4,6 +4,7 @@ import { Trash2 } from 'lucide-react'
 import { useAppStore } from '@/store/appStore'
 import { PersephoneIcon } from '@/components/PersephoneIcon'
 import { streamChat } from '@/lib/ollama'
+import { uploadDocument } from '@/lib/idp'
 import {
   enqueueTTS, stopTTS, extractNewSentences, extractTail,
   type SentenceCursor,
@@ -112,18 +113,59 @@ export function ChatWindow() {
     )
   }, [])
 
-  async function handleSend(text: string) {
+  async function handleSend(text: string, files?: File[]) {
     if (!activeConversationId) return
     const convId = activeConversationId
     // Refuse if THIS tab is already generating — but a stream in a
     // different tab is fine.
     if (isConvGenerating(convId)) return
 
+    // Process file attachments
+    const attachments: NonNullable<Message['attachments']> = []
+    const images: string[] = []
+    let attachedText = ''
+
+    if (files && files.length > 0) {
+      for (const file of files) {
+        try {
+          if (file.type.startsWith('image/')) {
+            // Read image as data URL
+            const dataUrl = await new Promise<string>((res, rej) => {
+              const r = new FileReader()
+              r.onload = () => res(String(r.result))
+              r.onerror = rej
+              r.readAsDataURL(file)
+            })
+            // Strip data:...;base64, prefix
+            const base64 = dataUrl.split(',')[1]
+            images.push(base64)
+            attachments.push({ name: file.name, kind: 'image', preview: dataUrl })
+          } else {
+            // Upload document via IDP
+            const doc = await uploadDocument(file)
+            if (doc) {
+              attachedText += `\n\n[Attached document: ${file.name}]\n${(doc.text || '').substring(0, 20000)}\n`
+              attachments.push({ name: file.name, kind: 'doc' })
+            }
+          }
+        } catch (err) {
+          console.error(`Failed to process file ${file.name}:`, err)
+        }
+      }
+    }
+
+    const finalUserContent = text + attachedText
+
     const userMsg: Message = {
       id: nanoid(),
       role: 'user',
-      content: text,
+      content: finalUserContent,
       timestamp: Date.now(),
+      attachments: attachments.length ? attachments : undefined,
+    }
+    // Attach images to the message for backend processing
+    if (images.length) {
+      (userMsg as any).images = images
     }
     addMessage(convId, userMsg)
 

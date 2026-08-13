@@ -48,7 +48,11 @@ export async function* streamChat(
 ): AsyncGenerator<StreamChunk> {
   const ollamaMessages = [
     ...(systemPrompt ? [{ role: 'system', content: systemPrompt }] : []),
-    ...messages.map(m => ({ role: m.role, content: m.content })),
+    ...messages.map(m => {
+      const mm: any = { role: m.role, content: m.content }
+      if ((m as any).images && (m as any).images.length) mm.images = (m as any).images
+      return mm
+    }),
   ]
 
   // Hardware-tuned options merged with user settings. `numThread <= 0` means

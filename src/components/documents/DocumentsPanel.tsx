@@ -104,7 +104,7 @@ export function DocumentsPanel() {
             ref={fileRef}
             className="hidden"
             onChange={e => e.target.files?.[0] && handleUpload(e.target.files[0])}
-            accept=".pdf,.docx,.xlsx,.csv,.txt,.md,.png,.jpg,.jpeg"
+            accept=".pdf,.docx,.doc,.xlsx,.csv,.txt,.md,.rtf,.pptx,.odt,.html,.htm,.json,.xml,.png,.jpg,.jpeg,.webp,.gif"
           />
           {uploading ? (
             <div className="flex flex-col items-center gap-3 text-[var(--accent)]">
@@ -116,7 +116,7 @@ export function DocumentsPanel() {
             <>
               <Upload className="w-10 h-10 text-[var(--accent)] mx-auto mb-3" />
               <p className="text-sm text-[var(--text-primary)] font-medium">Drop a document or click to upload</p>
-              <p className="text-xs text-[var(--text-muted)] mt-1.5">PDF, DOCX, XLSX, CSV, TXT, MD, PNG, JPEG</p>
+              <p className="text-xs text-[var(--text-muted)] mt-1.5">PDF, Word (DOC/DOCX), PPTX, ODT, XLSX, CSV, RTF, HTML, TXT, MD, JSON, images</p>
             </>
           )}
         </div>

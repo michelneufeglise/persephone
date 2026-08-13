@@ -1793,12 +1793,16 @@ async def _stream_ollama_chat(
     # whether tools are coming along.
     if auto_route:
         try:
+            has_image = any(
+                isinstance(m, dict) and m.get("images") for m in raw_messages
+            )
             installed = await _installed_models()
             chosen, reason = await _route_model(
                 preferred=model,
                 messages=raw_messages,
                 installed=installed,
                 tools_attached=bool(tools),
+                has_image=has_image,
                 conv_id=conv_id,
             )
             if chosen and chosen != model:

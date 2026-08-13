@@ -40,6 +40,8 @@ export interface Message {
    *     delegate_model, delegate_category }
    */
   meta?: Record<string, unknown>
+  /** User-attached files (images/docs) for display in the bubble. */
+  attachments?: { name: string; kind: 'image' | 'doc'; preview?: string }[]
 }
 
 export interface DelegatedTask {

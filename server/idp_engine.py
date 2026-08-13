@@ -207,6 +207,18 @@ def _detect_mime(filename: str) -> str:
             "png": "image/png",
             "jpg": "image/jpeg",
             "jpeg": "image/jpeg",
+            "doc": "application/msword",
+            "rtf": "application/rtf",
+            "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            "odt": "application/vnd.oasis.opendocument.text",
+            "html": "text/html",
+            "htm": "text/html",
+            "json": "application/json",
+            "xml": "application/xml",
+            "yaml": "text/yaml",
+            "yml": "text/yaml",
+            "log": "text/plain",
+            "tsv": "text/tab-separated-values",
         }
         mime = mime_map.get(ext, "application/octet-stream")
     return mime
@@ -269,6 +281,130 @@ def _extract_csv(path: Path) -> list[str]:
         return [path.read_text(errors="ignore")]
 
 
+def _extract_pptx(path: Path) -> list[str]:
+    """Pull slide text from a .pptx (OOXML zip) without python-pptx."""
+    import zipfile, re as _re
+    slides: list[str] = []
+    try:
+        with zipfile.ZipFile(path) as z:
+            names = sorted(
+                (n for n in z.namelist() if _re.match(r"ppt/slides/slide\d+\.xml$", n)),
+                key=lambda n: int(_re.search(r"(\d+)", n).group(1)),
+            )
+            for n in names:
+                xml = z.read(n).decode("utf-8", errors="ignore")
+                texts = _re.findall(r"<a:t>(.*?)</a:t>", xml, _re.DOTALL)
+                body = "\n".join(t.strip() for t in texts if t.strip())
+                slides.append(body)
+    except Exception as exc:
+        return [f"[pptx extract error: {exc}]"]
+    return slides or [""]
+
+
+def _strip_xml_tags(xml: str) -> str:
+    import re as _re
+    # keep paragraph/line breaks then drop all tags
+    xml = _re.sub(r"</(w:p|text:p|p)>", "\n", xml)
+    xml = _re.sub(r"<[^>]+>", "", xml)
+    import html as _html
+    return _html.unescape(xml)
+
+
+def _extract_odt(path: Path) -> list[str]:
+    """Extract text from an .odt (ODF zip) content.xml without odfpy."""
+    import zipfile
+    try:
+        with zipfile.ZipFile(path) as z:
+            xml = z.read("content.xml").decode("utf-8", errors="ignore")
+        text = _strip_xml_tags(xml)
+        lines = [ln.strip() for ln in text.splitlines()]
+        return ["\n".join(ln for ln in lines if ln)]
+    except Exception as exc:
+        return [f"[odt extract error: {exc}]"]
+
+
+def _extract_html(path: Path) -> list[str]:
+    """Strip tags/script/style from HTML using stdlib html.parser."""
+    from html.parser import HTMLParser
+
+    class _Stripper(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.parts: list[str] = []
+            self._skip = False
+        def handle_starttag(self, tag, attrs):
+            if tag in ("script", "style"): self._skip = True
+            if tag in ("p", "br", "div", "li", "tr", "h1", "h2", "h3", "h4"):
+                self.parts.append("\n")
+        def handle_endtag(self, tag):
+            if tag in ("script", "style"): self._skip = False
+        def handle_data(self, data):
+            if not self._skip and data.strip():
+                self.parts.append(data)
+
+    try:
+        raw = path.read_text(errors="ignore")
+        p = _Stripper(); p.feed(raw)
+        text = "".join(p.parts)
+        lines = [ln.strip() for ln in text.splitlines()]
+        return ["\n".join(ln for ln in lines if ln)]
+    except Exception as exc:
+        return [f"[html extract error: {exc}]"]
+
+
+def _strip_rtf(text: str) -> str:
+    """Minimal RTF de-control-word stripper (stdlib only)."""
+    import re as _re
+    # unicode escapes \uNNNN?  -> char
+    def _u(m):
+        try: return chr(int(m.group(1)))
+        except Exception: return ""
+    text = _re.sub(r"\\u(-?\d+)\??", _u, text)
+    text = _re.sub(r"\\\'([0-9a-fA-F]{2})", lambda m: chr(int(m.group(1), 16)), text)
+    text = _re.sub(r"\\par[d]?\b", "\n", text)
+    text = _re.sub(r"\\line\b", "\n", text)
+    text = _re.sub(r"\\[a-zA-Z]+-?\d* ?", "", text)  # other control words
+    text = text.replace("{", "").replace("}", "")
+    return text
+
+
+def _extract_rtf(path: Path) -> list[str]:
+    try:
+        raw = path.read_text(errors="ignore")
+        out = _strip_rtf(raw)
+        lines = [ln.strip() for ln in out.splitlines()]
+        return ["\n".join(ln for ln in lines if ln)]
+    except Exception as exc:
+        return [f"[rtf extract error: {exc}]"]
+
+
+def _extract_doc(path: Path) -> list[str]:
+    """Best-effort legacy .doc extraction. Tries antiword/soffice CLI if
+    present, otherwise salvages readable text runs from the binary. Result
+    may be imperfect for legacy binary Word files."""
+    import shutil as _sh, subprocess as _sp, re as _re
+    for tool, args in (("antiword", [str(path)]),):
+        exe = _sh.which(tool)
+        if exe:
+            try:
+                out = _sp.run([exe, *args], capture_output=True, timeout=30)
+                txt = out.stdout.decode("utf-8", errors="ignore").strip()
+                if txt:
+                    return [txt]
+            except Exception:
+                pass
+    # Fallback: pull printable ASCII/UTF-8 runs of length >= 4
+    try:
+        data = path.read_bytes()
+        runs = _re.findall(rb"[\x20-\x7e\r\n\t]{4,}", data)
+        text = "\n".join(r.decode("latin-1", errors="ignore") for r in runs)
+        text = _re.sub(r"\n{3,}", "\n\n", text).strip()
+        note = "[note: legacy .doc — text salvaged best-effort; formatting lost]\n\n"
+        return [note + text] if text else ["[doc extract: no readable text found]"]
+    except Exception as exc:
+        return [f"[doc extract error: {exc}]"]
+
+
 def _extract_image(path: Path, doc_dir: Path) -> list[str]:
     """Single-page 'document' for raw images. OCR happens on demand."""
     out = doc_dir / "page_0001.png"
@@ -300,6 +436,16 @@ async def ingest_file(filename: str, data: bytes) -> Document:
             meta.update(sheet_meta)
         elif mime == "text/csv" or filename.lower().endswith(".csv"):
             page_texts = _extract_csv(raw_path)
+        elif mime == "application/vnd.openxmlformats-officedocument.presentationml.presentation" or filename.lower().endswith(".pptx"):
+            page_texts = _extract_pptx(raw_path)
+        elif mime == "application/vnd.oasis.opendocument.text" or filename.lower().endswith(".odt"):
+            page_texts = _extract_odt(raw_path)
+        elif mime == "text/html" or filename.lower().endswith((".html", ".htm")):
+            page_texts = _extract_html(raw_path)
+        elif mime in ("application/rtf", "text/rtf") or filename.lower().endswith(".rtf"):
+            page_texts = _extract_rtf(raw_path)
+        elif mime == "application/msword" or filename.lower().endswith(".doc"):
+            page_texts = _extract_doc(raw_path)
         elif mime.startswith("image/"):
             page_images = _extract_image(raw_path, doc_dir)
             page_texts  = [""]    # image-only — OCR fills this in on demand
