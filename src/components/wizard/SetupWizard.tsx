@@ -24,6 +24,8 @@ const STEPS = [
   { id: 'docs',        label: 'Documents'    },
   { id: 'handwriting', label: 'Handwriting'  },
   { id: 'tables',      label: 'Spreadsheets' },
+  { id: 'embed',       label: 'Embeddings'   },
+  { id: 'multidoc',    label: 'Multi-Doc'    },
   { id: 'tts',         label: 'Voice'        },
   { id: 'mcp',         label: 'Tools'        },
   { id: 'theme',       label: 'Theme'        },
@@ -47,6 +49,7 @@ export function SetupWizard() {
   const [docsModel, setDocsModel]               = useState('')
   const [handwritingModel, setHandwritingModel] = useState('')
   const [tablesModel, setTablesModel]           = useState('')
+  const [multidocModel, setMultidocModel]       = useState('')
   const [judgeModel, setJudgeModel]             = useState('qwen2.5:1.5b')
   const [ttsVoice, setTtsVoice]         = useState('af_heart')
   const [ttsSpeed, setTtsSpeed]         = useState(1.0)
@@ -95,6 +98,7 @@ export function SetupWizard() {
           docs_model:        docsModel,
           handwriting_model: handwritingModel,
           tables_model:      tablesModel,
+          multidoc_model:    multidocModel,
           judge_model:       judgeModel,
           tts_voice:         ttsVoice,
           tts_speed:         ttsSpeed,
@@ -284,6 +288,26 @@ export function SetupWizard() {
                 />
               )}
               {step === 11 && (
+                <ModelStep
+                  title="Embedding Model"
+                  subtitle="Powers semantic search, document RAG, and long-term memory. mxbai-embed-large is a solid default."
+                  category="embed"
+                  selectedId={embedModel}
+                  onSelect={setEmbedModel}
+                  ramGb={ramGb}
+                />
+              )}
+              {step === 12 && (
+                <ModelStep
+                  title="Multi-Document Query"
+                  subtitle="Pick the model that answers questions across several selected documents at once. A capable long-context chat model works best."
+                  category="chat"
+                  selectedId={multidocModel}
+                  onSelect={setMultidocModel}
+                  ramGb={ramGb}
+                />
+              )}
+              {step === 13 && (
                 <TTSStep
                   voice={ttsVoice}
                   speed={ttsSpeed}
@@ -291,13 +315,13 @@ export function SetupWizard() {
                   onSpeedChange={setTtsSpeed}
                 />
               )}
-              {step === 12 && (
+              {step === 14 && (
                 <MCPStep selected={mcpServers} onChange={setMcpServers} />
               )}
-              {step === 13 && (
+              {step === 15 && (
                 <ThemeStep selected={selectedTheme} onSelect={t => { setTheme(t); applyTheme(t) }} />
               )}
-              {step === 14 && (
+              {step === 16 && (
                 <SummaryStep config={{
                   accountName, accountColor,
                   activeModel, visionModel, codeModel, embedModel,

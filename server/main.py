@@ -37,6 +37,8 @@ import ollama_setup as _ollama
 import ollama_parallel as _ollama_par
 import research as _research
 import research_db as _rdb
+import doc_index as _doc_index
+import ollama_library as _ollama_lib
 import embeddings as _emb
 import comfy_client as _comfy
 import reels_render as _reels
@@ -214,7 +216,12 @@ def _estimate_message_tokens(messages: list[dict]) -> int:
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await _db.init_db()
     await _rdb.init_db()
+    await _doc_index.init_db()
     log.info("Database initialised at %s", _db.DB_PATH)
+    try:
+        _emb.set_embed_model((await _db.get_config("embed_model")) or "")
+    except Exception as exc:
+        log.warning("embed model init failed: %s", exc)
 
     # Pre-load SNAC in background so first TTS request is instant
     loop = asyncio.get_running_loop()
@@ -4034,6 +4041,7 @@ class WizardCompleteRequest(BaseModel):
     docs_model:          str = ""
     handwriting_model:   str = ""
     tables_model:        str = ""
+    multidoc_model:      str = ""
     judge_model:         str = ""
     tts_voice:           str = "tara"
     tts_speed:           float = 1.0
@@ -4055,6 +4063,7 @@ async def setup_complete(req: WizardCompleteRequest):
         ("docs_model",        req.docs_model),
         ("handwriting_model", req.handwriting_model),
         ("tables_model",      req.tables_model),
+        ("multidoc_model",    req.multidoc_model),
         # judge_model drives auto-router classification + background fact
         # extraction. Stored under both keys so both subsystems pick it up.
         ("judge_model",       req.judge_model),
@@ -4066,6 +4075,7 @@ async def setup_complete(req: WizardCompleteRequest):
     ]
     for k, v in pairs:
         await _db.set_config(k, v)
+    _emb.set_embed_model(req.embed_model or "")
     # Drop cached system-prompt addenda so the new account_name (and MCP
     # server list) reach the next chat turn without a 20s cache lag.
     invalidate_context_cache()
@@ -4164,6 +4174,7 @@ async def setup_tts_install():
 _MODEL_ROLE_KEYS = [
     "active_model", "judge_model", "vision_model", "code_model",
     "ocr_model", "docs_model", "handwriting_model", "tables_model",
+    "multidoc_model", "embed_model",
     # Ableton composer roles: standard + deep-reasoning slots. Empty string
     # means "fall back to _PLANNER_PREF / _DEEP_PLANNER_PREF in the composer".
     "ableton_composer_model", "ableton_deep_model",
@@ -4184,6 +4195,8 @@ class ModelRolesUpdate(BaseModel):
     docs_model:             str | None = None
     handwriting_model:      str | None = None
     tables_model:           str | None = None
+    multidoc_model:         str | None = None
+    embed_model:            str | None = None
     ableton_composer_model: str | None = None
     ableton_deep_model:     str | None = None
 
@@ -4193,6 +4206,8 @@ async def update_model_roles(req: ModelRolesUpdate):
     updates = req.model_dump(exclude_unset=True)
     for k, v in updates.items():
         await _db.set_config(k, v or "")
+    if "embed_model" in updates:
+        _emb.set_embed_model(updates["embed_model"] or "")
     # judge_model also drives background fact-extraction; keep both in sync
     # (mirrors the wizard's own setup_complete behaviour).
     if "judge_model" in updates:
@@ -4236,6 +4251,30 @@ async def delete_model(model_name: str):
             json={"name": model_name},
         )
     return {"ok": r.status_code in (200, 204)}
+
+
+# ── /api/models/library — live Ollama library (opt-in outbound fetch) ────────
+@app.get("/api/models/library")
+async def models_library(refresh: bool = False):
+    """
+    Newest publicly-available models for the Download tab. Scrapes
+    ollama.com/library (deliberate opt-in outbound call), merged with the
+    curated catalog and current install state. Falls back to catalog offline.
+    """
+    installed = await _installed_models()
+    return await _ollama_lib.get_library(installed, refresh=refresh)
+
+
+@app.get("/api/models/ps")
+async def models_ps():
+    """Proxy Ollama /api/ps — models currently loaded in memory."""
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        try:
+            r = await client.get(f"{OLLAMA_BASE}/api/ps")
+            r.raise_for_status()
+            return r.json()
+        except Exception:
+            return {"models": []}
 
 
 # ── /api/setup/ollama-parallel — concurrent-tab throughput ─────────────────
@@ -4468,6 +4507,7 @@ async def _resolve_doc_model(category: str = "docs") -> str:
         "docs":        ["docs_model", "vision_model", "ocr_model"],
         "handwriting": ["handwriting_model", "vision_model", "ocr_model"],
         "tables":      ["tables_model", "code_model", "active_model"],
+        "multidoc":    ["multidoc_model", "docs_model", "active_model"],
         "text":        ["active_model"],
     }
     keys = preferred_keys.get(category, ["active_model"])
@@ -4505,6 +4545,10 @@ async def idp_delete(doc_id: str):
     ok = _idp.delete_document(doc_id)
     if not ok:
         raise HTTPException(404, "Document not found")
+    try:
+        await _doc_index.remove_document(doc_id)
+    except Exception as exc:
+        log.warning("doc index cleanup failed for %s: %s", doc_id, exc)
     return {"ok": True}
 
 
@@ -4563,6 +4607,163 @@ async def idp_qa(req: IDPRequest):
         raise HTTPException(400, "question required")
     model = await _resolve_doc_model("docs")
     return {"text": await _run_idp(_idp.qa(doc, model, q)), "model": model}
+
+
+class MultiQARequest(BaseModel):
+    doc_ids:  list[str]
+    question: str
+    auto_ocr: bool = True
+
+
+@app.post("/api/idp/multi-qa")
+async def idp_multi_qa(req: MultiQARequest):
+    """
+    RAG Q&A across MULTIPLE selected documents. Optionally OCRs image-only
+    documents first, (re)indexes each doc into the sqlite-vec doc index, then
+    retrieves the most relevant chunks across the selected set and answers.
+    """
+    if not req.doc_ids:
+        raise HTTPException(400, "doc_ids required")
+    q = (req.question or "").strip()
+    if not q:
+        raise HTTPException(400, "question required")
+
+    docs = [d for d in (_idp.get_document(i) for i in req.doc_ids) if d]
+    if not docs:
+        raise HTTPException(404, "No documents found")
+
+    # 1) Auto-OCR any image-only docs so they have text to index.
+    used_ocr: list[str] = []
+    if req.auto_ocr:
+        ocr_model = await _resolve_doc_model("ocr")
+        for d in docs:
+            if _idp.needs_ocr(d):
+                try:
+                    await _idp.run_ocr(d, ocr_model)
+                    used_ocr.append(d.filename)
+                except RuntimeError as exc:
+                    log.warning("auto-ocr failed for %s: %s", d.filename, exc)
+
+    # 2) (Re)index each document (idempotent via content hash).
+    for d in docs:
+        try:
+            await _doc_index.index_document(d.id, d.text or "")
+        except Exception as exc:
+            log.warning("index failed for %s: %s", d.filename, exc)
+
+    # 3) Retrieve relevant chunks across the selected docs.
+    name_by_id = {d.id: d.filename for d in docs}
+    qvec = await _emb.embed_one(q)
+    hits = await _doc_index.search(qvec, [d.id for d in docs], k=8)
+    contexts = [(name_by_id.get(h["doc_id"], "?"), h["text"]) for h in hits]
+
+    # 4) Answer with the multi-doc model.
+    model = await _resolve_doc_model("multidoc")
+    text = await _run_idp(_idp.multi_qa(model, q, contexts))
+    return {
+        "text":        text,
+        "model":       model,
+        "used_ocr":    used_ocr,
+        "sources":     [d.filename for d in docs],
+        "chunks_used": len(contexts),
+    }
+
+
+# ── Streaming IDP text ops (live token output + thinking + tok/s) ────────────
+def _sse(obj: dict) -> str:
+    return f"data: {json.dumps(obj)}\n\n"
+
+
+_IDP_STREAM_OPS = {"summarize", "qa", "translate", "redact", "humanize"}
+
+
+@app.post("/api/idp/stream/{op}")
+async def idp_stream(op: str, req: IDPRequest):
+    if op not in _IDP_STREAM_OPS:
+        raise HTTPException(404, f"Unknown streamable op: {op}")
+    doc = _idp_guard(req.doc_id)
+    if op == "qa" and not (req.options.get("question") or "").strip():
+        raise HTTPException(400, "question required")
+    model = await _resolve_doc_model("docs" if op == "qa" else "text")
+    prompt = _idp.build_prompt(op, doc, req.options)
+    think = _supports_native_thinking(model)
+
+    async def gen():
+        yield _sse({"phase": "start", "model": model})
+        try:
+            async for ev in _idp.stream_text(model, prompt, think=think):
+                yield _sse(ev)
+        except RuntimeError as exc:
+            yield _sse({"error": str(exc)})
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        gen(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+@app.post("/api/idp/stream/multi-qa")
+async def idp_stream_multi_qa(req: MultiQARequest):
+    if not req.doc_ids:
+        raise HTTPException(400, "doc_ids required")
+    q = (req.question or "").strip()
+    if not q:
+        raise HTTPException(400, "question required")
+    docs = [d for d in (_idp.get_document(i) for i in req.doc_ids) if d]
+    if not docs:
+        raise HTTPException(404, "No documents found")
+    model = await _resolve_doc_model("multidoc")
+    think = _supports_native_thinking(model)
+
+    async def gen():
+        yield _sse({"phase": "start", "model": model})
+        used_ocr: list[str] = []
+        if req.auto_ocr:
+            ocr_model = await _resolve_doc_model("ocr")
+            for d in docs:
+                if _idp.needs_ocr(d):
+                    yield _sse({"phase": "ocr", "detail": d.filename})
+                    try:
+                        await _idp.run_ocr(d, ocr_model)
+                        used_ocr.append(d.filename)
+                    except RuntimeError as exc:
+                        yield _sse({"phase": "ocr_error", "detail": str(exc)})
+        yield _sse({"phase": "indexing"})
+        for d in docs:
+            try:
+                await _doc_index.index_document(d.id, d.text or "")
+            except Exception as exc:
+                log.warning("index failed for %s: %s", d.filename, exc)
+        yield _sse({"phase": "retrieving"})
+        name_by_id = {d.id: d.filename for d in docs}
+        qvec = await _emb.embed_one(q)
+        hits = await _doc_index.search(qvec, [d.id for d in docs], k=8)
+        contexts = [(name_by_id.get(h["doc_id"], "?"), h["text"]) for h in hits]
+        sources = [d.filename for d in docs]
+        yield _sse({"phase": "generating", "chunks_used": len(contexts),
+                    "used_ocr": used_ocr, "sources": sources})
+        if not contexts:
+            yield _sse({"content": "No relevant content was found in the selected documents for that question."})
+            yield _sse({"done": True, "stats": {}, "used_ocr": used_ocr,
+                        "sources": sources, "chunks_used": 0})
+            yield "data: [DONE]\n\n"
+            return
+        prompt = _idp.build_multi_prompt(q, contexts)
+        try:
+            async for ev in _idp.stream_text(model, prompt, think=think, num_predict=1536):
+                if ev.get("done"):
+                    ev = {**ev, "used_ocr": used_ocr, "sources": sources,
+                          "chunks_used": len(contexts)}
+                yield _sse(ev)
+        except RuntimeError as exc:
+            yield _sse({"error": str(exc)})
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        gen(), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @app.post("/api/idp/tables")

@@ -41,6 +41,14 @@ const ROLES = [
     description: 'Extracts tables and writes spreadsheet formulas.',
   },
   {
+    key: 'multidoc_model', label: 'Multi-Document Query', required: false,
+    description: 'Reasons across several selected documents at once (RAG). Used by the Documents panel\'s multi-doc chat. Falls back to Documents/Main Chat.',
+  },
+  {
+    key: 'embed_model', label: 'Embeddings', required: false,
+    description: 'Powers semantic search, document RAG, and memory. Use a dedicated embedding model (e.g. mxbai-embed-large, nomic-embed-text, bge-m3).',
+  },
+  {
     key: 'ableton_composer_model', label: 'Ableton Composer', required: false,
     description: 'The standard model for the Ableton track-first composer + edit chat. Default: qwen3.6:35b-a3b.',
   },
@@ -56,6 +64,7 @@ type RoleValues = Record<RoleKey, string>
 const EMPTY_ROLES: RoleValues = {
   active_model: '', judge_model: '', vision_model: '', code_model: '',
   ocr_model: '', docs_model: '', handwriting_model: '', tables_model: '',
+  multidoc_model: '', embed_model: '',
   ableton_composer_model: '', ableton_deep_model: '',
 }
 
@@ -94,9 +103,15 @@ export function ModelRolesSection() {
     .filter(n => !n.toLowerCase().includes('embed'))
     .sort((a, b) => a.localeCompare(b))
 
+  const embedNames = models
+    .map(m => m.name)
+    .filter(n => n.toLowerCase().includes('embed'))
+    .sort((a, b) => a.localeCompare(b))
+
   function optionsFor(roleKey: RoleKey, current: string) {
-    const opts = installedNames.map(n => ({ value: n, label: n }))
-    if (current && !installedNames.includes(current)) {
+    const source = roleKey === 'embed_model' ? embedNames : installedNames
+    const opts = source.map(n => ({ value: n, label: n }))
+    if (current && !source.includes(current)) {
       opts.unshift({ value: current, label: `${current} (not installed)` })
     }
     const required = ROLES.find(r => r.key === roleKey)?.required

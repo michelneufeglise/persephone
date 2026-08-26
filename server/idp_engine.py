@@ -584,6 +584,78 @@ async def _ollama_text_call(
         raise RuntimeError(f"Could not reach Ollama at {OLLAMA_BASE}: {exc}")
 
 
+async def _prepare_text_model(model: str) -> str:
+    """Resolve/validate a text model the same way _ollama_text_call does."""
+    if not model:
+        installed = await _list_installed_models()
+        chat_candidates = [m for m in installed
+                           if not any(p in m.lower() for p in ("embed", "orpheus"))]
+        if not chat_candidates:
+            raise RuntimeError(
+                "No chat model is configured or installed. "
+                "Install one with `ollama pull qwen2.5:7b` first."
+            )
+        model = chat_candidates[0]
+    if not await _ollama_has_model(model):
+        raise RuntimeError(
+            f"Model '{model}' is not installed in Ollama. "
+            f"Run `ollama pull {model}` from the terminal, then try again."
+        )
+    return model
+
+
+async def stream_text(model: str, prompt: str, *, think: bool = False, num_predict: int = 1536):
+    """Stream a text generation over Ollama /api/chat.
+
+    Yields dicts: {'thinking': str} and/or {'content': str} deltas, then a final
+    {'done': True, 'stats': {...}}. Raises RuntimeError on model/connection errors.
+    """
+    model = await _prepare_text_model(model)
+    payload = {
+        "model":    model,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream":   True,
+        "think":    bool(think),
+        "options":  {
+            "temperature": 0.3,
+            "num_predict": num_predict,
+            "num_thread":  _hw.recommended_num_thread(),
+        },
+    }
+    try:
+        async with httpx.AsyncClient(timeout=600.0) as client:
+            async with client.stream("POST", f"{OLLAMA_BASE}/api/chat", json=payload) as resp:
+                if resp.status_code >= 400:
+                    body = (await resp.aread()).decode("utf-8", "ignore")[:300]
+                    raise RuntimeError(f"Model '{model}' failed (Ollama HTTP {resp.status_code}). {body}")
+                async for line in resp.aiter_lines():
+                    if not line or not line.strip():
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except Exception:
+                        continue
+                    msg = obj.get("message") or {}
+                    th = msg.get("thinking")
+                    if th:
+                        yield {"thinking": th}
+                    ct = msg.get("content")
+                    if ct:
+                        yield {"content": ct}
+                    if obj.get("done"):
+                        ec = obj.get("eval_count") or 0
+                        ed = obj.get("eval_duration") or 0
+                        tps = (ec / (ed / 1e9)) if ed else 0.0
+                        yield {"done": True, "stats": {
+                            "eval_count":        ec,
+                            "tok_per_s":         round(tps, 1),
+                            "total_duration_ms": round((obj.get("total_duration") or 0) / 1e6),
+                        }}
+                        return
+    except httpx.RequestError as exc:
+        raise RuntimeError(f"Could not reach Ollama at {OLLAMA_BASE}: {exc}")
+
+
 # ── IDP operations ────────────────────────────────────────────────────────────
 async def run_ocr(doc: Document, model: str, page_range: tuple[int, int] | None = None) -> str:
     """Run OCR on all (or a slice of) the document's page images."""
@@ -630,6 +702,119 @@ async def qa(doc: Document, model: str, question: str) -> str:
         f"Question: {question}\nAnswer:"
     )
     return await _ollama_text_call(model, prompt, num_predict=1024)
+
+
+def build_prompt(op: str, doc: "Document", options: dict) -> str:
+    """Build the prompt for a streamable single-document text op. Mirrors the
+    non-streaming functions' prompts exactly so streamed + non-streamed output
+    match."""
+    text = (doc.text or "")[:32000]
+    if op == "summarize":
+        style_prompts = {
+            "brief":    "in 3-5 sentences",
+            "detailed": "in 2-3 paragraphs with key facts and conclusions",
+            "bullets":  "as a bullet list of the most important points",
+        }
+        style = options.get("style", "brief")
+        return (
+            f"Summarize the following document {style_prompts.get(style, style_prompts['brief'])}.\n\n"
+            f"--- DOCUMENT ---\n{text}\n--- END ---"
+        )
+    if op == "qa":
+        q = options.get("question", "")
+        return (
+            "Answer the user's question using ONLY the document below. "
+            "If the answer is not in the document, say so plainly.\n\n"
+            f"--- DOCUMENT ---\n{text}\n--- END ---\n\n"
+            f"Question: {q}\nAnswer:"
+        )
+    if op == "translate":
+        target = options.get("target", "French")
+        text_for_translate = (doc.text or "")[:24000]
+        return (
+            f"Translate the following document into {target}. Preserve formatting and structure. "
+            "Output ONLY the translation.\n\n"
+            f"--- DOCUMENT ---\n{text_for_translate}\n--- END ---"
+        )
+    if op == "redact":
+        cats = options.get("categories", [])
+        cats_str = ", ".join(cats) if cats else "personal names, addresses, phone numbers, emails, IDs"
+        text_for_redact = (doc.text or "")[:24000]
+        return (
+            f"Redact the following from the document by replacing each occurrence with [REDACTED]: {cats_str}.\n"
+            "Output the full document with redactions applied.\n\n"
+            f"--- DOCUMENT ---\n{text_for_redact}\n--- END ---"
+        )
+    if op == "humanize":
+        tone = options.get("tone", "natural")
+        intensity = options.get("intensity", "medium")
+        tone_hint = {
+            "natural":       "warm, conversational, but still polished",
+            "casual":        "relaxed and informal, like a friendly email",
+            "professional":  "clear and confident, like a well-written business memo",
+            "academic":      "considered and precise, but without stiff or robotic phrasing",
+        }.get(tone, "warm, conversational, but still polished")
+        intensity_hint = {
+            "light":  "Keep most of the wording. Only smooth out the most obvious AI tics (repetitive transitions, over-hedging, empty filler).",
+            "medium": "Substantially rework sentences so the rhythm varies. Break up parallel structures. Cut hollow phrases. Prefer concrete verbs and specific nouns.",
+            "heavy":  "Rewrite freely. Vary sentence length dramatically (some short, some long). Use idioms where natural. Add small imperfections a real writer would leave (a hedge, a slight tangent, an aside). Never sound formulaic.",
+        }.get(intensity, "Substantially rework sentences so the rhythm varies. Break up parallel structures. Cut hollow phrases. Prefer concrete verbs and specific nouns.")
+        text_for_humanize = (doc.text or "")[:24000]
+        return (
+            "You are rewriting a passage so it reads as if a real human wrote it — not an AI. "
+            f"Target tone: {tone_hint}.\n\n"
+            f"{intensity_hint}\n\n"
+            "Specifically:\n"
+            "- Avoid AI tells: 'delve', 'furthermore', 'moreover', 'in conclusion', 'it is important to note', "
+            "'navigate the landscape', 'a testament to', 'in today's fast-paced world', 'tapestry', 'realm', "
+            "'crucial', 'pivotal', 'multifaceted', 'holistic'.\n"
+            "- Do not open with 'In today's', 'In the world of', 'It is important', 'Let's explore', or 'This article'.\n"
+            "- Vary sentence length. Include at least one short sentence per paragraph.\n"
+            "- Prefer active voice. Use contractions where natural (it's, don't, we're).\n"
+            "- Cut redundant qualifiers (very, really, quite, extremely) unless they add real meaning.\n"
+            "- Keep every fact, number, name, and quote intact. Do not invent details.\n"
+            "- Preserve the original language of the document. Do not translate.\n"
+            "- Preserve headings, lists, and paragraph breaks.\n\n"
+            "Output ONLY the rewritten text — no preamble, no explanation, no markdown fences.\n\n"
+            f"--- DOCUMENT ---\n{text_for_humanize}\n--- END ---"
+        )
+    raise ValueError(f"unknown streamable op: {op}")
+
+
+def needs_ocr(doc: "Document") -> bool:
+    """True when a document has page images but essentially no extracted text
+    (image-only PDF / scan) — i.e. OCR is required before it can be queried."""
+    return bool(doc.page_images) and len((doc.text or "").strip()) < 40
+
+
+def build_multi_prompt(question: str, contexts: list[tuple[str, str]]) -> str:
+    """Prompt for multi-document RAG Q&A over ranked (filename, chunk) tuples."""
+    if not contexts:
+        return ""
+    blocks = []
+    for i, (fname, chunk) in enumerate(contexts, 1):
+        blocks.append(f"[{i}] (source: {fname})\n{chunk}")
+    joined = "\n\n".join(blocks)
+    return (
+        "You are answering a question using ONLY the numbered excerpts below, "
+        "which are drawn from several documents. Cite the source filename(s) you "
+        "used in your answer. If the answer is not present in the excerpts, say so "
+        "plainly.\n\n"
+        f"--- EXCERPTS ---\n{joined}\n--- END ---\n\n"
+        f"Question: {question}\nAnswer:"
+    )
+
+
+async def multi_qa(model: str, question: str, contexts: list[tuple[str, str]]) -> str:
+    """
+    Answer a question over retrieved chunks drawn from MULTIPLE documents.
+    `contexts` is a list of (filename, chunk_text) tuples (already ranked by
+    relevance). Builds a cited prompt and calls the configured text model.
+    """
+    if not contexts:
+        return "No relevant content was found in the selected documents for that question."
+    prompt = build_multi_prompt(question, contexts)
+    return await _ollama_text_call(model, prompt, num_predict=1536)
 
 
 async def extract_tables(doc: Document, model: str) -> list[dict]:

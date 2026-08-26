@@ -1,10 +1,24 @@
 import type { OllamaModel, Message, ModelSettings } from '@/types'
 
-export async function fetchModels(): Promise<OllamaModel[]> {
-  const res = await fetch('/api/models')
-  if (!res.ok) throw new Error('Failed to fetch models')
-  const data = await res.json()
-  return data.models ?? []
+export async function fetchModels(retries = 4, delayMs = 700): Promise<OllamaModel[]> {
+  let lastErr: unknown = null
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const res = await fetch('/api/models')
+      if (res.ok) {
+        const data = await res.json()
+        return data.models ?? []
+      }
+      // 5xx during boot (e.g. 502 "Ollama unreachable") is transient — retry.
+      lastErr = new Error(`Failed to fetch models (HTTP ${res.status})`)
+    } catch (e) {
+      lastErr = e  // network/refused while the backend is still starting
+    }
+    if (attempt < retries) {
+      await new Promise(r => setTimeout(r, delayMs))
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error('Failed to fetch models')
 }
 
 export interface TokStats {
@@ -189,4 +203,90 @@ export function parseThinking(text: string): { thinking: string; response: strin
   const m = text.match(/^<think>([\s\S]*?)<\/think>([\s\S]*)$/s)
   if (m) return { thinking: m[1].trim(), response: m[2].trim() }
   return { thinking: '', response: text }
+}
+
+// ── Model library / pull / delete (Download + Ollama settings tabs) ──────────
+export interface LibraryModel {
+  id: string
+  name: string
+  description: string
+  family: string
+  params: string
+  size_gb: number
+  type: string
+  capabilities: string[]
+  pulls: string
+  installed: boolean
+}
+
+export interface LibraryResponse {
+  source: 'live' | 'catalog' | 'cache'
+  offline: boolean
+  fetched_at: number
+  models: LibraryModel[]
+}
+
+export async function fetchLibrary(refresh = true): Promise<LibraryResponse> {
+  const r = await fetch(`/api/models/library?refresh=${refresh}`)
+  if (!r.ok) throw new Error(`library fetch failed (HTTP ${r.status})`)
+  return await r.json()
+}
+
+export async function fetchLoadedModels(): Promise<string[]> {
+  try {
+    const r = await fetch('/api/models/ps')
+    if (!r.ok) return []
+    const d = await r.json()
+    return (d.models ?? []).map((m: any) => m.name)
+  } catch { return [] }
+}
+
+export async function deleteModel(name: string): Promise<boolean> {
+  const r = await fetch(`/api/models/${encodeURIComponent(name)}`, { method: 'DELETE' })
+  if (!r.ok) return false
+  const d = await r.json().catch(() => ({}))
+  return !!d.ok
+}
+
+export interface PullProgress { status: string; percent: number; done: boolean; error?: string }
+
+/** Stream an Ollama pull. Yields progress until done/error. */
+export async function* pullModel(name: string, signal?: AbortSignal): AsyncGenerator<PullProgress> {
+  const res = await fetch('/api/models/pull', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+    signal,
+  })
+  if (!res.ok || !res.body) { yield { status: `pull failed (HTTP ${res.status})`, percent: 0, done: true, error: 'http' }; return }
+  const reader = res.body.getReader()
+  const dec = new TextDecoder()
+  let buf = ''
+  const totals: Record<string, number> = {}
+  const doneMap: Record<string, number> = {}
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buf += dec.decode(value, { stream: true })
+    const lines = buf.split('\n')
+    buf = lines.pop() ?? ''
+    for (const line of lines) {
+      if (!line.startsWith('data: ')) continue
+      const payload = line.slice(6).trim()
+      if (payload === '[DONE]') { yield { status: 'done', percent: 100, done: true }; return }
+      try {
+        const chunk = JSON.parse(payload)
+        if (chunk.error) { yield { status: chunk.error, percent: 0, done: true, error: chunk.error }; return }
+        if (chunk.digest && chunk.total) {
+          totals[chunk.digest] = chunk.total
+          doneMap[chunk.digest] = chunk.completed ?? 0
+        }
+        const total = Object.values(totals).reduce((a, b) => a + b, 0)
+        const got = Object.values(doneMap).reduce((a, b) => a + b, 0)
+        const percent = total > 0 ? Math.round((got / total) * 100) : 0
+        yield { status: chunk.status ?? 'downloading', percent, done: false }
+      } catch { /* skip */ }
+    }
+  }
+  yield { status: 'done', percent: 100, done: true }
 }

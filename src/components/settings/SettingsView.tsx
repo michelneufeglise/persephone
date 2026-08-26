@@ -1,11 +1,13 @@
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
-  User, Cpu, Boxes, Brain, Database, Wrench, Palette, Volume2, Bot, Sparkles, Wand2, Eye,
+  User, Cpu, Boxes, Brain, Database, Wrench, Palette, Volume2, Bot, Sparkles, Wand2, Eye, DownloadCloud, HardDrive,
 } from 'lucide-react'
 import { CharacterSection } from './sections/CharacterSection'
 import { ModelSection } from './sections/ModelSection'
 import { ModelRolesSection } from './sections/ModelRolesSection'
+import { DownloadSection } from './sections/DownloadSection'
+import { OllamaSection } from './sections/OllamaSection'
 import { AuxiliarySection } from './sections/AuxiliarySection'
 import { MemorySection } from './sections/MemorySection'
 import { McpSection } from './sections/McpSection'
@@ -15,12 +17,14 @@ import { AppearanceSection } from './sections/AppearanceSection'
 import { VoiceSection } from './sections/VoiceSection'
 import { SetupSection } from './sections/SetupSection'
 
-type Tab = 'character' | 'modelRoles' | 'auxiliary' | 'model' | 'voice' | 'memory' | 'mcp' | 'skills' | 'theme' | 'display' | 'setup'
+type Tab = 'character' | 'modelRoles' | 'download' | 'ollama' | 'auxiliary' | 'model' | 'voice' | 'memory' | 'mcp' | 'skills' | 'theme' | 'display' | 'setup'
 
 const TABS: { id: Tab; label: string; icon: React.ElementType }[] = [
   { id: 'display',     label: 'Display',    icon: Eye },
   { id: 'character',   label: 'Character',  icon: User },
   { id: 'modelRoles',  label: 'Models',     icon: Boxes },
+  { id: 'download',    label: 'Download',   icon: DownloadCloud },
+  { id: 'ollama',      label: 'Ollama',     icon: HardDrive },
   { id: 'auxiliary',   label: 'Auxiliary',  icon: Bot },
   { id: 'skills',      label: 'Skills',     icon: Wand2 },
   { id: 'model',       label: 'Generation', icon: Cpu },
@@ -74,6 +78,8 @@ export function SettingsView() {
             {activeTab === 'display'    && <AppearanceSection />}
             {activeTab === 'character'  && <CharacterSection />}
             {activeTab === 'modelRoles' && <ModelRolesSection />}
+            {activeTab === 'download'   && <DownloadSection />}
+            {activeTab === 'ollama'     && <OllamaSection />}
             {activeTab === 'auxiliary'  && <AuxiliarySection />}
             {activeTab === 'model'      && <ModelSection />}
             {activeTab === 'voice'      && <VoiceSection />}

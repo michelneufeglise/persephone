@@ -236,6 +236,20 @@ MODELS: list[dict] = [
         "size_gb": 8.2, "tiers": ["ultra", "high", "mid"],
     },
     {
+        # Unsloth GGUF build of Qwen 3.8 27B, pulled via Ollama's hf.co
+        # path. The id matches what `ollama list` prints after
+        # `ollama pull hf.co/unsloth/Qwen3.8-27B-GGUF:Q4_K_M`, so the
+        # installed-detector (base-name match) lights up correctly.
+        "id": "hf.co/unsloth/Qwen3.8-27B-GGUF:Q4_K_M",
+        "name": "Qwen 3.8 27B", "family": "Alibaba / Qwen (Unsloth GGUF)",
+        "params": "27B", "ram_min_gb": 17, "quant": "Q4_K_M",
+        "category": "chat",
+        "description": "Latest-generation Qwen 3.8 in a 27B dense build. Native thinking mode, long-context retrieval, strong reasoning + tool use. Unsloth GGUF quant for efficient local inference.",
+        "tags": ["thinking", "reasoning", "long-context", "tools"],
+        "hf_url": "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF",
+        "size_gb": 16.5, "tiers": ["ultra", "high"],
+    },
+    {
         "id": "qwen3:8b", "name": "Qwen 3 8B", "family": "Alibaba / Qwen",
         "params": "8B", "ram_min_gb": 6, "quant": "Q4_K_M",
         "category": "chat",

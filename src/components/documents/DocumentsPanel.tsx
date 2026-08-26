@@ -4,16 +4,103 @@ import {
   Upload, FileText, Trash2, FileScan, Languages, Sparkles,
   Table as TableIcon, Tags, MessageCircle, Eye, Shield, Download,
   ChevronLeft, RefreshCw, Loader2, Wand2, Copy, Check,
+  CheckSquare, Square, Layers, Send, ScanLine, ChevronDown, ChevronRight, Brain, StopCircle,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useAppStore } from '@/store/appStore'
+import { ModelActivity } from '@/components/ui/ModelActivity'
 import {
   listDocuments, uploadDocument, deleteDocument, getDocument,
-  idp, exportDoc, pageImageUrl,
+  idp, exportDoc, pageImageUrl, multiQa, streamIdp, streamMultiQa,
 } from '@/lib/idp'
 import type { IDPDocument } from '@/types'
+import type { IDPMultiResult, StreamDone } from '@/lib/idp'
 
 type Tab = 'overview' | 'ocr' | 'summarize' | 'qa' | 'tables' | 'entities' | 'translate' | 'redact' | 'humanize' | 'export'
+
+// ── Streaming state hook ────────────────────────────────────────────────────
+interface StreamState {
+  running: boolean
+  phase: string
+  content: string
+  thinking: string
+  tokPerSec: number
+  error: string
+  model: string
+  usedOcr: string[]
+  sources: string[]
+  chunksUsed: number
+}
+const EMPTY_STREAM: StreamState = {
+  running: false, phase: '', content: '', thinking: '', tokPerSec: 0,
+  error: '', model: '', usedOcr: [], sources: [], chunksUsed: 0,
+}
+
+function useModelStream() {
+  const [s, setS] = useState<StreamState>(EMPTY_STREAM)
+  const abortRef = useRef<AbortController | null>(null)
+
+  const run = useCallback(async (
+    starter: (h: import('@/lib/idp').StreamHandlers, signal: AbortSignal) => Promise<void>,
+  ) => {
+    abortRef.current?.abort()
+    const ac = new AbortController()
+    abortRef.current = ac
+    setS({ ...EMPTY_STREAM, running: true, phase: 'start' })
+    try {
+      await starter({
+        onPhase: p => setS(prev => ({
+          ...prev,
+          phase: p.phase,
+          model: p.model ?? prev.model,
+          usedOcr: p.used_ocr ?? prev.usedOcr,
+          sources: p.sources ?? prev.sources,
+          chunksUsed: p.chunks_used ?? prev.chunksUsed,
+        })),
+        onThinking: d => setS(prev => ({ ...prev, thinking: prev.thinking + d })),
+        onContent: d => setS(prev => ({ ...prev, content: prev.content + d, phase: prev.phase === 'done' ? prev.phase : 'generating' })),
+        onError: m => setS(prev => ({ ...prev, error: m, running: false })),
+        onDone: (d: StreamDone) => setS(prev => ({
+          ...prev,
+          running: false,
+          phase: 'done',
+          tokPerSec: d.stats?.tok_per_s ?? prev.tokPerSec,
+          usedOcr: d.used_ocr ?? prev.usedOcr,
+          sources: d.sources ?? prev.sources,
+          chunksUsed: d.chunks_used ?? prev.chunksUsed,
+        })),
+      }, ac.signal)
+    } catch (e: any) {
+      if (e?.name !== 'AbortError') setS(prev => ({ ...prev, error: e?.message ?? 'Failed', running: false }))
+    } finally {
+      setS(prev => ({ ...prev, running: false }))
+    }
+  }, [])
+
+  const cancel = useCallback(() => { abortRef.current?.abort(); setS(prev => ({ ...prev, running: false })) }, [])
+  const reset = useCallback(() => { abortRef.current?.abort(); setS(EMPTY_STREAM) }, [])
+  return { ...s, run, cancel, reset }
+}
+
+function ThinkingBlock({ text }: { text: string }) {
+  const [open, setOpen] = useState(false)
+  if (!text.trim()) return null
+  return (
+    <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)]/60 overflow-hidden">
+      <button onClick={() => setOpen(o => !o)}
+        className="w-full flex items-center gap-1.5 px-3 py-2 text-xs text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors">
+        {open ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
+        <Brain className="w-3.5 h-3.5" />
+        Thinking {open ? '' : '(tap to expand)'}
+      </button>
+      {open && (
+        <pre className="text-xs text-[var(--text-muted)] whitespace-pre-wrap font-sans leading-relaxed px-3 pb-3 max-h-56 overflow-y-auto border-t border-[var(--border)] pt-2">
+          {text}
+        </pre>
+      )}
+    </div>
+  )
+}
 
 const TABS: { id: Tab; label: string; icon: React.ElementType; needsDoc: boolean }[] = [
   { id: 'overview',  label: 'Overview',   icon: Eye,           needsDoc: true },
@@ -35,11 +122,20 @@ export function DocumentsPanel() {
   const [tab, setTab] = useState<Tab>('overview')
   const [uploading, setUploading] = useState(false)
   const [dragOver, setDragOver] = useState(false)
+  const [selected, setSelected] = useState<Set<string>>(new Set())
   const fileRef = useRef<HTMLInputElement>(null)
 
   const refresh = useCallback(async () => {
     setDocs(await listDocuments())
   }, [])
+
+  function toggleSelected(id: string) {
+    setSelected(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id); else next.add(id)
+      return next
+    })
+  }
 
   useEffect(() => { refresh() }, [refresh])
 
@@ -70,6 +166,7 @@ export function DocumentsPanel() {
   async function handleDelete(id: string) {
     await deleteDocument(id)
     if (activeDocId === id) setActiveDocId(null)
+    setSelected(prev => { const n = new Set(prev); n.delete(id); return n })
     await refresh()
   }
 
@@ -121,28 +218,43 @@ export function DocumentsPanel() {
           )}
         </div>
 
-        {/* Library */}
-        <div className="flex-1 overflow-y-auto px-6 pb-6 space-y-1.5"
-          style={{ scrollbarWidth: 'thin', scrollbarColor: 'var(--scrollbar) transparent' }}>
-          {docs.length === 0 ? (
-            <div className="text-center text-sm text-[var(--text-muted)] py-10">
-              No documents yet. Upload one to begin.
+        {/* Library + Multi-doc chat in two columns */}
+        <div className="flex-1 flex gap-4 min-h-0 px-6 pb-6">
+          {/* Left column: Library */}
+          <div className="flex flex-col min-w-0 min-h-0 overflow-hidden basis-1/2 flex-1">
+            <div className="overflow-y-auto space-y-1.5" style={{ scrollbarWidth: 'thin', scrollbarColor: 'var(--scrollbar) transparent' }}>
+              {docs.length === 0 ? (
+                <div className="text-center text-sm text-[var(--text-muted)] py-10">
+                  No documents yet. Upload one to begin.
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-center justify-between mb-2 mt-1">
+                    <span className="text-[11px] text-[var(--text-muted)] uppercase tracking-wider">Library ({docs.length})</span>
+                    <button onClick={refresh} className="text-[var(--text-muted)] hover:text-[var(--accent)] p-1.5 rounded-md hover:bg-[var(--bg-tertiary)] transition-colors">
+                      <RefreshCw className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                  {selected.size > 0 && (
+                    <div className="flex items-center justify-between px-3 py-2 text-xs text-[var(--text-muted)] bg-[var(--bg-tertiary)]/30 rounded-lg">
+                      <span>{selected.size} selected</span>
+                      <button onClick={() => setSelected(new Set())} className="text-[var(--accent)] hover:underline">Clear</button>
+                    </div>
+                  )}
+                  {docs.map(d => (
+                    <DocLibItem key={d.id} doc={d} checked={selected.has(d.id)} onToggle={() => toggleSelected(d.id)}
+                      onSelect={() => setActiveDocId(d.id)}
+                      onDelete={() => handleDelete(d.id)} />
+                  ))}
+                </>
+              )}
             </div>
-          ) : (
-            <>
-              <div className="flex items-center justify-between mb-2 mt-1">
-                <span className="text-[11px] text-[var(--text-muted)] uppercase tracking-wider">Library ({docs.length})</span>
-                <button onClick={refresh} className="text-[var(--text-muted)] hover:text-[var(--accent)] p-1.5 rounded-md hover:bg-[var(--bg-tertiary)] transition-colors">
-                  <RefreshCw className="w-3.5 h-3.5" />
-                </button>
-              </div>
-              {docs.map(d => (
-                <DocLibItem key={d.id} doc={d}
-                  onSelect={() => setActiveDocId(d.id)}
-                  onDelete={() => handleDelete(d.id)} />
-              ))}
-            </>
-          )}
+          </div>
+
+          {/* Right column: Multi-doc chat */}
+          <div className="basis-1/2 flex-1 min-w-0 min-h-0">
+            <MultiDocChat docIds={[...selected]} docs={docs.filter(d => selected.has(d.id))} />
+          </div>
         </div>
       </div>
     )
@@ -227,27 +339,173 @@ function PanelHeader() {
 }
 
 // ── Library item ────────────────────────────────────────────────────
-function DocLibItem({ doc, onSelect, onDelete }: { doc: IDPDocument; onSelect: () => void; onDelete: () => void }) {
+function DocLibItem({ doc, checked, onToggle, onSelect, onDelete }: {
+  doc: IDPDocument; checked: boolean; onToggle: () => void; onSelect: () => void; onDelete: () => void
+}) {
   return (
     <div
-      onClick={onSelect}
-      className="group flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer bg-[var(--bg-tertiary)]/40 hover:bg-[var(--bg-tertiary)] border border-transparent hover:border-[var(--border)] transition-colors"
+      className={clsx(
+        'group flex items-center gap-2.5 px-3 py-2.5 rounded-lg bg-[var(--bg-tertiary)]/40 hover:bg-[var(--bg-tertiary)] border transition-colors',
+        checked ? 'border-[var(--accent)]' : 'border-transparent hover:border-[var(--border)]',
+      )}
     >
-      <FileText className="w-4 h-4 text-[var(--accent)] flex-shrink-0" />
-      <div className="flex-1 min-w-0">
-        <div className="text-sm font-medium text-[var(--text-primary)] truncate" title={doc.filename}>
-          {doc.filename}
-        </div>
-        <div className="text-xs text-[var(--text-muted)] mt-0.5">
-          {doc.pages} page{doc.pages === 1 ? '' : 's'} · {formatBytes(doc.size)}
+      <button
+        onClick={e => { e.stopPropagation(); onToggle() }}
+        className="flex-shrink-0 text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
+        title={checked ? 'Deselect' : 'Select for multi-doc query'}
+      >
+        {checked ? <CheckSquare className="w-4 h-4 text-[var(--accent)]" /> : <Square className="w-4 h-4" />}
+      </button>
+      <div onClick={onSelect} className="flex items-center gap-3 flex-1 min-w-0 cursor-pointer">
+        <FileText className="w-4 h-4 text-[var(--accent)] flex-shrink-0" />
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-medium text-[var(--text-primary)] truncate" title={doc.filename}>
+            {doc.filename}
+          </div>
+          <div className="text-xs text-[var(--text-muted)] mt-0.5">
+            {doc.pages} page{doc.pages === 1 ? '' : 's'} · {formatBytes(doc.size)}
+          </div>
         </div>
       </div>
       <button
         onClick={e => { e.stopPropagation(); onDelete() }}
-        className="opacity-0 group-hover:opacity-100 p-1.5 text-[var(--text-muted)] hover:text-red-400 rounded-md hover:bg-red-500/10 transition-all"
+        className="opacity-0 group-hover:opacity-100 p-1.5 text-[var(--text-muted)] hover:text-red-400 rounded-md hover:bg-red-500/10 transition-all flex-shrink-0"
       >
         <Trash2 className="w-3.5 h-3.5" />
       </button>
+    </div>
+  )
+}
+
+function MultiDocChat({ docIds, docs }: { docIds: string[]; docs: IDPDocument[] }) {
+  const [q, setQ] = useState('')
+  const [autoOcr, setAutoOcr] = useState(true)
+  const [history, setHistory] = useState<{ q: string; res: { text: string; model: string; used_ocr: string[]; sources: string[]; chunks_used: number } }[]>([])
+  const st = useModelStream()
+  const inFlightRef = useRef<string | null>(null)
+
+  const enoughDocs = docIds.length >= 2
+
+  async function ask() {
+    const question = q.trim()
+    if (!question || !enoughDocs) return
+    inFlightRef.current = question
+    st.run((h, signal) => streamMultiQa(docIds, question, autoOcr, h, signal))
+  }
+
+  // When streaming done, append to history
+  useEffect(() => {
+    if (st.phase === 'done' && inFlightRef.current && st.content) {
+      setHistory(h => [...h, {
+        q: inFlightRef.current!,
+        res: { text: st.content, model: st.model, used_ocr: st.usedOcr, sources: st.sources, chunks_used: st.chunksUsed }
+      }])
+      setQ('')
+      inFlightRef.current = null
+      st.reset()
+    }
+  }, [st.phase])
+
+  return (
+    <div className="h-full flex flex-col rounded-2xl border border-[var(--border)] bg-[var(--bg-secondary)]/50 overflow-hidden">
+      <div className="px-4 py-3 border-b border-[var(--border)] bg-[var(--bg-glass-strong)] flex items-center gap-2.5">
+        <Layers className="w-4 h-4 text-[var(--accent)]" />
+        <span className="text-sm font-medium text-[var(--text-primary)]">Query across documents</span>
+        {docIds.length > 0 && (
+          <span className="ml-auto text-xs text-[var(--text-muted)]">{docIds.length} selected</span>
+        )}
+      </div>
+
+      {!enoughDocs ? (
+        <div className="flex-1 flex items-center justify-center p-8 text-center">
+          <p className="text-sm text-[var(--text-muted)] leading-relaxed">
+            Select <strong className="text-[var(--text-secondary)]">2 or more</strong> documents (checkboxes on the left)
+            to ask a question across all of them at once.
+          </p>
+        </div>
+      ) : (
+        <>
+          <div className="flex-1 overflow-y-auto p-4 space-y-4" style={{ scrollbarWidth: 'thin' }}>
+            {history.length === 0 && !st.running && (
+              <div className="text-sm text-[var(--text-muted)] text-center py-8">
+                Ask anything across the {docIds.length} selected documents.
+              </div>
+            )}
+            {history.map((h, i) => (
+              <div key={i} className="space-y-2">
+                <div className="text-sm text-[var(--text-primary)] bg-[var(--accent-dim)] rounded-xl px-4 py-2.5 ml-6 leading-relaxed">
+                  <span className="font-medium">Q: </span>{h.q}
+                </div>
+                <div className="text-sm text-[var(--text-primary)] bg-[var(--bg-tertiary)] rounded-xl px-4 py-2.5 mr-6 leading-relaxed border border-[var(--border)] space-y-2">
+                  <div className="whitespace-pre-wrap">{h.res.text}</div>
+                  <div className="text-[11px] text-[var(--text-muted)] font-mono pt-1.5 border-t border-[var(--border)] flex flex-wrap gap-x-3 gap-y-1">
+                    <span>via {h.res.model || 'auto'}</span>
+                    <span>· {h.res.chunks_used} passage{h.res.chunks_used === 1 ? '' : 's'}</span>
+                    <span>· {h.res.sources.length} doc{h.res.sources.length === 1 ? '' : 's'}</span>
+                    {h.res.used_ocr.length > 0 && (
+                      <span className="text-[var(--accent)]">· OCR'd: {h.res.used_ocr.join(', ')}</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
+            {st.running && inFlightRef.current && (
+              <div className="space-y-2">
+                <div className="text-sm text-[var(--text-primary)] bg-[var(--accent-dim)] rounded-xl px-4 py-2.5 ml-6 leading-relaxed">
+                  <span className="font-medium">Q: </span>{inFlightRef.current}
+                </div>
+                <div className="space-y-3 mr-6">
+                  <ModelActivity running={st.running} phase={st.phase} tokPerSec={st.tokPerSec} />
+                  <ThinkingBlock text={st.thinking} />
+                  {st.content && (
+                    <div className="text-sm text-[var(--text-primary)] bg-[var(--bg-tertiary)] rounded-xl px-4 py-2.5 leading-relaxed border border-[var(--border)] whitespace-pre-wrap">
+                      {st.content}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
+
+          {st.error && (
+            <div className="mx-4 mb-2 text-sm text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-lg px-3 py-2">
+              {st.error}
+            </div>
+          )}
+
+          <div className="p-3 border-t border-[var(--border)] space-y-2.5">
+            <button
+              onClick={() => setAutoOcr(v => !v)}
+              className={clsx(
+                'flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border transition-colors',
+                autoOcr
+                  ? 'border-[var(--accent)] text-[var(--accent)] bg-[var(--accent-dim)]/40'
+                  : 'border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--border-bright)]',
+              )}
+              title="When on, image-only documents are OCR'd automatically before answering."
+            >
+              <ScanLine className="w-3.5 h-3.5" />
+              Auto-OCR {autoOcr ? 'on' : 'off'}
+            </button>
+            <div className="flex gap-2">
+              <input
+                value={q}
+                onChange={e => setQ(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && ask()}
+                placeholder="Ask across selected documents…"
+                className="flex-1 px-3.5 py-2.5 rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]"
+              />
+              <button
+                onClick={st.running ? st.cancel : ask}
+                disabled={!q.trim() && !st.running}
+                className="px-4 py-2.5 rounded-lg bg-[var(--accent)] text-white text-sm font-medium hover:bg-[var(--accent-hover)] disabled:opacity-50 flex items-center gap-1.5"
+              >
+                {st.running ? <><StopCircle className="w-4 h-4" /> Cancel</> : <><Send className="w-4 h-4" /> Send</>}
+              </button>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   )
 }
@@ -307,6 +565,7 @@ function ActionTab({ doc, run, label, hint }: { doc: IDPDocument; run: (d: IDPDo
           animate={{ rotate: 360 }} transition={{ duration: 0.8, repeat: Infinity, ease: 'linear' }} />}
         {busy ? 'Working…' : label}
       </button>
+      <ModelActivity running={busy} phase="working" />
       {err && <ErrorBox text={err} />}
       {result && <ResultBlock text={result.text} model={result.model} />}
     </div>
@@ -356,59 +615,34 @@ function ResultBlock({ text, model }: { text: string; model: string }) {
 // ── Summarize ───────────────────────────────────────────────────────
 function SummarizeTab({ doc }: { doc: IDPDocument }) {
   const [style, setStyle] = useState<'brief' | 'detailed' | 'bullets'>('brief')
-  const [busy, setBusy] = useState(false)
-  const [result, setResult] = useState<{ text: string; model: string } | null>(null)
-  async function go() {
-    setBusy(true)
-    try { setResult(await idp.summarize(doc.id, style)) } finally { setBusy(false) }
+  const st = useModelStream()
+  function go() {
+    st.run((h, signal) => streamIdp('summarize', doc.id, { style }, h, signal))
   }
   return (
     <div className="p-6 space-y-4 max-w-4xl mx-auto">
       <div className="flex gap-2">
         {(['brief','detailed','bullets'] as const).map(s => (
-          <button key={s} onClick={() => setStyle(s)}
-            className={clsx(
-              'flex-1 px-3 py-2 rounded-lg text-sm border transition-colors capitalize',
+          <button key={s} onClick={() => setStyle(s)} disabled={st.running}
+            className={clsx('flex-1 px-3 py-2 rounded-lg text-sm border transition-colors capitalize',
               style === s
                 ? 'border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--accent)]'
-                : 'border-[var(--border)] bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:border-[var(--border-bright)]',
-            )}>{s}</button>
+                : 'border-[var(--border)] bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:border-[var(--border-bright)]')}>{s}</button>
         ))}
       </div>
-      <button onClick={go} disabled={busy}
-        className="relative w-full px-4 py-2.5 rounded-lg text-white text-sm font-medium
-          transition-all disabled:cursor-not-allowed overflow-hidden flex items-center justify-center gap-2"
-        style={{
-          background: busy
-            ? 'linear-gradient(135deg, var(--accent-deep), var(--accent-mid))'
-            : 'linear-gradient(135deg, var(--accent), var(--accent-deep))',
-          boxShadow: busy
-            ? 'inset 0 1px 0 rgba(255,255,255,0.1)'
-            : '0 6px 18px -6px var(--accent-glow), inset 0 1px 0 rgba(255,255,255,0.2)',
-        }}>
-        {busy ? (
-          <>
-            <Loader2 className="w-4 h-4 animate-spin" />
-            <span>Summarising…</span>
-            {/* subtle shimmer overlay */}
-            <span
-              className="absolute inset-0 pointer-events-none"
-              style={{
-                background:
-                  'linear-gradient(90deg, transparent, rgba(255,255,255,0.15), transparent)',
-                backgroundSize: '200% 100%',
-                animation: 'shimmer 1.6s linear infinite',
-              }}
-            />
-          </>
-        ) : (
-          <>
-            <Sparkles className="w-4 h-4" />
-            <span>Summarise</span>
-          </>
-        )}
+      <button onClick={st.running ? st.cancel : go}
+        className="w-full px-4 py-2.5 rounded-lg bg-[var(--accent)] text-white text-sm font-medium hover:bg-[var(--accent-hover)] transition-colors flex items-center justify-center gap-2">
+        {st.running ? <><StopCircle className="w-4 h-4" /> Cancel</> : <><Sparkles className="w-4 h-4" /> Summarise</>}
       </button>
-      {result && <ResultBlock text={result.text} model={result.model} />}
+      <ModelActivity running={st.running} phase={st.phase} tokPerSec={st.tokPerSec} />
+      <ThinkingBlock text={st.thinking} />
+      {st.error && <ErrorBox text={st.error} />}
+      {st.content && (
+        <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-tertiary)] p-5">
+          {st.model && <div className="text-xs text-[var(--text-muted)] mb-2 font-mono">via {st.model}</div>}
+          <pre className="text-sm text-[var(--text-primary)] whitespace-pre-wrap font-sans leading-relaxed max-h-[32rem] overflow-y-auto">{st.content}</pre>
+        </div>
+      )}
     </div>
   )
 }
@@ -417,21 +651,30 @@ function SummarizeTab({ doc }: { doc: IDPDocument }) {
 function QATab({ doc }: { doc: IDPDocument }) {
   const [q, setQ] = useState('')
   const [history, setHistory] = useState<{ q: string; a: string; model: string }[]>([])
-  const [busy, setBusy] = useState(false)
+  const st = useModelStream()
+  const inFlightRef = useRef<string | null>(null)
+
   async function ask() {
     const question = q.trim()
     if (!question) return
-    setBusy(true)
-    try {
-      const r = await idp.qa(doc.id, question)
-      setHistory(h => [...h, { q: question, a: r.text, model: r.model }])
-      setQ('')
-    } finally { setBusy(false) }
+    inFlightRef.current = question
+    st.run((h, signal) => streamIdp('qa', doc.id, { question }, h, signal))
   }
+
+  // When streaming done, append to history
+  useEffect(() => {
+    if (st.phase === 'done' && inFlightRef.current && st.content) {
+      setHistory(h => [...h, { q: inFlightRef.current!, a: st.content, model: st.model }])
+      setQ('')
+      inFlightRef.current = null
+      st.reset()
+    }
+  }, [st.phase])
+
   return (
     <div className="p-6 space-y-4 flex flex-col h-full max-w-4xl mx-auto w-full">
       <div className="flex-1 overflow-y-auto space-y-4 pr-1">
-        {history.length === 0 && (
+        {history.length === 0 && !st.running && (
           <div className="text-sm text-[var(--text-muted)] text-center py-10">Ask anything about this document.</div>
         )}
         {history.map((h, i) => (
@@ -444,16 +687,33 @@ function QATab({ doc }: { doc: IDPDocument }) {
             </div>
           </div>
         ))}
+        {st.running && inFlightRef.current && (
+          <div className="space-y-2">
+            <div className="text-sm text-[var(--text-primary)] bg-[var(--accent-dim)] rounded-xl px-4 py-2.5 ml-8 leading-relaxed">
+              <span className="font-medium">Q: </span>{inFlightRef.current}
+            </div>
+            <div className="space-y-3 mr-8">
+              <ModelActivity running={st.running} phase={st.phase} tokPerSec={st.tokPerSec} />
+              <ThinkingBlock text={st.thinking} />
+              {st.content && (
+                <div className="text-sm text-[var(--text-primary)] bg-[var(--bg-tertiary)] rounded-xl px-4 py-2.5 leading-relaxed border border-[var(--border)] whitespace-pre-wrap">
+                  {st.content}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
       </div>
+      {st.error && <ErrorBox text={st.error} />}
       <div className="flex gap-2">
         <input value={q} onChange={e => setQ(e.target.value)}
           onKeyDown={e => e.key === 'Enter' && ask()}
           placeholder="Ask about this document…"
           className="flex-1 px-3.5 py-2.5 rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)]
             text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]" />
-        <button onClick={ask} disabled={busy || !q.trim()}
-          className="px-5 py-2.5 rounded-lg bg-[var(--accent)] text-white text-sm font-medium hover:bg-[var(--accent-hover)] disabled:opacity-50">
-          {busy ? '…' : 'Ask'}
+        <button onClick={st.running ? st.cancel : ask} disabled={!q.trim() && !st.running}
+          className="px-5 py-2.5 rounded-lg bg-[var(--accent)] text-white text-sm font-medium hover:bg-[var(--accent-hover)] disabled:opacity-50 flex items-center gap-1.5">
+          {st.running ? <><StopCircle className="w-4 h-4" /> Cancel</> : <>Ask</>}
         </button>
       </div>
     </div>
@@ -481,6 +741,7 @@ function TablesTab({ doc }: { doc: IDPDocument }) {
         className="w-full px-4 py-2.5 rounded-lg bg-[var(--accent)] text-white text-sm font-medium hover:bg-[var(--accent-hover)] disabled:opacity-50">
         {busy ? 'Extracting…' : 'Extract Tables'}
       </button>
+      <ModelActivity running={busy} phase="working" />
       {err && <div className="text-sm text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-2.5">{err}</div>}
       {tables.map((t, i) => (
         <div key={i} className="rounded-xl border border-[var(--border)] bg-[var(--bg-tertiary)] overflow-hidden">
@@ -522,6 +783,7 @@ function EntitiesTab({ doc }: { doc: IDPDocument }) {
         className="w-full px-4 py-2.5 rounded-lg bg-[var(--accent)] text-white text-sm font-medium hover:bg-[var(--accent-hover)] disabled:opacity-50">
         {busy ? 'Extracting…' : 'Extract Entities'}
       </button>
+      <ModelActivity running={busy} phase="working" />
       {entities && (
         <div className="space-y-3">
           {Object.entries(entities).map(([k, vals]) => vals && vals.length > 0 && (
@@ -545,24 +807,30 @@ function EntitiesTab({ doc }: { doc: IDPDocument }) {
 // ── Translate ───────────────────────────────────────────────────────
 function TranslateTab({ doc }: { doc: IDPDocument }) {
   const [lang, setLang] = useState('French')
-  const [busy, setBusy] = useState(false)
-  const [result, setResult] = useState<{ text: string; model: string } | null>(null)
+  const st = useModelStream()
   const LANGS = ['French', 'German', 'Spanish', 'Italian', 'Dutch', 'Japanese', 'Chinese', 'Portuguese', 'Russian', 'Arabic', 'English']
-  async function go() {
-    setBusy(true)
-    try { setResult(await idp.translate(doc.id, lang)) } finally { setBusy(false) }
+  function go() {
+    st.run((h, signal) => streamIdp('translate', doc.id, { target: lang }, h, signal))
   }
   return (
     <div className="p-6 space-y-4 max-w-4xl mx-auto">
-      <select value={lang} onChange={e => setLang(e.target.value)}
-        className="w-full px-3.5 py-2.5 rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]">
+      <select value={lang} onChange={e => setLang(e.target.value)} disabled={st.running}
+        className="w-full px-3.5 py-2.5 rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] disabled:opacity-50">
         {LANGS.map(l => <option key={l} value={l}>{l}</option>)}
       </select>
-      <button onClick={go} disabled={busy}
-        className="w-full px-4 py-2.5 rounded-lg bg-[var(--accent)] text-white text-sm font-medium hover:bg-[var(--accent-hover)] disabled:opacity-50">
-        {busy ? 'Translating…' : `Translate to ${lang}`}
+      <button onClick={st.running ? st.cancel : go}
+        className="w-full px-4 py-2.5 rounded-lg bg-[var(--accent)] text-white text-sm font-medium hover:bg-[var(--accent-hover)] transition-colors flex items-center justify-center gap-2">
+        {st.running ? <><StopCircle className="w-4 h-4" /> Cancel</> : <>Translate to {lang}</>}
       </button>
-      {result && <ResultBlock text={result.text} model={result.model} />}
+      <ModelActivity running={st.running} phase={st.phase} tokPerSec={st.tokPerSec} />
+      <ThinkingBlock text={st.thinking} />
+      {st.error && <ErrorBox text={st.error} />}
+      {st.content && (
+        <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-tertiary)] p-5">
+          {st.model && <div className="text-xs text-[var(--text-muted)] mb-2 font-mono">via {st.model}</div>}
+          <pre className="text-sm text-[var(--text-primary)] whitespace-pre-wrap font-sans leading-relaxed max-h-[32rem] overflow-y-auto">{st.content}</pre>
+        </div>
+      )}
     </div>
   )
 }
@@ -571,34 +839,40 @@ function TranslateTab({ doc }: { doc: IDPDocument }) {
 function RedactTab({ doc }: { doc: IDPDocument }) {
   const [cats, setCats] = useState<string[]>(['people', 'emails', 'phone numbers'])
   const ALL = ['people', 'organizations', 'emails', 'phone numbers', 'addresses', 'dates', 'amounts', 'IDs', 'URLs']
-  const [busy, setBusy] = useState(false)
-  const [result, setResult] = useState<{ text: string; model: string } | null>(null)
+  const st = useModelStream()
   function toggle(c: string) {
     setCats(p => p.includes(c) ? p.filter(x => x !== c) : [...p, c])
   }
-  async function go() {
-    setBusy(true)
-    try { setResult(await idp.redact(doc.id, cats)) } finally { setBusy(false) }
+  function go() {
+    st.run((h, signal) => streamIdp('redact', doc.id, { categories: cats }, h, signal))
   }
   return (
     <div className="p-6 space-y-4 max-w-4xl mx-auto">
       <p className="text-sm text-[var(--text-secondary)]">Categories to redact:</p>
       <div className="flex flex-wrap gap-2">
         {ALL.map(c => (
-          <button key={c} onClick={() => toggle(c)}
+          <button key={c} onClick={() => toggle(c)} disabled={st.running}
             className={clsx(
-              'px-3 py-1.5 rounded-full text-xs border transition-colors',
+              'px-3 py-1.5 rounded-full text-xs border transition-colors disabled:opacity-50',
               cats.includes(c)
                 ? 'border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--accent)]'
                 : 'border-[var(--border)] bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:border-[var(--border-bright)]',
             )}>{c}</button>
         ))}
       </div>
-      <button onClick={go} disabled={busy || cats.length === 0}
-        className="w-full px-4 py-2.5 rounded-lg bg-[var(--accent)] text-white text-sm font-medium hover:bg-[var(--accent-hover)] disabled:opacity-50">
-        {busy ? 'Redacting…' : 'Apply Redaction'}
+      <button onClick={st.running ? st.cancel : go} disabled={cats.length === 0 && !st.running}
+        className="w-full px-4 py-2.5 rounded-lg bg-[var(--accent)] text-white text-sm font-medium hover:bg-[var(--accent-hover)] transition-colors flex items-center justify-center gap-2">
+        {st.running ? <><StopCircle className="w-4 h-4" /> Cancel</> : <>Apply Redaction</>}
       </button>
-      {result && <ResultBlock text={result.text} model={result.model} />}
+      <ModelActivity running={st.running} phase={st.phase} tokPerSec={st.tokPerSec} />
+      <ThinkingBlock text={st.thinking} />
+      {st.error && <ErrorBox text={st.error} />}
+      {st.content && (
+        <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-tertiary)] p-5">
+          {st.model && <div className="text-xs text-[var(--text-muted)] mb-2 font-mono">via {st.model}</div>}
+          <pre className="text-sm text-[var(--text-primary)] whitespace-pre-wrap font-sans leading-relaxed max-h-[32rem] overflow-y-auto">{st.content}</pre>
+        </div>
+      )}
     </div>
   )
 }
@@ -609,19 +883,16 @@ function HumanizeTab({ doc }: { doc: IDPDocument }) {
   type Intensity = 'light' | 'medium' | 'heavy'
   const [tone, setTone] = useState<Tone>('natural')
   const [intensity, setIntensity] = useState<Intensity>('medium')
-  const [busy, setBusy] = useState(false)
-  const [result, setResult] = useState<{ text: string; model: string } | null>(null)
+  const st = useModelStream()
   const [copied, setCopied] = useState(false)
 
-  async function go() {
-    setBusy(true)
-    try { setResult(await idp.humanize(doc.id, tone, intensity)) }
-    finally { setBusy(false) }
+  function go() {
+    st.run((h, signal) => streamIdp('humanize', doc.id, { tone, intensity }, h, signal))
   }
 
   async function copy() {
-    if (!result) return
-    await navigator.clipboard.writeText(result.text)
+    if (!st.content) return
+    await navigator.clipboard.writeText(st.content)
     setCopied(true)
     setTimeout(() => setCopied(false), 1400)
   }
@@ -651,9 +922,9 @@ function HumanizeTab({ doc }: { doc: IDPDocument }) {
         <div className="text-xs text-[var(--text-muted)] uppercase tracking-wider mb-2 font-medium">Tone</div>
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
           {TONES.map(t => (
-            <button key={t.id} onClick={() => setTone(t.id)}
+            <button key={t.id} onClick={() => setTone(t.id)} disabled={st.running}
               className={clsx(
-                'px-3 py-2 rounded-lg text-sm border transition-colors',
+                'px-3 py-2 rounded-lg text-sm border transition-colors disabled:opacity-50',
                 tone === t.id
                   ? 'border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--accent)]'
                   : 'border-[var(--border)] bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:border-[var(--border-bright)]',
@@ -666,9 +937,9 @@ function HumanizeTab({ doc }: { doc: IDPDocument }) {
         <div className="text-xs text-[var(--text-muted)] uppercase tracking-wider mb-2 font-medium">Rewrite strength</div>
         <div className="grid grid-cols-3 gap-2">
           {INTENSITIES.map(i => (
-            <button key={i.id} onClick={() => setIntensity(i.id)}
+            <button key={i.id} onClick={() => setIntensity(i.id)} disabled={st.running}
               className={clsx(
-                'px-3 py-2.5 rounded-lg text-sm border transition-colors text-left',
+                'px-3 py-2.5 rounded-lg text-sm border transition-colors text-left disabled:opacity-50',
                 intensity === i.id
                   ? 'border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--accent)]'
                   : 'border-[var(--border)] bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:border-[var(--border-bright)]',
@@ -680,29 +951,21 @@ function HumanizeTab({ doc }: { doc: IDPDocument }) {
         </div>
       </div>
 
-      <button onClick={go} disabled={busy}
+      <button onClick={st.running ? st.cancel : go}
         className="relative w-full px-4 py-2.5 rounded-lg text-white text-sm font-medium
-          transition-all disabled:cursor-not-allowed overflow-hidden flex items-center justify-center gap-2"
+          transition-all overflow-hidden flex items-center justify-center gap-2"
         style={{
-          background: busy
+          background: st.running
             ? 'linear-gradient(135deg, var(--accent-deep), var(--accent-mid))'
             : 'linear-gradient(135deg, var(--accent), var(--accent-deep))',
-          boxShadow: busy
+          boxShadow: st.running
             ? 'inset 0 1px 0 rgba(255,255,255,0.1)'
             : '0 6px 18px -6px var(--accent-glow), inset 0 1px 0 rgba(255,255,255,0.2)',
         }}>
-        {busy ? (
+        {st.running ? (
           <>
-            <Loader2 className="w-4 h-4 animate-spin" />
-            <span>Humanising…</span>
-            <span
-              className="absolute inset-0 pointer-events-none"
-              style={{
-                background: 'linear-gradient(90deg, transparent, rgba(255,255,255,0.15), transparent)',
-                backgroundSize: '200% 100%',
-                animation: 'shimmer 1.6s linear infinite',
-              }}
-            />
+            <StopCircle className="w-4 h-4" />
+            <span>Cancel</span>
           </>
         ) : (
           <>
@@ -712,10 +975,13 @@ function HumanizeTab({ doc }: { doc: IDPDocument }) {
         )}
       </button>
 
-      {result && (
+      <ModelActivity running={st.running} phase={st.phase} tokPerSec={st.tokPerSec} />
+      <ThinkingBlock text={st.thinking} />
+      {st.error && <ErrorBox text={st.error} />}
+      {st.content && (
         <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-tertiary)] p-5">
           <div className="flex items-center justify-between mb-2">
-            <div className="text-xs text-[var(--text-muted)] font-mono">via {result.model}</div>
+            <div className="text-xs text-[var(--text-muted)] font-mono">via {st.model}</div>
             <button onClick={copy}
               className="flex items-center gap-1.5 text-xs text-[var(--text-muted)] hover:text-[var(--accent)] px-2.5 py-1 rounded-md hover:bg-[var(--bg-secondary)] transition-colors">
               {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
@@ -723,7 +989,7 @@ function HumanizeTab({ doc }: { doc: IDPDocument }) {
             </button>
           </div>
           <pre className="text-sm text-[var(--text-primary)] whitespace-pre-wrap font-sans leading-relaxed max-h-[32rem] overflow-y-auto">
-            {result.text}
+            {st.content}
           </pre>
         </div>
       )}
