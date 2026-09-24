@@ -24,15 +24,16 @@ LAYA_INTENT_MIN_CONFIDENCE = 0.6
 LAYA_ROLE_MIN_CONFIDENCE = 0.7
 LAYA_DOC_KIND_MIN_CONFIDENCE = 0.65
 VERIFY_SIGNATURE_STRONG_CONFIDENCE = 0.85
+IDENTIFY_PERSON_STRONG_CONFIDENCE = 0.9
 
 INTENTS = {
     "verify_signature": "Compare or verify a signature, handwriting, or document authenticity against a reference specimen or original",
-    "identify_person": "Identify who the document is about, find a person's name, determine document ownership or authorship, find an individual",
+    "identify_person": "Asks WHO a person is / whose document it is / which person it is about / the name of the person — the identity itself",
     "summarize": "Summarize content, extract key points, tl;dr, main takeaways, overview of the document",
     "extract_data": "Extract structured data from forms, tables, fields, amounts, dates, invoice items, entities, metadata, or billing information",
     "translate": "Translate document content into another language or check translation accuracy",
     "redact": "Remove, hide, obscure, or black out personal, sensitive, confidential, or private information",
-    "general_question": "Any other question about the document's content that doesn't fit the above categories",
+    "general_question": "Asks for a specific fact or detail from the document(s), e.g. a date (date of birth, due date), an amount, an address, an age, a status, or what the document says about someone/something",
 }
 
 # Prompts
@@ -85,6 +86,14 @@ REDACT_PROMPT = """Review the document and:
 3. Note what was redacted and why
 
 Redactable items: names, addresses, phone numbers, emails, SSN, financial account numbers, dates of birth, medical info, legal case numbers, etc."""
+
+GENERAL_QUESTION_PROMPT = """Answer the user's question directly and concisely in the first sentence.
+For example, if asked "What is her date of birth?", start with "Her date of birth is 14 March 1985."
+
+Then:
+- Cite the supporting text and which document it comes from
+- Use the conversation history to resolve pronouns (e.g. 'her' refers to the person identified earlier)
+- Be clear if the answer is not found in the documents — do not guess or speculate"""
 
 # ── Data models ────────────────────────────────────────────────────────────
 
@@ -259,8 +268,13 @@ def rules_intent(message: str, files: list[dict]) -> tuple[Optional[str], list[s
             if any(ref_kw in fname for ref_kw in ["reference", "specimen", "sample", "card", "template"]):
                 return "verify_signature", matched_kws
 
-    # identify_person
-    id_person_kws = ["who is", "which person", "whose", "name of", "wie is", "qui est", "find person", "identify"]
+    # identify_person: must ask WHO/WHOSE/which person/the name — NOT a fact lookup
+    id_person_kws = [
+        "who is", "who signed", "who wrote", "which person", "whose", "name of", "person's name",
+        "persons name", "the name", "signer", "signatory",
+        "wie is", "wie heeft", "naam van", "de naam", "ondertekenaar", "ondertekener",
+        "qui est", "nom de", "find person", "identify",
+    ]
     id_person_matches = [kw for kw in id_person_kws if kw in msg_lower]
     if id_person_matches:
         return "identify_person", id_person_matches
@@ -288,6 +302,18 @@ def rules_intent(message: str, files: list[dict]) -> tuple[Optional[str], list[s
     redact_matches = [kw for kw in redact_kws if kw in msg_lower]
     if redact_matches:
         return "redact", redact_matches
+
+    # general_question: fact lookup keywords
+    # Check these LAST (after extract_data) so more specific keywords take precedence
+    fact_lookup_kws = [
+        "date of birth", "born", "birthday", "geboortedatum",
+        "address", "adres", "age", "how old",
+        "nationality", "when was", "what is his", "what is her", "what is their",
+        "what does it say", "due date", "telephone", "phone", "email"
+    ]
+    fact_matches = [kw for kw in fact_lookup_kws if kw in msg_lower]
+    if fact_matches:
+        return "general_question", fact_matches
 
     return None, []
 
@@ -346,7 +372,51 @@ def resolve_intent(
             "probabilities": None,
         }
 
-    # NEW: extract_data agreement rule
+    # NEW: identify_person agreement rule
+    # Accept Laya's identify_person ONLY if:
+    # (a) keyword rules also say identify_person, OR
+    # (b) Laya's confidence >= IDENTIFY_PERSON_STRONG_CONFIDENCE
+    if laya_result and laya_result.get("intent") == "identify_person":
+        if rules_intent_name == "identify_person":
+            # Both agree on identify_person; credit Laya
+            return {
+                "intent": "identify_person",
+                "source": "laya",
+                "confidence": laya_result["confidence"],
+                "note": "keyword rules agree",
+                "probabilities": laya_result.get("probabilities"),
+            }
+        elif laya_result.get("confidence", 0) >= IDENTIFY_PERSON_STRONG_CONFIDENCE:
+            # Laya very confident in identify_person (>= 0.9); accept it
+            return {
+                "intent": "identify_person",
+                "source": "laya",
+                "confidence": laya_result["confidence"],
+                "note": "high confidence score",
+                "probabilities": laya_result.get("probabilities"),
+            }
+        else:
+            # Laya suggests identify_person but low-medium confidence and rules don't agree
+            note = f"Laya suggested identify_person ({laya_result['confidence']:.2f}) but the question asks for a specific fact, not who someone is"
+            if rules_intent_name:
+                note += f", using {rules_intent_name} instead"
+                return {
+                    "intent": rules_intent_name,
+                    "source": "rules",
+                    "confidence": None,
+                    "note": note,
+                    "probabilities": None,
+                }
+            else:
+                return {
+                    "intent": "general_question",
+                    "source": "rules",
+                    "confidence": None,
+                    "note": note,
+                    "probabilities": None,
+                }
+
+    # extract_data agreement rule
     # Accept Laya's extract_data ONLY if keyword rules also say extract_data
     if laya_result and laya_result.get("intent") == "extract_data":
         if rules_intent_name == "extract_data":
@@ -1075,7 +1145,7 @@ def _build_prompt(
         "extract_data": EXTRACT_DATA_PROMPT,
         "translate": _build_translate_prompt(message),
         "redact": REDACT_PROMPT,
-        "general_question": None,
+        "general_question": GENERAL_QUESTION_PROMPT,
     }.get(intent)
 
     if not prompt_template and intent != "general_question":

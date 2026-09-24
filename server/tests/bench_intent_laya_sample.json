@@ -55,7 +55,14 @@
     {"intent": "general_question", "message": "wat denk je hiervan", "files": [{"name": "doc.pdf", "kind": "pdf"}]},
     {"intent": "general_question", "message": "read this and tell me what you think", "files": [{"name": "letter.pdf", "kind": "pdf"}]},
     {"intent": "general_question", "message": "check this out", "files": [{"name": "document.docx", "kind": "docx"}]},
-    {"intent": "general_question", "message": "review document plz", "files": [{"name": "doc.txt", "kind": "text"}]}
+    {"intent": "general_question", "message": "review document plz", "files": [{"name": "doc.txt", "kind": "text"}]},
+    {"intent": "general_question", "message": "what is her date of birth?", "files": [{"name": "passport.pdf", "kind": "pdf"}]},
+    {"intent": "general_question", "message": "when was he born?", "files": [{"name": "birth_certificate.pdf", "kind": "pdf"}]},
+    {"intent": "general_question", "message": "what is the address on this document?", "files": [{"name": "id_card.pdf", "kind": "pdf"}]},
+    {"intent": "general_question", "message": "how old is she according to this?", "files": [{"name": "driver_license.pdf", "kind": "pdf"}]},
+    {"intent": "general_question", "message": "what is the amount due?", "files": [{"name": "invoice.pdf", "kind": "pdf"}]},
+    {"intent": "general_question", "message": "what does the document say about her nationality?", "files": [{"name": "passport.pdf", "kind": "pdf"}]},
+    {"intent": "general_question", "message": "wat is haar geboortedatum?", "files": [{"name": "document.pdf", "kind": "pdf"}]}
   ],
   "role_samples": [
     {"role": "subject_document", "message": "analyze this contract", "file": {"name": "contract.pdf", "kind": "pdf", "snippet": "Agreement between parties A and B for services"}},

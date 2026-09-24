@@ -33,7 +33,7 @@ export function DocumentNodeComponent({ data, selected }: NodeProps) {
 
   return (
     <>
-      <Handle type="target" position={data.direction === 'LR' ? Position.Left : Position.Top} />
+      <Handle type="target" position={data.direction === 'LR' ? Position.Left : Position.Top} style={{ opacity: 0, pointerEvents: 'none' }} />
       <div
         style={{ width, height, overflow: 'hidden' }}
         className={clsx(
@@ -64,7 +64,7 @@ export function DocumentNodeComponent({ data, selected }: NodeProps) {
           )}
         </div>
       </div>
-      <Handle type="source" position={data.direction === 'LR' ? Position.Right : Position.Bottom} />
+      <Handle type="source" position={data.direction === 'LR' ? Position.Right : Position.Bottom} style={{ opacity: 0, pointerEvents: 'none' }} />
     </>
   )
 }
@@ -88,7 +88,7 @@ export function QuestionNodeComponent({ data, selected }: NodeProps) {
 
   return (
     <>
-      <Handle type="target" position={data.direction === 'LR' ? Position.Left : Position.Top} />
+      <Handle type="target" position={data.direction === 'LR' ? Position.Left : Position.Top} style={{ opacity: 0, pointerEvents: 'none' }} />
       <div
         style={{ width, height, overflow: 'hidden' }}
         className={clsx(
@@ -115,7 +115,7 @@ export function QuestionNodeComponent({ data, selected }: NodeProps) {
           <div className="text-[0.6rem] text-[var(--text-muted)] truncate font-mono">{data.answer.model || '—'}</div>
         )}
       </div>
-      <Handle type="source" position={data.direction === 'LR' ? Position.Right : Position.Bottom} />
+      <Handle type="source" position={data.direction === 'LR' ? Position.Right : Position.Bottom} style={{ opacity: 0, pointerEvents: 'none' }} />
     </>
   )
 }
@@ -164,7 +164,7 @@ export function DecisionNodeComponent({ data, selected }: NodeProps) {
 
   return (
     <>
-      <Handle type="target" position={data.direction === 'LR' ? Position.Left : Position.Top} />
+      <Handle type="target" position={data.direction === 'LR' ? Position.Left : Position.Top} style={{ opacity: 0, pointerEvents: 'none' }} />
       <div
         style={{ width, height, overflow: 'hidden' }}
         className={clsx(
@@ -194,7 +194,7 @@ export function DecisionNodeComponent({ data, selected }: NodeProps) {
           </div>
         )}
       </div>
-      <Handle type="source" position={data.direction === 'LR' ? Position.Right : Position.Bottom} />
+      <Handle type="source" position={data.direction === 'LR' ? Position.Right : Position.Bottom} style={{ opacity: 0, pointerEvents: 'none' }} />
     </>
   )
 }
@@ -210,7 +210,7 @@ export function ModelNodeComponent({ data, selected }: NodeProps) {
 
   return (
     <>
-      <Handle type="target" position={data.direction === 'LR' ? Position.Left : Position.Top} />
+      <Handle type="target" position={data.direction === 'LR' ? Position.Left : Position.Top} style={{ opacity: 0, pointerEvents: 'none' }} />
       <div
         style={{ width, height, overflow: 'hidden' }}
         className={clsx(
@@ -280,7 +280,119 @@ export function ModelNodeComponent({ data, selected }: NodeProps) {
           </div>
         )}
       </div>
-      <Handle type="source" position={data.direction === 'LR' ? Position.Right : Position.Bottom} />
+      <Handle type="source" position={data.direction === 'LR' ? Position.Right : Position.Bottom} style={{ opacity: 0, pointerEvents: 'none' }} />
+    </>
+  )
+}
+
+/**
+ * Compact node components for LOD rendering (zoom out)
+ * Shows a small colored dot/icon + 1-line label, ~110×28px
+ */
+
+export function DocumentNodeCompactComponent({ data, selected }: NodeProps) {
+  const isHighlighted = data.highlighted === true
+  return (
+    <>
+      <Handle type="target" position={data.direction === 'LR' ? Position.Left : Position.Top} style={{ opacity: 0, pointerEvents: 'none' }} />
+      <div
+        className={clsx(
+          'flex items-center gap-1 px-2 py-1',
+          'rounded-[6px] border text-[0.65rem] font-medium',
+          'transition-all duration-200',
+          selected
+            ? 'border-[var(--accent)] bg-[var(--accent-dim)] shadow-[0_0_8px_var(--accent-glow)]'
+            : isHighlighted
+              ? 'border-[var(--border-glass)] bg-[var(--accent-dim)]/20 shadow-[var(--shadow-soft)]'
+              : 'border-[var(--border-glass)] bg-[var(--bg-glass)] opacity-25',
+        )}
+      >
+        <FileText className="w-3 h-3 text-[var(--accent)] flex-shrink-0" />
+        <div className="truncate text-[var(--text-primary)]">{data.shortLabel || data.label}</div>
+      </div>
+      <Handle type="source" position={data.direction === 'LR' ? Position.Right : Position.Bottom} style={{ opacity: 0, pointerEvents: 'none' }} />
+    </>
+  )
+}
+
+export function QuestionNodeCompactComponent({ data, selected }: NodeProps) {
+  const isHighlighted = data.highlighted === true
+  return (
+    <>
+      <Handle type="target" position={data.direction === 'LR' ? Position.Left : Position.Top} style={{ opacity: 0, pointerEvents: 'none' }} />
+      <div
+        className={clsx(
+          'flex items-center gap-1 px-2 py-1',
+          'rounded-[6px] border text-[0.65rem] font-medium',
+          'transition-all duration-200',
+          selected
+            ? 'border-[var(--accent)] bg-[var(--accent-dim)] shadow-[0_0_8px_var(--accent-glow)]'
+            : isHighlighted
+              ? 'border-[var(--border-glass)] bg-[var(--accent-dim)]/20 shadow-[var(--shadow-soft)]'
+              : 'border-[var(--border-glass)] bg-[var(--bg-glass)] opacity-25',
+        )}
+      >
+        <MessageCircle className="w-3 h-3 text-[var(--accent)] flex-shrink-0" />
+        <div className="truncate text-[var(--text-primary)]">{data.shortLabel || data.label}</div>
+      </div>
+      <Handle type="source" position={data.direction === 'LR' ? Position.Right : Position.Bottom} style={{ opacity: 0, pointerEvents: 'none' }} />
+    </>
+  )
+}
+
+export function DecisionNodeCompactComponent({ data, selected }: NodeProps) {
+  const isHighlighted = data.highlighted === true
+  return (
+    <>
+      <Handle type="target" position={data.direction === 'LR' ? Position.Left : Position.Top} style={{ opacity: 0, pointerEvents: 'none' }} />
+      <div
+        className={clsx(
+          'flex items-center gap-1 px-2 py-1',
+          'rounded-[6px] border text-[0.65rem] font-medium',
+          'transition-all duration-200',
+          selected
+            ? 'border-[var(--accent)] bg-[var(--accent-dim)] shadow-[0_0_8px_var(--accent-glow)]'
+            : isHighlighted
+              ? 'border-[var(--border-glass)] bg-[var(--accent-dim)]/20 shadow-[var(--shadow-soft)]'
+              : 'border-[var(--border-glass)] bg-[var(--bg-glass)] opacity-25',
+        )}
+      >
+        <Sparkles className="w-3 h-3 text-[var(--accent)] flex-shrink-0" />
+        <div className="truncate text-[var(--text-primary)]">{data.shortLabel || data.label}</div>
+      </div>
+      <Handle type="source" position={data.direction === 'LR' ? Position.Right : Position.Bottom} style={{ opacity: 0, pointerEvents: 'none' }} />
+    </>
+  )
+}
+
+export function ModelNodeCompactComponent({ data, selected }: NodeProps) {
+  const isHighlighted = data.highlighted === true
+  const isLaya = data.modelName === 'Laya'
+  return (
+    <>
+      <Handle type="target" position={data.direction === 'LR' ? Position.Left : Position.Top} style={{ opacity: 0, pointerEvents: 'none' }} />
+      <div
+        className={clsx(
+          'flex items-center gap-1 px-2 py-1',
+          'rounded-[6px] border text-[0.65rem] font-medium',
+          'transition-all duration-200',
+          isLaya && isHighlighted
+            ? 'border-[var(--accent)] bg-[var(--accent-dim)] shadow-[0_0_8px_var(--accent-glow)]'
+            : selected
+              ? 'border-[var(--accent)] bg-[var(--accent-dim)] shadow-[0_0_8px_var(--accent-glow)]'
+              : isHighlighted
+                ? 'border-[var(--border-glass)] bg-[var(--accent-dim)]/20 shadow-[var(--shadow-soft)]'
+                : 'border-[var(--border-glass)] bg-[var(--bg-glass)] opacity-25',
+        )}
+      >
+        {isLaya ? (
+          <Sparkles className="w-3 h-3 text-white flex-shrink-0" />
+        ) : (
+          <Cpu className="w-3 h-3 text-white flex-shrink-0" />
+        )}
+        <div className="truncate text-[var(--text-primary)]">{data.shortLabel || data.label}</div>
+      </div>
+      <Handle type="source" position={data.direction === 'LR' ? Position.Right : Position.Bottom} style={{ opacity: 0, pointerEvents: 'none' }} />
     </>
   )
 }

@@ -44,12 +44,12 @@ LAYA_ROLE_MIN_CONFIDENCE = 0.7
 # Document assistant intents: ordered dict mapping intent name to one-line criteria description
 INTENTS = OrderedDict([
     ("verify_signature", "Compare or verify a signature, handwriting, or document authenticity against a reference specimen or original"),
-    ("identify_person", "Identify who the document is about, find a person's name, determine document ownership or authorship, find an individual"),
+    ("identify_person", "Asks WHO a person is / whose document it is / which person it is about / the name of the person — the identity itself"),
     ("summarize", "Summarize content, extract key points, tl;dr, main takeaways, overview of the document"),
     ("extract_data", "Extract structured data from forms, tables, fields, amounts, dates, invoice items, entities, metadata, or billing information"),
     ("translate", "Translate document content into another language or check translation accuracy"),
     ("redact", "Remove, hide, obscure, or black out personal, sensitive, confidential, or private information"),
-    ("general_question", "Any other question about the document's content that doesn't fit the above categories"),
+    ("general_question", "Asks for a specific fact or detail from the document(s), e.g. a date (date of birth, due date), an amount, an address, an age, a status, or what the document says about someone/something"),
 ])
 
 # Singleton state

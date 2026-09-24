@@ -206,6 +206,37 @@ class TestPureIntentResolution:
         result, kws = _agent.rules_intent("anonymize", [])
         assert result == "redact"
 
+    def test_rules_intent_general_question_fact_lookup(self):
+        """Detect general_question for fact lookups (date of birth, address, etc.)."""
+        # Date of birth
+        result, kws = _agent.rules_intent("what is her date of birth?", [])
+        assert result == "general_question"
+        assert "date of birth" in kws
+        # Born
+        result, kws = _agent.rules_intent("when was he born?", [])
+        assert result == "general_question"
+        # Address
+        result, kws = _agent.rules_intent("what is the address?", [])
+        assert result == "general_question"
+        # Dutch: geboortedatum
+        result, kws = _agent.rules_intent("wat is haar geboortedatum?", [])
+        assert result == "general_question"
+        # Age
+        result, kws = _agent.rules_intent("how old is she?", [])
+        assert result == "general_question"
+        # Due date
+        result, kws = _agent.rules_intent("what is the due date?", [])
+        assert result == "general_question"
+
+    def test_rules_intent_who_question_not_fact_lookup(self):
+        """WHO questions should NOT be overridden by fact-lookup keywords."""
+        # "who is" should be identify_person, not general_question
+        result, kws = _agent.rules_intent("who is the person?", [])
+        assert result == "identify_person"
+        # Even if there's a "date" mention, "who is" takes priority
+        result, kws = _agent.rules_intent("who is the person with date of birth?", [])
+        assert result == "identify_person"
+
     def test_rules_intent_empty_message_defaults_to_summarize(self):
         """Empty message defaults to summarize intent."""
         result, kws = _agent.rules_intent("", [])
@@ -238,12 +269,13 @@ class TestPureIntentResolution:
         assert kws == []
 
     def test_resolve_intent_laya_confident(self):
-        """Use Laya when confident and it's not extract_data without keyword agreement."""
-        laya_result = {"intent": "identify_person", "confidence": 0.85, "probabilities": {"identify_person": 0.85}}
-        resolved = _agent.resolve_intent(laya_result, ("summarize", ["summarize"]))
-        assert resolved["intent"] == "identify_person"
+        """Use Laya when confident and it's not identify_person/extract_data without keyword agreement."""
+        # Use 'summarize' intent which has no special agreement rules
+        laya_result = {"intent": "summarize", "confidence": 0.85, "probabilities": {"summarize": 0.85}}
+        resolved = _agent.resolve_intent(laya_result, ("extract_data", ["extract"]))
+        assert resolved["intent"] == "summarize"
         assert resolved["source"] == "laya"
-        assert resolved["note"] == "Rules suggested summarize"
+        assert resolved["note"] == "Rules suggested extract_data"
 
     def test_resolve_intent_laya_uncertain_fallback_to_rules(self):
         """Fall back to rules when Laya uncertain."""
@@ -310,6 +342,42 @@ class TestPureIntentResolution:
         assert resolved["intent"] == "general_question"
         assert resolved["source"] == "rules"
         assert "Laya suggested extract_data (0.93)" in resolved.get("note") or ""
+
+    def test_resolve_intent_identify_person_agreement_both(self):
+        """Accept Laya's identify_person if rules also say identify_person."""
+        laya_result = {"intent": "identify_person", "confidence": 0.667, "probabilities": {}}
+        # Both agree on identify_person
+        resolved = _agent.resolve_intent(laya_result, ("identify_person", ["who is"]))
+        assert resolved["intent"] == "identify_person"
+        assert resolved["source"] == "laya"
+        assert resolved["note"] == "keyword rules agree"
+
+    def test_resolve_intent_identify_person_laya_weak_no_keywords(self):
+        """Reject Laya's identify_person (0.667) if rules don't say identify_person."""
+        laya_result = {"intent": "identify_person", "confidence": 0.667, "probabilities": {}}
+        # Laya says identify_person but question asks for a fact (date of birth)
+        resolved = _agent.resolve_intent(laya_result, ("general_question", ["date of birth"]))
+        assert resolved["intent"] == "general_question"
+        assert resolved["source"] == "rules"
+        note = resolved.get("note") or ""
+        assert "specific fact" in note
+
+    def test_resolve_intent_identify_person_laya_high_confidence(self):
+        """Accept Laya's identify_person if confidence >= 0.9 even without rule agreement."""
+        laya_result = {"intent": "identify_person", "confidence": 0.95, "probabilities": {}}
+        # Laya very confident in identify_person
+        resolved = _agent.resolve_intent(laya_result, ("general_question", ["date of birth"]))
+        assert resolved["intent"] == "identify_person"
+        assert resolved["source"] == "laya"
+        assert resolved["confidence"] == 0.95
+
+    def test_resolve_intent_identify_person_dutch_fact_lookup(self):
+        """Dutch fact lookup should use general_question."""
+        laya_result = {"intent": "identify_person", "confidence": 0.667, "probabilities": {}}
+        # Dutch: "wat is haar geboortedatum?" (what is her date of birth?)
+        resolved = _agent.resolve_intent(laya_result, ("general_question", ["geboortedatum"]))
+        assert resolved["intent"] == "general_question"
+        assert resolved["source"] == "rules"
 
 
 class TestRoleAssignment:

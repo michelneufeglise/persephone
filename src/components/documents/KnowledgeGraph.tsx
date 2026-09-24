@@ -14,12 +14,18 @@ import {
   useReactFlow,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { AlertCircle, X, ExternalLink, Menu, ChevronUp, ChevronDown, Maximize2 } from 'lucide-react'
+import { AlertCircle, X, ExternalLink, Menu, ChevronUp, ChevronDown, Maximize2, Lock } from 'lucide-react'
 import { clsx } from 'clsx'
 import { buildKnowledgeGraph, layoutKnowledgeGraph, NODE_SIZES } from './kgModel'
+import { layoutForce } from './kgForce'
 import { loadDocConversation, type DocConversationSummary } from '@/lib/docAgent'
-import { DocumentNodeComponent, QuestionNodeComponent, DecisionNodeComponent, ModelNodeComponent } from './kgNodes'
+import { DocumentNodeComponent, QuestionNodeComponent, DecisionNodeComponent, ModelNodeComponent, DocumentNodeCompactComponent, QuestionNodeCompactComponent, DecisionNodeCompactComponent, ModelNodeCompactComponent } from './kgNodes'
+import { FloatingEdge } from './kgFloatingEdge'
 import type { Message } from '@/types'
+
+// Define edgeTypes outside component to avoid re-creation
+const edgeTypesNetwork = { floating: FloatingEdge }
+const edgeTypesLayers = {}
 
 interface KnowledgeGraphProps {
   conversations: DocConversationSummary[]
@@ -35,6 +41,10 @@ const nodeTypes = {
   question: QuestionNodeComponent,
   decision: DecisionNodeComponent,
   model: ModelNodeComponent,
+  documentCompact: DocumentNodeCompactComponent,
+  questionCompact: QuestionNodeCompactComponent,
+  decisionCompact: DecisionNodeCompactComponent,
+  modelCompact: ModelNodeCompactComponent,
 }
 
 /**
@@ -398,13 +408,25 @@ const KnowledgeGraphInner = memo(
     const [nodes, setNodes, onNodesChange] = useNodesState<Node>([])
     const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
     const [graphDirection, setGraphDirection] = useState<'LR' | 'TB'>(isExpanded ? 'LR' : 'TB')
+    const [graphView, setGraphView] = useState<'network' | 'layers'>('network')
+    const [containerSize, setContainerSize] = useState<{ width: number; height: number }>({ width: 800, height: 600 })
+    // Previous layout = bookkeeping for warm-starting the next force layout; refs, not
+    // state, because it is written while computing the layout (state here would loop).
+    const previousPositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map())
+    const previousVirtualSizeRef = useRef<{ width: number; height: number } | null>(null)
+    const [zoomLevel, setZoomLevel] = useState(1)
+    const [lodMode, setLodMode] = useState<'full' | 'compact'>('full')
+    const [hoveredId, setHoveredId] = useState<string | null>(null)
+    const pinnedRef = useRef<Map<string, { x: number; y: number }>>(new Map())
     const containerRef = useRef<HTMLDivElement | null>(null)
 
-    // Load scope preference from localStorage
+    // Load scope and view preferences from localStorage
     useEffect(() => {
       try {
         const saved = localStorage.getItem('persephone-docs-kg-scope')
         if (saved === 'all') setScope('all')
+        const savedView = localStorage.getItem('persephone-docs-kg-view')
+        if (savedView === 'layers' || savedView === 'network') setGraphView(savedView)
       } catch {
         // ignore
       }
@@ -418,6 +440,15 @@ const KnowledgeGraphInner = memo(
         // ignore
       }
     }, [scope])
+
+    // Save view preference
+    useEffect(() => {
+      try {
+        localStorage.setItem('persephone-docs-kg-view', graphView)
+      } catch {
+        // ignore
+      }
+    }, [graphView])
 
     // Load all conversations when switching to 'all' scope
     useEffect(() => {
@@ -456,16 +487,30 @@ const KnowledgeGraphInner = memo(
       setContainerEl(el)
     }, [])
     useEffect(() => {
-      if (!containerEl || isExpanded) return
+      if (!containerEl) return
       let timeoutId: ReturnType<typeof setTimeout> | undefined
+      let lastWidth = containerEl.clientWidth
+      let lastHeight = containerEl.clientHeight
+
       const update = () => {
         const width = containerEl.clientWidth
-        // Hysteresis around ~540px so dragging across the threshold doesn't flap.
-        setGraphDirection(prev => (width >= 560 ? 'LR' : width < 520 ? 'TB' : prev))
+        const height = containerEl.clientHeight
+
+        // Update container size if changed by >40px
+        if (Math.abs(width - lastWidth) > 40 || Math.abs(height - lastHeight) > 40) {
+          setContainerSize({ width, height })
+          lastWidth = width
+          lastHeight = height
+        }
+
+        // Only update direction in TB/LR mode
+        if (!isExpanded) {
+          setGraphDirection(prev => (width >= 560 ? 'LR' : width < 520 ? 'TB' : prev))
+        }
       }
       const resizeObserver = new ResizeObserver(() => {
         if (timeoutId) clearTimeout(timeoutId)
-        timeoutId = setTimeout(update, 120)
+        timeoutId = setTimeout(update, 150)
       })
       resizeObserver.observe(containerEl)
       update()
@@ -495,9 +540,56 @@ const KnowledgeGraphInner = memo(
       }
 
       const graph = buildKnowledgeGraph(convsToUse, { highlightMessageId: selectedMessageId })
-      const effectiveDirection = isExpanded ? 'LR' : graphDirection
-      return layoutKnowledgeGraph(graph, { direction: effectiveDirection })
-    }, [scope, currentConversationId, currentMessages, liveMessages, loadedConversations, selectedMessageId, isExpanded, graphDirection])
+
+      // Use force layout if in network mode, otherwise use layered layout
+      if (graphView === 'network') {
+        // Prepare pinned coordinates (no scaling, just pass through)
+        const scaledPinned = new Map<string, { x: number; y: number }>()
+        if (pinnedRef.current.size > 0) {
+          for (const [id, pos] of pinnedRef.current) {
+            scaledPinned.set(id, { x: pos.x, y: pos.y })
+          }
+        }
+
+        const result = layoutForce(graph, {
+          width: containerSize.width,
+          height: containerSize.height,
+          previous: previousPositionsRef.current.size > 0 ? previousPositionsRef.current : undefined,
+          pinned: scaledPinned.size > 0 ? scaledPinned : undefined,
+          previousVirtualSize: previousVirtualSizeRef.current || undefined,
+        })
+
+        // Store positions and virtual size for next layout
+        const newPrevious = new Map<string, { x: number; y: number }>()
+        for (const node of result.nodes) {
+          newPrevious.set(node.id, {
+            x: node.position.x + NODE_SIZES[node.kind as keyof typeof NODE_SIZES].width / 2,
+            y: node.position.y + NODE_SIZES[node.kind as keyof typeof NODE_SIZES].height / 2,
+          })
+        }
+        previousPositionsRef.current = newPrevious
+        previousVirtualSizeRef.current = { width: result.virtualWidth, height: result.virtualHeight }
+
+        return result
+      } else {
+        const effectiveDirection = isExpanded ? 'LR' : graphDirection
+        return layoutKnowledgeGraph(graph, { direction: effectiveDirection })
+      }
+    }, [scope, currentConversationId, currentMessages, liveMessages, loadedConversations, selectedMessageId, isExpanded, graphDirection, graphView, containerSize])
+
+    // Track zoom level for LOD using a ref (useStore requires ReactFlowProvider context)
+    const lodZoomRef = useRef(1)
+    const handleMove = useCallback((_event: any, viewport: any) => {
+      lodZoomRef.current = viewport.zoom
+      const effectiveWidth = containerSize.width
+      const effectiveSize = viewport.zoom * effectiveWidth
+      setLodMode(effectiveSize < 300 ? 'compact' : 'full')
+    }, [containerSize])
+
+    // Calculate anyHighlighted for use in handlers
+    const anyHighlighted = useMemo(() => {
+      return graphData ? graphData.nodes.some(n => n.highlighted) : false
+    }, [graphData])
 
     // Update React Flow
     useEffect(() => {
@@ -507,12 +599,36 @@ const KnowledgeGraphInner = memo(
         return
       }
 
-      // Dim only when some path is actually highlighted; otherwise show everything.
-      const anyHighlighted = graphData.nodes.some(n => n.highlighted)
+      // Build neighbor set for hover dimming
+      const hoveredNeighbors = new Set<string>()
+      if (hoveredId && !anyHighlighted) {
+        hoveredNeighbors.add(hoveredId)
+        // Add direct neighbors via edges
+        for (const edge of graphData.edges) {
+          if (edge.source === hoveredId) {
+            hoveredNeighbors.add(edge.target)
+          } else if (edge.target === hoveredId) {
+            hoveredNeighbors.add(edge.source)
+          }
+        }
+      }
+
+      // LOD sizes: compact is smaller (14px label + 1 line ~28px height, 110px width)
+      const compactSizes = {
+        document: { width: 110, height: 28 },
+        question: { width: 110, height: 28 },
+        decision: { width: 110, height: 28 },
+        model: { width: 110, height: 28 },
+      }
+      const isCompact = lodMode === 'compact'
+      const sizes = isCompact ? compactSizes : NODE_SIZES
+
       const xyNodes: Node[] = graphData.nodes
         .filter(n => selectedKinds.has(n.kind))
         .map(n => {
-          const nodeSizes = NODE_SIZES[n.kind as keyof typeof NODE_SIZES] || NODE_SIZES.document
+          const nodeSizes = sizes[n.kind as keyof typeof sizes] || sizes.document
+          const nodeType = isCompact ? `${n.kind}Compact` : n.kind
+          const isDimmed = hoveredId && !anyHighlighted && !hoveredNeighbors.has(n.id)
           return {
             id: n.id,
             position: n.position,
@@ -522,49 +638,65 @@ const KnowledgeGraphInner = memo(
               kind: n.kind,
               highlighted: anyHighlighted ? n.highlighted : true,
               direction: isExpanded ? 'LR' : graphDirection,
-              shortLabel: n.label.length > 40 ? n.label.substring(0, 40) + '…' : n.label,
+              shortLabel: n.label.length > 18 ? n.label.substring(0, 18) + '…' : n.label,
+              isCompact,
+              dimmed: isDimmed,
+              isNetworkMode: graphView === 'network',
             },
-            type: n.kind,
+            type: nodeType,
             style: {
               width: nodeSizes.width,
               height: nodeSizes.height,
+              opacity: isDimmed ? 0.3 : 1,
+              transition: isDimmed ? 'opacity 200ms ease-in-out' : 'opacity 200ms ease-in-out',
             },
             selected: selectedNode?.id === n.id,
+            draggable: graphView === 'network',
           }
         })
 
       const sourceNodeIds = new Set(xyNodes.map(n => n.id))
       const containerWidth = containerRef.current?.clientWidth ?? 0
-      const shouldShowEdgeLabels = isExpanded || containerWidth >= 560
+      const shouldShowEdgeLabels = !isCompact && (isExpanded || containerWidth >= 560)
       const xyEdges: Edge[] = graphData.edges
         .filter(e => sourceNodeIds.has(e.source) && sourceNodeIds.has(e.target))
         .map(e => {
           // Truncate long labels to ~40 chars
           const truncatedLabel = e.label.length > 40 ? e.label.substring(0, 37) + '…' : e.label
+
+          // Show labels for hover neighbors' edges
+          const isHoverEdge = hoveredId && !anyHighlighted && (
+            (e.source === hoveredId || e.target === hoveredId)
+          )
+          const showLabel = shouldShowEdgeLabels && (e.highlighted || isHoverEdge)
+
+          const isDimmedEdge = hoveredId && !anyHighlighted && !isHoverEdge
+
           return {
             id: e.id,
             source: e.source,
             target: e.target,
-            label: shouldShowEdgeLabels ? truncatedLabel : (e.highlighted ? truncatedLabel : ''),
+            label: showLabel ? truncatedLabel : '',
             title: e.label, // tooltip with full text
+            type: graphView === 'network' ? 'floating' : undefined,
             markerEnd: {
               type: MarkerType.ArrowClosed,
               width: 20,
               height: 20,
-              color: e.highlighted ? 'var(--accent)' : 'var(--border)',
+              color: e.highlighted || isHoverEdge ? 'var(--accent)' : 'var(--border)',
             },
             style: {
-              opacity: anyHighlighted ? (e.highlighted ? 0.8 : 0.2) : 0.6,
+              opacity: anyHighlighted ? (e.highlighted ? 0.8 : 0.2) : isDimmedEdge ? 0.2 : 0.6,
               strokeDasharray: e.failed ? '5,5' : 'none',
-              stroke: e.failed ? 'rgb(239, 68, 68)' : e.highlighted ? 'var(--accent)' : 'var(--border)',
-              strokeWidth: e.highlighted ? 2.25 : 1.5,
+              stroke: e.failed ? 'rgb(239, 68, 68)' : e.highlighted || isHoverEdge ? 'var(--accent)' : 'var(--border)',
+              strokeWidth: (e.highlighted || isHoverEdge) ? 2.25 : 1.5,
             },
             // Edge labels are SVG: text uses `fill`, the pill is the label background rect.
             labelStyle: { fontSize: 10, fill: 'var(--text-secondary)', fontFamily: 'var(--font-family-body)' },
             labelBgStyle: { fill: 'var(--bg-glass-strong)', stroke: 'var(--border-glass)', strokeWidth: 1 },
             labelBgPadding: [6, 3],
             labelBgBorderRadius: 999,
-            animated: e.highlighted,
+            animated: (e.highlighted || isHoverEdge) as boolean,
           }
         })
 
@@ -572,7 +704,56 @@ const KnowledgeGraphInner = memo(
       setEdges(xyEdges)
     }, [graphData, selectedNode, selectedKinds, setNodes, setEdges, isExpanded, graphDirection])
 
-    // Empty state
+
+    const handleNodeClick = (e: React.MouseEvent, node: any) => {
+      e.stopPropagation()
+      setSelectedNode(node.data)
+    }
+
+    const handleNodeDragStop = useCallback((_event: any, node: any) => {
+      // Record the node's center position in pinned map
+      if (graphView === 'network') {
+        const kind = node.data.kind as keyof typeof NODE_SIZES
+        const centerX = node.position.x + (NODE_SIZES[kind]?.width || 0) / 2
+        const centerY = node.position.y + (NODE_SIZES[kind]?.height || 0) / 2
+        pinnedRef.current.set(node.id, { x: centerX, y: centerY })
+      }
+    }, [graphView])
+
+    const handleNodeMouseEnter = useCallback((e: React.MouseEvent, node: any) => {
+      if (graphView === 'network' && !anyHighlighted) {
+        setHoveredId(node.id)
+      }
+    }, [graphView, anyHighlighted])
+
+    const handleNodeMouseLeave = useCallback(() => {
+      setHoveredId(null)
+    }, [])
+
+    const handleUnpinAll = useCallback(() => {
+      pinnedRef.current.clear()
+      // Relayout by updating container size trigger
+      setContainerSize(s => ({ ...s }))
+    }, [])
+
+    const toggleKindFilter = (kind: string) => {
+      const newKinds = new Set(selectedKinds)
+      if (newKinds.has(kind)) {
+        newKinds.delete(kind)
+      } else {
+        newKinds.add(kind)
+      }
+      setSelectedKinds(newKinds)
+    }
+
+    // Reset pins and virtual size when scope changes
+    useEffect(() => {
+      pinnedRef.current.clear()
+      previousPositionsRef.current = new Map()
+      previousVirtualSizeRef.current = null
+    }, [scope, currentConversationId])
+
+    // Empty state — must stay AFTER every hook above (Rules of Hooks).
     if (!graphData || graphData.nodes.length === 0) {
       return (
         <div className="w-full h-full flex flex-col items-center justify-center gap-4 text-[var(--text-muted)] p-8">
@@ -593,38 +774,45 @@ const KnowledgeGraphInner = memo(
       )
     }
 
-    const handleNodeClick = (e: React.MouseEvent, node: any) => {
-      e.stopPropagation()
-      setSelectedNode(node.data)
-    }
-
-    const toggleKindFilter = (kind: string) => {
-      const newKinds = new Set(selectedKinds)
-      if (newKinds.has(kind)) {
-        newKinds.delete(kind)
-      } else {
-        newKinds.add(kind)
-      }
-      setSelectedKinds(newKinds)
-    }
-
     return (
       <div className="w-full h-full flex flex-col bg-[var(--bg-primary)]">
         {/* Header */}
         <div className="border-b border-[var(--border)] bg-[var(--bg-glass-strong)] backdrop-blur px-3 py-2.5 space-y-2">
           <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2">
-              <label className="text-[0.75rem] text-[var(--text-muted)] font-semibold uppercase tracking-wider">
-                Scope:
-              </label>
-              <select
-                value={scope}
-                onChange={e => setScope(e.target.value as 'current' | 'all')}
-                className="text-[0.75rem] px-2.5 py-1.5 rounded-lg border border-[var(--border-glass)] bg-[var(--bg-secondary)] text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] focus:ring-1 focus:ring-[var(--accent)]/30 transition-all font-medium"
-              >
-                <option value="current">This conversation</option>
-                <option value="all">All ({conversations.length})</option>
-              </select>
+            <div className="flex items-center gap-3">
+              {/* Scope selector */}
+              <div className="flex items-center gap-2">
+                <label className="text-[0.75rem] text-[var(--text-muted)] font-semibold uppercase tracking-wider">
+                  Scope:
+                </label>
+                <select
+                  value={scope}
+                  onChange={e => setScope(e.target.value as 'current' | 'all')}
+                  className="text-[0.75rem] px-2.5 py-1.5 rounded-lg border border-[var(--border-glass)] bg-[var(--bg-secondary)] text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] focus:ring-1 focus:ring-[var(--accent)]/30 transition-all font-medium"
+                >
+                  <option value="current">This conversation</option>
+                  <option value="all">All ({conversations.length})</option>
+                </select>
+              </div>
+
+              {/* View toggle: Network vs Layers */}
+              <div className="flex items-center gap-1 border border-[var(--border-glass)] rounded-lg bg-[var(--bg-secondary)] p-0.5">
+                {(['network', 'layers'] as const).map(view => (
+                  <button
+                    key={view}
+                    onClick={() => setGraphView(view)}
+                    className={clsx(
+                      'px-2.5 py-1 rounded-md text-[0.7rem] font-semibold uppercase tracking-wider transition-all',
+                      graphView === view
+                        ? 'bg-[var(--accent)] text-white shadow-[0_0_8px_var(--accent-glow)]'
+                        : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]',
+                    )}
+                    title={view === 'network' ? 'Force-directed network layout' : 'Layered hierarchical layout'}
+                  >
+                    {view}
+                  </button>
+                ))}
+              </div>
             </div>
 
             {/* Expand button (only show when not already expanded, i.e., in panel view) */}
@@ -639,7 +827,7 @@ const KnowledgeGraphInner = memo(
             )}
           </div>
 
-          {/* Filters */}
+          {/* Filters and unpin button */}
           <div className="flex items-center gap-1 flex-wrap">
             <span className="text-[0.7rem] text-[var(--text-muted)] font-semibold uppercase tracking-wider">Show:</span>
             {(['document', 'question', 'decision', 'model'] as const).map(kind => {
@@ -664,6 +852,16 @@ const KnowledgeGraphInner = memo(
                 </button>
               )
             })}
+            {pinnedRef.current.size > 0 && graphView === 'network' && (
+              <button
+                onClick={handleUnpinAll}
+                className="flex items-center gap-1 px-2 py-0.5 rounded-lg text-[0.65rem] font-medium uppercase tracking-wider bg-[var(--accent)]/20 text-[var(--accent)] hover:bg-[var(--accent)]/30 transition-all"
+                title="Clear all pinned nodes"
+              >
+                <Lock className="w-3 h-3" />
+                Unpin all
+              </button>
+            )}
           </div>
 
           {scope === 'all' && loadingCount > 0 && (
@@ -679,7 +877,12 @@ const KnowledgeGraphInner = memo(
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onNodeClick={handleNodeClick}
+            onNodeDragStop={handleNodeDragStop}
+            onNodeMouseEnter={handleNodeMouseEnter}
+            onNodeMouseLeave={handleNodeMouseLeave}
+            onMove={handleMove}
             nodeTypes={nodeTypes}
+            edgeTypes={graphView === 'network' ? edgeTypesNetwork : edgeTypesLayers}
             fitView
             fitViewOptions={{ padding: 0.15, minZoom: 0.4 }}
             minZoom={0.2}
