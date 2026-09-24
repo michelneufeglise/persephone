@@ -1,5 +1,5 @@
 import { useRef, useEffect, useCallback, useState } from 'react'
-import { AnimatePresence, motion } from 'framer-motion'
+import { motion } from 'framer-motion'
 import { Trash2 } from 'lucide-react'
 import { useAppStore } from '@/store/appStore'
 import { PersephoneIcon } from '@/components/PersephoneIcon'
@@ -9,12 +9,11 @@ import {
   enqueueTTS, stopTTS, extractNewSentences, extractTail,
   type SentenceCursor,
 } from '@/lib/tts'
-import { MessageBubble } from './MessageBubble'
+import { ChatPane } from './ChatPane'
 import { ChatTabs } from './ChatTabs'
-import { ChatInput } from './ChatInput'
 import { ModelSelector } from './ModelSelector'
 import { nanoid } from '@/store/nanoid'
-import type { Message } from '@/types'
+import type { Message, SendOpts } from '@/types'
 
 function syncToBackend(convId: string, conv: { title: string; model: string; updatedAt: number }, msg?: Message) {
   fetch('/api/memory/conversations', {
@@ -48,50 +47,8 @@ export function ChatWindow() {
   // `generatingConvs` (already subscribed via destructure) so re-renders
   // happen when the set changes.
   const activeIsGenerating = !!activeConversationId && generatingConvs.includes(activeConversationId)
-  const bottomRef      = useRef<HTMLDivElement>(null)
-  const scrollerRef    = useRef<HTMLDivElement>(null)
-  // "Stick to bottom" — true while the user is at (or near) the bottom of
-  // the transcript. Auto-scroll only fires when this is true; the moment
-  // the user scrolls up we release, so we don't yank them back down while
-  // they're reading an older part of the conversation.
-  const [stickBottom, setStickBottom] = useState(true)
 
   const conv = getActiveConversation()
-  const lastMsg = conv?.messages[conv.messages.length - 1]
-
-  // Compute a cheap dependency that ticks every time the tail of the
-  // conversation grows — number of messages, plus the length of the last
-  // message's content + thinkingContent + toolCalls. Streaming updates
-  // change these but the reference to conv doesn't.
-  const streamDep =
-    (conv?.messages.length ?? 0) + ':' +
-    (lastMsg?.content?.length ?? 0)   + ':' +
-    (lastMsg?.thinkingContent?.length ?? 0) + ':' +
-    (lastMsg?.toolCalls?.length ?? 0)
-
-  useEffect(() => {
-    if (!stickBottom) return
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-  }, [streamDep, stickBottom])
-
-  // Track the user's scroll position. If they're within ~120px of the
-  // bottom, we consider them "sticky"; anywhere higher and we release.
-  useEffect(() => {
-    const el = scrollerRef.current
-    if (!el) return
-    const onScroll = () => {
-      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
-      setStickBottom(distanceFromBottom < 120)
-    }
-    el.addEventListener('scroll', onScroll, { passive: true })
-    return () => el.removeEventListener('scroll', onScroll)
-  }, [])
-
-  // When the user switches conversations, snap to bottom instantly.
-  useEffect(() => {
-    setStickBottom(true)
-    bottomRef.current?.scrollIntoView({ block: 'end' })
-  }, [activeConversationId])
 
   useEffect(() => {
     if (!activeConversationId) createNewConversation()
@@ -113,7 +70,7 @@ export function ChatWindow() {
     )
   }, [])
 
-  async function handleSend(text: string, files?: File[]) {
+  async function handleSend(text: string, files?: File[], opts?: SendOpts) {
     if (!activeConversationId) return
     const convId = activeConversationId
     // Refuse if THIS tab is already generating — but a stream in a
@@ -384,46 +341,16 @@ export function ChatWindow() {
       {/* Browser-style tabs — switch between open conversations */}
       <ChatTabs />
 
-      {/* Messages */}
-      <div
-        ref={scrollerRef}
-        className="relative flex-1 overflow-y-auto px-5 py-5 space-y-1"
-        style={{ scrollbarWidth: 'thin', scrollbarColor: 'var(--scrollbar) transparent' }}
-      >
-        {messages.length === 0 && <EmptyState />}
-        <AnimatePresence initial={false}>
-          {messages.map(msg => (
-            <MessageBubble
-              key={msg.id}
-              message={msg}
-              onSpeak={settings.tts.enabled ? handleSpeak : undefined}
-            />
-          ))}
-        </AnimatePresence>
-        <div ref={bottomRef} />
-
-        {/* "Jump to latest" pill — visible when the user has scrolled up while
-            new tokens are still arriving. Clicking re-engages sticky-bottom. */}
-        {!stickBottom && (activeIsGenerating || (lastMsg?.isStreaming ?? false)) && (
-          <button
-            onClick={() => {
-              setStickBottom(true)
-              bottomRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
-            }}
-            className="sticky bottom-2 left-1/2 -translate-x-1/2 flex items-center gap-1.5 px-3 py-1.5
-              rounded-full text-[10px] font-mono uppercase tracking-wider text-white
-              transition-all hover:scale-105 active:scale-95 z-10"
-            style={{
-              background: 'linear-gradient(135deg, var(--accent), var(--accent-deep))',
-              boxShadow: '0 8px 22px -6px var(--accent-glow), 0 0 20px -4px var(--accent-glow)',
-            }}
-          >
-            ↓ jump to latest
-          </button>
-        )}
-      </div>
-
-      <ChatInput onSend={handleSend} onStop={handleStop} />
+      {/* Chat pane — message list + composer */}
+      <ChatPane
+        messages={messages}
+        isGenerating={activeIsGenerating}
+        onSend={handleSend}
+        onStop={handleStop}
+        onSpeak={settings.tts.enabled ? handleSpeak : undefined}
+        emptyState={<EmptyState />}
+        resetKey={activeConversationId}
+      />
     </div>
   )
 }

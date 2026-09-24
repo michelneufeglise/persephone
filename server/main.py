@@ -26,6 +26,7 @@ from fastapi.responses import Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+import paths
 import db as _db
 import tts_engine as _tts
 import hardware as _hw
@@ -48,6 +49,13 @@ import skills as _skills
 import planner as _planner
 import read_bridge as _read_bridge
 import flow_code as _flow_code
+import doc_graph as _doc_graph
+import doc_agent_hooks as _doc_agent_hooks
+import doc_agent_service as _doc_agent_service
+try:
+    import laya_decider as _laya
+except (ImportError, Exception):
+    _laya = None
 from dataclasses import dataclass
 
 
@@ -242,9 +250,20 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # turn doesn't pay a 1-3s cold-load penalty. Non-blocking.
     async def _prewarm_judge():
         try:
-            installed = await _installed_models()
             user_pref = await _db.get_config("judge_model") or ""
-            judge = user_pref if user_pref in installed else _pick_first_installed(
+
+            # Pre-warm Laya if configured
+            if user_pref == LAYA_JUDGE_ID and _laya is not None:
+                try:
+                    await asyncio.to_thread(_laya._get_or_create_router)
+                    log.info("auto-route judge warmed: %s (Laya)", LAYA_JUDGE_ID)
+                except Exception as exc:
+                    log.debug("Laya pre-warm skipped: %s", exc)
+                return
+
+            # Pre-warm LLM judge
+            installed = await _installed_models()
+            judge = user_pref if user_pref != LAYA_JUDGE_ID and user_pref in installed else _pick_first_installed(
                 ["qwen2.5:1.5b", "llama3.2:3b", "qwen2.5:3b", "qwen2.5:0.5b"],
                 installed,
             )
@@ -1073,6 +1092,20 @@ def _route_heuristic(
 # would hallucinate "vision" on any mention of "show", "look", etc.).
 _JUDGE_CATEGORIES = ["trivial", "code", "tools", "reasoning", "short", "default"]
 
+# Sentinel value for Laya built-in judge model
+LAYA_JUDGE_ID = "laya-builtin"
+
+# Judge criteria descriptions — keep in sync with _JUDGE_PROMPT categories.
+# Used by both the LLM judge and Laya to classify chat messages.
+_JUDGE_CRITERIA: dict[str, str] = {
+    "trivial": "pure greeting / ack: 'hi', 'thanks', 'ok', 'cool'. NOTHING else.",
+    "code": "programming task / debug / refactor / code review",
+    "tools": "needs live data (weather, news, web search, files, current time)",
+    "reasoning": "multi-step thinking, math, deep analysis, complex 'why'/'how'",
+    "short": "simple factual question that does NOT require recalling personal info",
+    "default": "general conversation, advice, brainstorming, opinions, anything referencing the user themselves",
+}
+
 _JUDGE_PROMPT = (
     "Classify the user message into ONE category. Return ONLY the JSON object.\n\n"
     "Categories (be STRICT — when in doubt prefer 'default'):\n"
@@ -1123,17 +1156,41 @@ _judge_lock = asyncio.Semaphore(1)
 
 
 async def _llm_judge(text: str, installed: set[str]) -> str | None:
-    """Structured classification by a small but instruction-tuned model.
+    """Structured classification by a small but instruction-tuned model (or Laya).
 
     Returns one of _VALID_CATEGORIES, or None on timeout / parse failure.
     First-pref: the user's wizard-chosen judge model (stored in the
-    `judge_model` config key). Falls back to qwen2.5:1.5b if unset/missing.
+    `judge_model` config key). Can be LAYA_JUDGE_ID (sentinel for Laya built-in).
+    Falls back to qwen2.5:1.5b if unset/missing.
     """
     if not text:
         return None
-    judge_model = None
+
     user_pref = await _db.get_config("judge_model") or ""
-    if user_pref and user_pref in installed:
+
+    # Try Laya if the sentinel is configured
+    if user_pref == LAYA_JUDGE_ID:
+        if _laya is not None:
+            try:
+                category = await asyncio.to_thread(
+                    _laya.judge_chat_category,
+                    text,
+                    _JUDGE_CRITERIA,
+                )
+                if category:
+                    log.info("auto-route judge: laya -> %s", category)
+                    return category
+                # Laya returned None (low confidence, invalid, or error) — fall through to LLM judge
+                log.debug("auto-route judge: laya unsure/unavailable, falling back to LLM judge")
+            except Exception:
+                # Laya exception — fall through to LLM judge
+                log.debug("auto-route judge: laya unsure/unavailable, falling back to LLM judge")
+                pass
+        # Laya unavailable or returned None — fall through to regular LLM judge
+
+    # Regular LLM judge path
+    judge_model = None
+    if user_pref and user_pref != LAYA_JUDGE_ID and user_pref in installed:
         judge_model = user_pref
     if not judge_model:
         judge_pref = ["qwen2.5:1.5b", "llama3.2:3b", "qwen2.5:3b", "qwen2.5:0.5b"]
@@ -4065,14 +4122,20 @@ async def setup_complete(req: WizardCompleteRequest):
         ("tables_model",      req.tables_model),
         ("multidoc_model",    req.multidoc_model),
         # judge_model drives auto-router classification + background fact
-        # extraction. Stored under both keys so both subsystems pick it up.
+        # extraction. Stored under both keys so both subsystems pick it up,
+        # EXCEPT when judge_model is LAYA_JUDGE_ID (which cannot do fact extraction).
         ("judge_model",       req.judge_model),
-        ("memory_model",      req.judge_model),
+    ]
+    # Mirror judge_model into memory_model ONLY if not Laya (Laya cannot do background fact extraction)
+    if req.judge_model != LAYA_JUDGE_ID:
+        pairs.append(("memory_model", req.judge_model))
+
+    pairs.extend([
         ("tts_voice",         req.tts_voice),
         ("tts_speed",         str(req.tts_speed)),
         ("theme",             req.theme),
         ("mcp_servers",       ",".join(req.mcp_servers)),
-    ]
+    ])
     for k, v in pairs:
         await _db.set_config(k, v)
     _emb.set_embed_model(req.embed_model or "")
@@ -4210,8 +4273,10 @@ async def update_model_roles(req: ModelRolesUpdate):
         _emb.set_embed_model(updates["embed_model"] or "")
     # judge_model also drives background fact-extraction; keep both in sync
     # (mirrors the wizard's own setup_complete behaviour).
+    # EXCEPT when judge_model is LAYA_JUDGE_ID (which cannot do fact extraction).
     if "judge_model" in updates:
-        await _db.set_config("memory_model", updates["judge_model"] or "")
+        if updates["judge_model"] != LAYA_JUDGE_ID:
+            await _db.set_config("memory_model", updates["judge_model"] or "")
     return {"ok": True, "updated": list(updates.keys())}
 
 
@@ -4518,6 +4583,119 @@ async def _resolve_doc_model(category: str = "docs") -> str:
     return ""
 
 
+class IngestTextRequest(BaseModel):
+    text: str
+    title: str | None = None
+    kind: str = "text"
+
+
+class RouteRequest(BaseModel):
+    doc_id: str
+    force: bool = False
+    override_model: str | None = None
+
+
+async def _resolve_doc_model_for(doc: "_idp.Document", category: str) -> str:
+    """
+    Resolve the model for an IDP operation, considering routing override and cached routing.
+
+    Precedence:
+    1. If doc.meta['route_override'] exists (a model ID string), return it
+    2. If doc.meta.get('route') exists and category in {docs, text} (text-oriented ops),
+       use the routed category's model
+    3. Otherwise use the standard _resolve_doc_model(category)
+
+    Args:
+        doc: The Document object
+        category: The operation category (ocr, docs, handwriting, tables, multidoc, text)
+
+    Returns:
+        The model ID to use for this operation
+    """
+    # Use pure routing logic
+    routed = _doc_graph.pick_routed_model(doc.meta, category)
+    if routed:
+        return routed
+
+    # Default: use standard resolution
+    return await _resolve_doc_model(category)
+
+
+@app.post("/api/idp/ingest-text")
+async def idp_ingest_text(req: IngestTextRequest):
+    """Ingest plain text or email into a Document."""
+    if not req.text or not req.text.strip():
+        raise HTTPException(422, "text cannot be empty or whitespace")
+    if len(req.text.encode("utf-8")) > 2 * 1024 * 1024:
+        raise HTTPException(413, "text too large (max 2MB)")
+    doc = await _idp.ingest_text(req.text, title=req.title, kind=req.kind)
+    return doc.to_dict()
+
+
+@app.post("/api/idp/route")
+async def idp_route(req: RouteRequest):
+    """
+    Route a document to determine its processing model.
+
+    Returns the routing result from doc_graph.run_routing.
+    Caches the result in doc.meta['route'] and persists it.
+
+    If override_model is provided and non-empty, it is stored and forces recomputation.
+    If override_model is empty string, clears any existing override.
+    If override_model is absent (None), reuses existing override if present.
+    """
+    doc = _idp_guard(req.doc_id)
+
+    # Handle override_model: distinguish 'field absent' from 'null'/empty string
+    # using the pure planning function
+    override_present = "override_model" in req.model_fields_set
+    force, override_to_pass = _doc_graph.plan_route_request(
+        doc.meta, override_present, req.override_model, req.force
+    )
+
+    # Check if cached route exists and should be returned
+    if doc.meta.get("route") and not force:
+        return doc.meta["route"]
+
+    # Pre-resolve models for all categories asynchronously
+    categories = ["ocr", "docs", "handwriting", "tables", "multidoc", "text"]
+    models = {}
+    for cat in categories:
+        models[cat] = await _resolve_doc_model(cat)
+
+    # Get Laya decider (sync, may be None if unavailable)
+    def decide_fn(text: str):
+        if _laya is None:
+            return None
+        return _laya.decide(text)
+
+    # Run routing synchronously via asyncio.to_thread
+    def resolve_model_fn(category: str) -> str | None:
+        return models.get(category)
+
+    route_result = await asyncio.to_thread(
+        _doc_graph.run_routing,
+        doc,
+        decide=decide_fn,
+        resolve_model=resolve_model_fn,
+        override_model=override_to_pass,
+    )
+
+    # Cache the result
+    doc.meta["route"] = route_result
+    _idp._save_registry()
+
+    return route_result
+
+
+@app.get("/api/idp/route/status")
+async def idp_route_status():
+    """Get the status of the Laya routing model."""
+    if _laya is None:
+        return {"available": False, "loaded": False, "device": None}
+    return _laya.status()
+
+
 @app.get("/api/idp/documents")
 async def idp_list():
     return {"documents": _idp.list_documents()}
@@ -4594,7 +4772,7 @@ async def idp_ocr(req: IDPRequest):
 @app.post("/api/idp/summarize")
 async def idp_summarize(req: IDPRequest):
     doc   = _idp_guard(req.doc_id)
-    model = await _resolve_doc_model("text")
+    model = await _resolve_doc_model_for(doc, "text")
     style = req.options.get("style", "brief")
     return {"text": await _run_idp(_idp.summarize(doc, model, style)), "model": model}
 
@@ -4605,7 +4783,7 @@ async def idp_qa(req: IDPRequest):
     q   = req.options.get("question", "")
     if not q:
         raise HTTPException(400, "question required")
-    model = await _resolve_doc_model("docs")
+    model = await _resolve_doc_model_for(doc, "docs")
     return {"text": await _run_idp(_idp.qa(doc, model, q)), "model": model}
 
 
@@ -4613,6 +4791,20 @@ class MultiQARequest(BaseModel):
     doc_ids:  list[str]
     question: str
     auto_ocr: bool = True
+
+
+class AgentAttachment(BaseModel):
+    doc_id: str
+    role: str = "auto"
+
+
+class AgentRequest(BaseModel):
+    conversation_id: str | None = None
+    message: str = ""
+    attachments: list[AgentAttachment] = []
+    model_override: str | None = None
+    user_message_id: str | None = None
+    assistant_message_id: str | None = None
 
 
 @app.post("/api/idp/multi-qa")
@@ -4684,7 +4876,7 @@ async def idp_stream(op: str, req: IDPRequest):
     doc = _idp_guard(req.doc_id)
     if op == "qa" and not (req.options.get("question") or "").strip():
         raise HTTPException(400, "question required")
-    model = await _resolve_doc_model("docs" if op == "qa" else "text")
+    model = await _resolve_doc_model_for(doc, "docs" if op == "qa" else "text")
     prompt = _idp.build_prompt(op, doc, req.options)
     think = _supports_native_thinking(model)
 
@@ -4776,21 +4968,21 @@ async def idp_tables(req: IDPRequest):
 @app.post("/api/idp/entities")
 async def idp_entities(req: IDPRequest):
     doc   = _idp_guard(req.doc_id)
-    model = await _resolve_doc_model("text")
+    model = await _resolve_doc_model_for(doc, "text")
     return {"entities": await _run_idp(_idp.extract_entities(doc, model)), "model": model}
 
 
 @app.post("/api/idp/classify")
 async def idp_classify(req: IDPRequest):
     doc   = _idp_guard(req.doc_id)
-    model = await _resolve_doc_model("text")
+    model = await _resolve_doc_model_for(doc, "text")
     return {"classification": await _run_idp(_idp.classify(doc, model)), "model": model}
 
 
 @app.post("/api/idp/translate")
 async def idp_translate(req: IDPRequest):
     doc    = _idp_guard(req.doc_id)
-    model  = await _resolve_doc_model("text")
+    model  = await _resolve_doc_model_for(doc, "text")
     target = req.options.get("target", "French")
     return {"text": await _run_idp(_idp.translate(doc, model, target)), "model": model}
 
@@ -4798,7 +4990,7 @@ async def idp_translate(req: IDPRequest):
 @app.post("/api/idp/redact")
 async def idp_redact(req: IDPRequest):
     doc   = _idp_guard(req.doc_id)
-    model = await _resolve_doc_model("text")
+    model = await _resolve_doc_model_for(doc, "text")
     cats  = req.options.get("categories", [])
     return {"text": await _run_idp(_idp.redact(doc, model, cats)), "model": model}
 
@@ -4806,7 +4998,7 @@ async def idp_redact(req: IDPRequest):
 @app.post("/api/idp/humanize")
 async def idp_humanize(req: IDPRequest):
     doc       = _idp_guard(req.doc_id)
-    model     = await _resolve_doc_model("text")
+    model     = await _resolve_doc_model_for(doc, "text")
     tone      = req.options.get("tone", "natural")
     intensity = req.options.get("intensity", "medium")
     return {
@@ -4849,6 +5041,144 @@ async def idp_export(fmt: str, req: IDPRequest):
     )
 
 
+# ── Agent endpoint for document understanding ──────────────────────────────
+
+def _agent_tmp_dir() -> Path:
+    """Get/create the temp directory for agent operations."""
+    tmp = paths.uploads_dir() / "_agent_tmp"
+    tmp.mkdir(parents=True, exist_ok=True)
+    return tmp
+
+
+async def _cleanup_agent_tmp() -> None:
+    """Delete files older than 1 hour in the agent temp directory."""
+    import glob
+    tmp = _agent_tmp_dir()
+    now = time.time()
+    try:
+        for filepath in glob.glob(str(tmp / "*")):
+            p = Path(filepath)
+            if p.stat().st_mtime < now - 3600:
+                try:
+                    if p.is_file():
+                        p.unlink()
+                    elif p.is_dir():
+                        import shutil
+                        shutil.rmtree(p, ignore_errors=True)
+                except Exception:
+                    pass  # Ignore cleanup errors
+    except Exception:
+        pass  # Ignore cleanup errors
+
+
+async def _get_ollama_tags() -> list[dict]:
+    """Fetch list of installed models from Ollama /api/tags."""
+    try:
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            resp = await client.get(f"{OLLAMA_BASE}/api/tags")
+            if resp.status_code == 200:
+                return resp.json().get("models", [])
+    except Exception:
+        pass
+    return []
+
+
+# Model capabilities cache: {model_name -> (timestamp, [capabilities])}
+_model_capabilities_cache: dict[str, tuple[float, list[str] | None]] = {}
+_model_capabilities_lock = asyncio.Lock()
+
+
+async def _get_model_capabilities(model_name: str) -> list[str] | None:
+    """
+    Get capabilities list for a model from Ollama /api/show.
+
+    Returns a list of capabilities (e.g., ['completion', 'vision', ...]) or None if unknown/failed.
+    Caches results with 5-minute TTL. 4-second timeout per request.
+    """
+    global _model_capabilities_cache
+
+    # Check cache
+    now = time.time()
+    async with _model_capabilities_lock:
+        if model_name in _model_capabilities_cache:
+            timestamp, cached = _model_capabilities_cache[model_name]
+            if now - timestamp < 300.0:  # 5-minute TTL
+                return cached
+
+    # Fetch fresh
+    try:
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            resp = await client.post(
+                f"{OLLAMA_BASE}/api/show",
+                json={"model": model_name},
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                capabilities = data.get("capabilities", [])
+                # Store in cache
+                async with _model_capabilities_lock:
+                    _model_capabilities_cache[model_name] = (now, capabilities)
+                return capabilities
+    except Exception:
+        pass
+
+    # On any failure, cache None and return None
+    async with _model_capabilities_lock:
+        _model_capabilities_cache[model_name] = (now, None)
+    return None
+
+
+@app.post("/api/idp/agent")
+async def idp_agent(req: AgentRequest):
+    """
+    Document agent endpoint: analyze attachments with reasoning.
+    Streams SSE events. Validation errors are emitted as SSE events before [DONE].
+    """
+    # Clean up old temp files (non-blocking)
+    try:
+        await _cleanup_agent_tmp()
+    except Exception:
+        pass
+
+    # Convert request to dict for agent_sse (convert Pydantic objects to dicts)
+    req_dict = {
+        "conversation_id": req.conversation_id,
+        "message": req.message,
+        "attachments": [{"doc_id": a.doc_id, "role": a.role} for a in req.attachments],
+        "model_override": req.model_override,
+        "user_message_id": req.user_message_id,
+        "assistant_message_id": req.assistant_message_id,
+    }
+
+    # Build the hooks
+    hooks = await _doc_agent_hooks.build_hooks(
+        _doc_agent_hooks.HookDeps(
+            get_doc=_idp.get_document,
+            resolve_doc_model=_resolve_doc_model,
+            resolve_doc_model_for=_resolve_doc_model_for,
+            get_config=_db.get_config,
+            installed_models=_installed_models,
+            name_is_vision=_idp._name_is_vision,
+            ollama_tags=_get_ollama_tags,
+            run_ocr=_idp.run_ocr,
+            stream_text=_idp.stream_text,
+            vision_call=lambda model, prompt, image_paths, **kw: _idp._ollama_vision_call(
+                model, prompt, image_paths, num_predict=kw.get("num_predict", 2048)
+            ),
+            supports_thinking=_supports_native_thinking,
+            tmp_dir=_agent_tmp_dir,
+            model_capabilities=_get_model_capabilities,
+            laya=_laya,
+            model_override=req.model_override,
+        )
+    )
+
+    return StreamingResponse(
+        _doc_agent_service.agent_sse(req_dict, hooks, _db), media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 # ── Judge-based category picker for user-triggered "send to worker" ─────────
 # Uses the same tiny model class the auto-router judge uses. Emits one of
 # the delegate categories from a JSON-schema-constrained response so a
@@ -4888,12 +5218,18 @@ async def _judge_delegate_category(text: str) -> str:
     """
     Ask the judge model which delegate category best fits `text`.
     Falls back to 'general' on any failure — cheap + safe.
+
+    Note: if the configured judge is Laya (sentinel), it is treated as unset
+    here since delegate categories differ from chat routing categories.
     """
     text = (text or "").strip()
     if not text:
         return "general"
     installed = await _installed_models()
     user_pref = (await _db.get_config("judge_model")) or ""
+    # Treat Laya sentinel as unset; delegate uses different categories
+    if user_pref == LAYA_JUDGE_ID:
+        user_pref = ""
     prefs = [user_pref, "qwen2.5:1.5b", "qwen2.5:0.5b",
              "llama3.2:1b", "llama3.2:3b", "qwen2.5:3b", "qwen2.5:7b"]
     model = _pick_first_installed(prefs, installed)

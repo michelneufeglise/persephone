@@ -44,6 +44,10 @@ export interface Message {
   attachments?: { name: string; kind: 'image' | 'doc'; preview?: string }[]
 }
 
+export interface SendOpts {
+  roles?: ('auto' | 'subject' | 'reference')[]
+}
+
 export interface DelegatedTask {
   id:              string
   conversation_id: string

@@ -13,7 +13,7 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:8000',
+        target: `http://localhost:${process.env.PERSEPHONE_API_PORT || 8000}`,
         changeOrigin: true,
       },
     },

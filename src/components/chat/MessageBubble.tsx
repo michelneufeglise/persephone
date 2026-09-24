@@ -11,9 +11,12 @@ interface MessageBubbleProps {
   message: Message
   onSpeak?: (text: string) => void
   isLatest?: boolean
+  renderExtra?: (message: Message) => React.ReactNode
+  onSelect?: (message: Message) => void
+  selected?: boolean
 }
 
-export function MessageBubble({ message, onSpeak, isLatest }: MessageBubbleProps) {
+export function MessageBubble({ message, onSpeak, isLatest, renderExtra, onSelect, selected }: MessageBubbleProps) {
   const [copied, setCopied]       = useState(false)
   const [exportingPdf, setExportingPdf] = useState(false)
   const isUser = message.role === 'user'
@@ -106,7 +109,18 @@ export function MessageBubble({ message, onSpeak, isLatest }: MessageBubbleProps
       )}
 
       {/* Bubble */}
-      <div className={`max-w-[75%] flex flex-col ${isUser ? 'items-end' : 'items-start'}`}>
+      <div
+        className={`max-w-[75%] flex flex-col ${isUser ? 'items-end' : 'items-start'} ${
+          !isUser && onSelect ? 'cursor-pointer' : ''
+        }`}
+        onClick={() => !isUser && onSelect && onSelect(message)}
+        style={!isUser && onSelect && selected ? {
+          outline: '2px solid var(--accent)',
+          outlineOffset: '2px',
+          borderRadius: '12px',
+          padding: '2px',
+        } : {}}
+      >
         {/* "Sent to worker" badge on user turns dispatched via the amber Bot button */}
         {isUser && (message.meta as { sent_to_worker?: boolean } | undefined)?.sent_to_worker && (
           <div className="flex items-center gap-1.5 mb-1.5 mr-2 justify-end">
@@ -213,6 +227,13 @@ export function MessageBubble({ message, onSpeak, isLatest }: MessageBubbleProps
                 )}
               </div>
             ))}
+          </div>
+        )}
+
+        {/* Extra content — optional rendering hook for custom content */}
+        {renderExtra && (
+          <div className="mt-2">
+            {renderExtra(message)}
           </div>
         )}
 

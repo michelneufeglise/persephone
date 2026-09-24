@@ -209,3 +209,80 @@ export async function streamMultiQa(
   })
   await consumeSSE(res, h)
 }
+
+// ── Routing & text ingest ──────────────────────────────────────────
+export interface RouteTraceStep {
+  node: string
+  status: 'ok' | 'skipped' | 'fallback' | 'error'
+  ms: number
+  detail: string
+  output?: unknown
+}
+
+export interface RouteDecision {
+  kind: string | null
+  confidence: number | null
+  complexity: number | null
+  probabilities: Record<string, number>
+  source: 'laya' | 'rules'
+}
+
+export interface RouteProbe {
+  mime: string
+  pages: number
+  chars: number
+  has_text_layer: boolean
+  has_page_images: boolean
+  table_density: number
+  is_email: boolean
+}
+
+export interface RouteResult {
+  doc_id: string
+  category: 'ocr' | 'docs' | 'handwriting' | 'tables' | 'multidoc' | 'text'
+  model: string | null
+  reason: string
+  overridden: boolean
+  decision: RouteDecision
+  probe: RouteProbe
+  trace: RouteTraceStep[]
+}
+
+export interface LayaStatus {
+  available: boolean
+  loaded: boolean
+  device?: string
+}
+
+export async function ingestText(text: string, title?: string, kind?: 'email' | 'text'): Promise<IDPDocument | null> {
+  const r = await fetch('/api/idp/ingest-text', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text, title, kind }),
+  })
+  if (!r.ok) throw new Error(`Ingest failed: ${r.status}`)
+  return await r.json()
+}
+
+export async function routeDocument(docId: string, opts?: { force?: boolean; overrideModel?: string | null }): Promise<RouteResult> {
+  const r = await fetch('/api/idp/route', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ doc_id: docId, force: opts?.force ?? false, override_model: opts?.overrideModel }),
+  })
+  if (!r.ok) {
+    let msg = `Route failed (HTTP ${r.status})`
+    try {
+      const body = await r.json()
+      if (typeof body?.detail === 'string') msg = body.detail
+    } catch { /* not JSON */ }
+    throw new Error(msg)
+  }
+  return await r.json()
+}
+
+export async function layaStatus(): Promise<LayaStatus> {
+  const r = await fetch('/api/idp/route/status')
+  if (!r.ok) return { available: false, loaded: false }
+  return await r.json()
+}

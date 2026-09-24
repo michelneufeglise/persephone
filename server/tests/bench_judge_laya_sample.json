@@ -1,0 +1,144 @@
+{
+  "samples": [
+    {
+      "category": "trivial",
+      "text": "hi"
+    },
+    {
+      "category": "trivial",
+      "text": "thanks!"
+    },
+    {
+      "category": "trivial",
+      "text": "ok cool"
+    },
+    {
+      "category": "trivial",
+      "text": "roger that"
+    },
+    {
+      "category": "trivial",
+      "text": "lol yes"
+    },
+    {
+      "category": "code",
+      "text": "debug this Python script for me"
+    },
+    {
+      "category": "code",
+      "text": "how do I refactor this JavaScript code to use async/await?"
+    },
+    {
+      "category": "code",
+      "text": "review this Go implementation for performance issues"
+    },
+    {
+      "category": "code",
+      "text": "help me fix this TypeScript type error in my React component"
+    },
+    {
+      "category": "code",
+      "text": "write a Python script that processes CSV files"
+    },
+    {
+      "category": "tools",
+      "text": "what's the weather in Tokyo right now?"
+    },
+    {
+      "category": "tools",
+      "text": "search the web for latest news about AI"
+    },
+    {
+      "category": "tools",
+      "text": "what's today's date and time?"
+    },
+    {
+      "category": "tools",
+      "text": "find information about SpaceX's latest launch"
+    },
+    {
+      "category": "tools",
+      "text": "look up the price of Bitcoin"
+    },
+    {
+      "category": "reasoning",
+      "text": "prove that sqrt(2) is irrational"
+    },
+    {
+      "category": "reasoning",
+      "text": "explain why machine learning models need regularization"
+    },
+    {
+      "category": "reasoning",
+      "text": "how do quantum computers differ from classical computers?"
+    },
+    {
+      "category": "reasoning",
+      "text": "walk me through the logic of how TCP handshakes work"
+    },
+    {
+      "category": "reasoning",
+      "text": "what are the philosophical implications of determinism?"
+    },
+    {
+      "category": "short",
+      "text": "what is the capital of France?"
+    },
+    {
+      "category": "short",
+      "text": "who wrote the Odyssey?"
+    },
+    {
+      "category": "short",
+      "text": "what year did the Berlin Wall fall?"
+    },
+    {
+      "category": "short",
+      "text": "how many planets are in our solar system?"
+    },
+    {
+      "category": "short",
+      "text": "what is the chemical formula for water?"
+    },
+    {
+      "category": "default",
+      "text": "do you remember my name?"
+    },
+    {
+      "category": "default",
+      "text": "what did we talk about last time?"
+    },
+    {
+      "category": "default",
+      "text": "help me brainstorm ideas for a side project"
+    },
+    {
+      "category": "default",
+      "text": "what do you think about my career change?"
+    },
+    {
+      "category": "default",
+      "text": "can you help me with advice on my personal situation?"
+    },
+    {
+      "category": "code",
+      "text": "¿Cómo optimizo este código Java?"
+    },
+    {
+      "category": "short",
+      "text": "كم عدد أيام السنة الميلادية؟"
+    },
+    {
+      "category": "trivial",
+      "text": "محاسنك"
+    },
+    {
+      "category": "tools",
+      "text": "what time is it in London right now?"
+    },
+    {
+      "category": "reasoning",
+      "text": "explain the Fermi paradox in detail"
+    }
+  ]
+}

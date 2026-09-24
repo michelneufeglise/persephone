@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
-import { RefreshCw, Loader2, Boxes } from 'lucide-react'
+import { RefreshCw, Loader2, Boxes, AlertCircle } from 'lucide-react'
 import { Panel } from '@/components/ui/Panel'
 import { Select } from '@/components/ui/Select'
 import { Button } from '@/components/ui/Button'
 import { useAppStore } from '@/store/appStore'
 import { fetchModels } from '@/lib/ollama'
+import { layaStatus } from '@/lib/idp'
 import { clsx } from 'clsx'
 
 const ROLES = [
@@ -75,6 +76,7 @@ export function ModelRolesSection() {
   const [refreshing, setRefreshing] = useState(false)
   const [savingKey, setSavingKey] = useState<RoleKey | null>(null)
   const [error, setError]         = useState('')
+  const [layaAvailable, setLayaAvailable] = useState(false)
 
   const loadRoles = useCallback(async () => {
     const r = await fetch('/api/models/roles')
@@ -82,11 +84,20 @@ export function ModelRolesSection() {
     setRoles({ ...EMPTY_ROLES, ...(await r.json()) })
   }, [])
 
+  const loadLayaStatus = useCallback(async () => {
+    try {
+      const status = await layaStatus()
+      setLayaAvailable(status.available)
+    } catch {
+      setLayaAvailable(false)
+    }
+  }, [])
+
   const refresh = useCallback(async (showSpinner: boolean) => {
     if (showSpinner) setRefreshing(true)
     setError('')
     try {
-      const [list] = await Promise.all([fetchModels(), loadRoles()])
+      const [list] = await Promise.all([fetchModels(), loadRoles(), loadLayaStatus()])
       setModels(list)
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : String(exc))
@@ -94,7 +105,7 @@ export function ModelRolesSection() {
       if (showSpinner) setRefreshing(false)
       setLoading(false)
     }
-  }, [loadRoles, setModels])
+  }, [loadRoles, loadLayaStatus, setModels])
 
   useEffect(() => { refresh(false) }, [refresh])
 
@@ -111,7 +122,15 @@ export function ModelRolesSection() {
   function optionsFor(roleKey: RoleKey, current: string) {
     const source = roleKey === 'embed_model' ? embedNames : installedNames
     const opts = source.map(n => ({ value: n, label: n }))
-    if (current && !source.includes(current)) {
+
+    // Add Laya option for judge_model
+    if (roleKey === 'judge_model') {
+      if (layaAvailable) {
+        opts.unshift({ value: 'laya-builtin', label: 'Laya (built-in · experimental)' })
+      }
+    }
+
+    if (current && !source.includes(current) && current !== 'laya-builtin') {
       opts.unshift({ value: current, label: `${current} (not installed)` })
     }
     const required = ROLES.find(r => r.key === roleKey)?.required
@@ -201,6 +220,14 @@ export function ModelRolesSection() {
                 options={optionsFor(role.key, roles[role.key])}
                 placeholder={installedNames.length === 0 ? 'No models installed' : undefined}
               />
+              {role.key === 'judge_model' && roles[role.key] === 'laya-builtin' && (
+                <Panel className="px-3 py-2.5 bg-blue-950/30 border border-blue-500/20 flex gap-2 items-start">
+                  <AlertCircle className="w-3.5 h-3.5 text-blue-400 flex-shrink-0 mt-0.5" />
+                  <p className="text-xs text-blue-300 leading-relaxed">
+                    Fast (~0.2 s), no Ollama model needed, ~1.5 GB RAM while active. Early tests showed limited accuracy on chat routing, so it only decides when confident and otherwise falls back to the LLM judge.
+                  </p>
+                </Panel>
+              )}
             </Panel>
           ))}
         </div>

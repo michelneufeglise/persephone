@@ -5,6 +5,8 @@ dist-electron
 .venv
 build-resources
 server/__pycache__
+__pycache__/
+*.pyc
 server/persephone.db
 server/uploads
 .DS_Store

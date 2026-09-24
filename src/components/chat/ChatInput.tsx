@@ -2,27 +2,38 @@ import { useState, useRef, useEffect } from 'react'
 import { Send, Square, Paperclip, X } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useAppStore } from '@/store/appStore'
+import type { SendOpts } from '@/types'
 
 interface ChatInputProps {
-  onSend: (text: string, files?: File[]) => void
+  onSend: (text: string, files?: File[], opts?: SendOpts) => void | Promise<void>
   onStop: () => void
+  isGenerating?: boolean
+  placeholder?: string
+  accept?: string
+  enableRoles?: boolean
+  largePasteChars?: number
 }
 
-export function ChatInput({ onSend, onStop }: ChatInputProps) {
+export function ChatInput({
+  onSend,
+  onStop,
+  isGenerating: isGeneratingProp,
+  placeholder = 'Ask Persephone anything…',
+  accept = 'image/*,.pdf,.docx,.doc,.xlsx,.csv,.txt,.md,.rtf,.pptx,.odt,.html,.htm,.json',
+  enableRoles,
+  largePasteChars,
+}: ChatInputProps) {
   const [value, setValue] = useState('')
   const [files, setFiles] = useState<File[]>([])
+  const [fileRoles, setFileRoles] = useState<('auto' | 'subject' | 'reference')[]>([])
+  const [dragActive, setDragActive] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileRef = useRef<HTMLInputElement>(null)
-  // Gate ONLY on the active tab. If a different tab is streaming, this
-  // one should still accept a new message so the user can compare in
-  // parallel — the whole point of the tab strip.
-  //
-  // Subscribe directly to the two slices we care about so React re-renders
-  // when generatingConvs changes; a plain isConvGenerating() call wouldn't
-  // trigger a subscription.
+
+  // Use prop if provided, otherwise read from store (for backward compatibility)
   const activeConversationId = useAppStore(s => s.activeConversationId)
-  const generatingConvs      = useAppStore(s => s.generatingConvs)
-  const isGenerating = !!activeConversationId && generatingConvs.includes(activeConversationId)
+  const generatingConvs = useAppStore(s => s.generatingConvs)
+  const isGenerating = isGeneratingProp ?? (!!activeConversationId && generatingConvs.includes(activeConversationId))
 
   useEffect(() => {
     const ta = textareaRef.current
@@ -38,38 +49,166 @@ export function ChatInput({ onSend, onStop }: ChatInputProps) {
     }
   }
 
+  function handlePaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    // If largePasteChars is not set or no items in clipboard, do default paste
+    if (!largePasteChars || !e.clipboardData.items) return
+
+    let hasLargeText = false
+    let textData = ''
+
+    for (const item of e.clipboardData.items) {
+      if (item.kind === 'string' && item.type === 'text/plain') {
+        const text = e.clipboardData.getData('text/plain')
+        if (text.length > largePasteChars) {
+          hasLargeText = true
+          textData = text
+          break
+        }
+      }
+    }
+
+    if (!hasLargeText) return
+
+    e.preventDefault()
+
+    // Detect if it's an email (RFC822 message)
+    let fileName = 'pasted-text.txt'
+    let mimeType = 'text/plain'
+    const emailHeaderCount = (textData.match(/^(From|To|Subject|Date):/gm) || []).length
+    if (emailHeaderCount >= 2) {
+      fileName = 'pasted-email.eml'
+      mimeType = 'message/rfc822'
+    }
+
+    // Create File from pasted text
+    const file = new File([textData], fileName, { type: mimeType })
+    const newFiles = [...files, file]
+    setFiles(newFiles)
+    // Initialize roles to all 'auto'
+    setFileRoles([...fileRoles, 'auto'])
+  }
+
+  function handleDragOver(e: React.DragEvent<HTMLDivElement>) {
+    if (!enableRoles) return
+    e.preventDefault()
+    e.stopPropagation()
+    setDragActive(true)
+  }
+
+  function handleDragLeave(e: React.DragEvent<HTMLDivElement>) {
+    if (!enableRoles) return
+    e.preventDefault()
+    e.stopPropagation()
+    // Only clear dragActive if the pointer actually left the container (not a child)
+    if (e.currentTarget.contains(e.relatedTarget as Node)) return
+    setDragActive(false)
+  }
+
+  function handleDrop(e: React.DragEvent<HTMLDivElement>) {
+    if (!enableRoles) return
+    e.preventDefault()
+    e.stopPropagation()
+    setDragActive(false)
+
+    const droppedFiles = Array.from(e.dataTransfer.files || [])
+    const newFiles = [...files]
+    let addedCount = 0
+    for (const file of droppedFiles) {
+      const exists = newFiles.some(f => f.name === file.name && f.size === file.size)
+      if (!exists) {
+        newFiles.push(file)
+        addedCount++
+      }
+    }
+    setFiles(newFiles)
+    // Initialize roles only for newly added files
+    if (addedCount > 0) {
+      setFileRoles([...fileRoles, ...Array(addedCount).fill('auto')])
+    }
+  }
+
   function handleSend() {
     const text = value.trim()
     if ((!text && files.length === 0) || isGenerating) return
-    onSend(text, files.length > 0 ? files : undefined)
+    const opts: SendOpts = {}
+    if (enableRoles && files.length > 0) {
+      // Ensure roles array matches files array length
+      let rolesToSend = [...fileRoles]
+      if (rolesToSend.length < files.length) {
+        // Pad with 'auto' if needed
+        rolesToSend = [...rolesToSend, ...Array(files.length - rolesToSend.length).fill('auto')]
+      } else if (rolesToSend.length > files.length) {
+        // Truncate if needed
+        rolesToSend = rolesToSend.slice(0, files.length)
+      }
+      opts.roles = rolesToSend
+    }
+    onSend(text, files.length > 0 ? files : undefined, opts)
     setValue('')
     setFiles([])
+    setFileRoles([])
   }
 
   function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const selectedFiles = Array.from(e.target.files || [])
     const newFiles = [...files]
+    let addedCount = 0
     for (const file of selectedFiles) {
       const exists = newFiles.some(f => f.name === file.name && f.size === file.size)
-      if (!exists) newFiles.push(file)
+      if (!exists) {
+        newFiles.push(file)
+        addedCount++
+      }
     }
     setFiles(newFiles)
+    // Initialize roles only for newly added files
+    if (addedCount > 0) {
+      setFileRoles([...fileRoles, ...Array(addedCount).fill('auto')])
+    }
     // Reset input so selecting the same file again works
     e.target.value = ''
   }
 
   function removeFile(index: number) {
     setFiles(files.filter((_, i) => i !== index))
+    setFileRoles(fileRoles.filter((_, i) => i !== index))
+  }
+
+  function setFileRole(index: number, role: 'auto' | 'subject' | 'reference') {
+    const newRoles = [...fileRoles]
+    newRoles[index] = role
+    setFileRoles(newRoles)
   }
 
   return (
-    <div className="flex flex-col p-4 border-t border-[var(--border)] bg-[var(--bg-glass-strong)] rounded-b-3xl">
+    <div
+      className="flex flex-col p-4 border-t border-[var(--border)] bg-[var(--bg-glass-strong)] rounded-b-3xl"
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+      style={dragActive && enableRoles ? {
+        backgroundColor: 'var(--bg-secondary)',
+        borderColor: 'var(--accent)',
+      } : {}}
+    >
       {/* File chips row — shown when files are selected */}
       {files.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-3">
           {files.map((file, i) => (
             <div key={i} className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-[var(--bg-tertiary)] border border-[var(--border)]">
               <span className="text-xs text-[var(--text-primary)] max-w-[200px] truncate">{file.name}</span>
+              {enableRoles && (
+                <select
+                  value={fileRoles[i] ?? 'auto'}
+                  onChange={(e) => setFileRole(i, e.target.value as 'auto' | 'subject' | 'reference')}
+                  className="text-xs bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-1.5 py-0.5 text-[var(--text-secondary)] focus:outline-none focus:border-[var(--accent)]"
+                  title="Document classification"
+                >
+                  <option value="auto">Auto</option>
+                  <option value="subject">Document</option>
+                  <option value="reference">Reference</option>
+                </select>
+              )}
               <button
                 onClick={() => removeFile(i)}
                 className="flex-shrink-0 text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
@@ -88,7 +227,7 @@ export function ChatInput({ onSend, onStop }: ChatInputProps) {
         ref={fileRef}
         className="hidden"
         onChange={handleFileSelect}
-        accept="image/*,.pdf,.docx,.doc,.xlsx,.csv,.txt,.md,.rtf,.pptx,.odt,.html,.htm,.json"
+        accept={accept}
         multiple
       />
 
@@ -106,7 +245,8 @@ export function ChatInput({ onSend, onStop }: ChatInputProps) {
             value={value}
             onChange={e => setValue(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder="Ask Persephone anything…"
+            onPaste={handlePaste}
+            placeholder={placeholder}
             rows={1}
             className="w-full resize-none rounded-2xl border border-[var(--border)]
               px-4 py-3 text-[14px] text-[var(--text-primary)] leading-relaxed

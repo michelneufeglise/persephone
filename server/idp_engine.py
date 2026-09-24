@@ -412,6 +412,88 @@ def _extract_image(path: Path, doc_dir: Path) -> list[str]:
     return [str(out)]
 
 
+def _extract_email(path: Path) -> str:
+    """Extract text from an .eml file using stdlib email.message."""
+    from email.message import EmailMessage
+    from email.parser import BytesParser
+    from email.policy import default
+
+    try:
+        data = path.read_bytes()
+        msg = BytesParser(policy=default).parsebytes(data)
+
+        # Build header lines
+        headers = []
+        for key in ("From", "To", "Subject", "Date", "Cc"):
+            val = msg.get(key, "").strip()
+            if val:
+                headers.append(f"{key}: {val}")
+
+        # Extract body: prefer plain text, fall back to HTML
+        body = ""
+        if msg.is_multipart():
+            for part in msg.iter_parts():
+                ctype = part.get_content_type()
+                if ctype == "text/plain":
+                    try:
+                        body = part.get_payload(decode=True).decode("utf-8", errors="ignore")
+                        break
+                    except Exception:
+                        pass
+                elif ctype == "text/html" and not body:
+                    try:
+                        html_body = part.get_payload(decode=True).decode("utf-8", errors="ignore")
+                        # Quick HTML strip: reuse existing _extract_html pattern
+                        from html.parser import HTMLParser
+
+                        class _Stripper(HTMLParser):
+                            def __init__(self):
+                                super().__init__()
+                                self.parts: list[str] = []
+                                self._skip = False
+                            def handle_starttag(self, tag, attrs):
+                                if tag in ("script", "style"): self._skip = True
+                                if tag in ("p", "br", "div", "li", "tr", "h1", "h2", "h3", "h4"):
+                                    self.parts.append("\n")
+                            def handle_endtag(self, tag):
+                                if tag in ("script", "style"): self._skip = False
+                            def handle_data(self, data):
+                                if not self._skip and data.strip():
+                                    self.parts.append(data)
+
+                        p = _Stripper()
+                        p.feed(html_body)
+                        body = "".join(p.parts)
+                        break
+                    except Exception:
+                        pass
+        else:
+            try:
+                body = msg.get_payload(decode=True).decode("utf-8", errors="ignore")
+            except Exception:
+                body = msg.get_payload()
+
+        # List attachments
+        attachments = []
+        if msg.is_multipart():
+            for part in msg.iter_parts():
+                filename = part.get_filename()
+                if filename:
+                    attachments.append(filename)
+
+        # Combine
+        result = "\n".join(headers)
+        if attachments:
+            result += f"\n\nAttachments: {', '.join(attachments)}"
+        if body:
+            result += f"\n\n{body}"
+
+        return result.strip()
+    except Exception as exc:
+        log.exception("Email extract failed: %s", exc)
+        return f"[email extract error: {exc}]"
+
+
 async def ingest_file(filename: str, data: bytes) -> Document:
     """Persist a file, extract its text/images, register it."""
     doc_id = uuid.uuid4().hex[:12]
@@ -446,6 +528,8 @@ async def ingest_file(filename: str, data: bytes) -> Document:
             page_texts = _extract_rtf(raw_path)
         elif mime == "application/msword" or filename.lower().endswith(".doc"):
             page_texts = _extract_doc(raw_path)
+        elif mime == "message/rfc822" or filename.lower().endswith(".eml"):
+            page_texts = [_extract_email(raw_path)]
         elif mime.startswith("image/"):
             page_images = _extract_image(raw_path, doc_dir)
             page_texts  = [""]    # image-only — OCR fills this in on demand
@@ -467,6 +551,54 @@ async def ingest_file(filename: str, data: bytes) -> Document:
         page_texts=page_texts,
         page_images=page_images,
         meta=meta,
+    )
+    REGISTRY[doc_id] = doc
+    _save_registry()
+    return doc
+
+
+async def ingest_text(text: str, title: str | None = None, kind: str = "text") -> Document:
+    """Create and register a Document from plain text.
+
+    Args:
+        text: The text content (must be non-empty).
+        title: Optional title for the document (becomes filename).
+        kind: Type of text: 'text', 'email', etc.
+
+    Returns:
+        A registered Document object.
+
+    Raises:
+        ValueError if text is empty or whitespace-only.
+    """
+    if not text or not text.strip():
+        raise ValueError("text cannot be empty")
+
+    text = text.strip()
+    doc_id = uuid.uuid4().hex[:12]
+    doc_dir = STORAGE_DIR / doc_id
+    doc_dir.mkdir(parents=True, exist_ok=True)
+
+    # Determine filename and MIME type
+    if kind == "email":
+        filename = title or "Pasted email"
+        mime = "message/rfc822"
+    else:
+        filename = title or "Pasted text"
+        mime = "text/plain"
+
+    # Create document
+    doc = Document(
+        id=doc_id,
+        filename=filename,
+        mime=mime,
+        size=len(text.encode("utf-8")),
+        uploaded_at=time.time(),
+        pages=1,
+        text=text,
+        page_texts=[text],
+        page_images=[],
+        meta={},
     )
     REGISTRY[doc_id] = doc
     _save_registry()
