@@ -3863,6 +3863,12 @@ async def save_message(conv_id: str, request: Request):
 @app.delete("/api/memory/conversations/{conv_id}")
 async def delete_conversation(conv_id: str):
     await _db.delete_conversation(conv_id)
+    if conv_id.startswith("dconv-"):
+        # Document-agent conversation: forget the knowledge it added
+        try:
+            await _kg_store.delete_conversation(conv_id)
+        except Exception as exc:
+            log.warning("kg cleanup for %s failed: %s", conv_id, exc)
     return {"ok": True}
 
 
@@ -4695,7 +4701,7 @@ async def idp_route(req: RouteRequest):
 
     # Cache the result
     doc.meta["route"] = route_result
-    _idp._save_registry()
+    await _idp.save_registry_async()
 
     return route_result
 
@@ -4732,7 +4738,7 @@ async def idp_upload(file: UploadFile = File(...)):
 
 @app.delete("/api/idp/documents/{doc_id}")
 async def idp_delete(doc_id: str):
-    ok = _idp.delete_document(doc_id)
+    ok = await _idp.delete_document_async(doc_id)
     if not ok:
         raise HTTPException(404, "Document not found")
     try:
@@ -5167,18 +5173,40 @@ async def idp_agent(req: AgentRequest):
     }
 
     # Web lookup helpers
+    import doc_web as _doc_web_mod
+
+    def _running_search_servers() -> list[str]:
+        mgr = _mcp_mgr.manager if _mcp_mgr else None
+        if not mgr:
+            return []
+        return [
+            sid for sid in (_doc_web_mod.DDG_SERVER, _doc_web_mod.BRAVE_SERVER)
+            if sid in mgr.clients and mgr.clients[sid].is_running
+        ]
+
+    async def _call_search_server(server_id: str, query: str) -> str:
+        n = _research.MAX_SOURCES_PER_SUB * 2
+        if server_id == _doc_web_mod.BRAVE_SERVER:
+            tool, args = "brave-search__brave_web_search", {"query": query, "count": n}
+        else:
+            tool, args = "duckduckgo-search__search", {"query": query, "max_results": n}
+        return await asyncio.wait_for(_mcp_mgr.manager.call(tool, args), timeout=20.0)
+
+    # One searcher per run: DuckDuckGo first; on its bot-detection notice retry
+    # once after 3 s, then fall back to Brave Search when running, else report
+    # the search as blocked (never as "no match").
+    _doc_searcher = _doc_web_mod.WebSearcher(
+        call=_call_search_server,
+        running=_running_search_servers,
+        parse=_research._parse_search_results,
+        retry_delay=3.0,
+    )
+
     async def _doc_web_search(query: str) -> list[dict]:
         """Search the web via DuckDuckGo/Brave MCP."""
-        import doc_web as _doc_web
         if not _mcp_mgr or not _mcp_mgr.manager:
-            raise _doc_web.WebSearchUnavailable("MCP manager not available")
-        running = [
-            sid for sid in ("duckduckgo-search", "brave-search")
-            if sid in _mcp_mgr.manager.clients and _mcp_mgr.manager.clients[sid].is_running
-        ]
-        if not running:
-            raise _doc_web.WebSearchUnavailable("No web search MCP server running")
-        return await _research._search(query)
+            raise _doc_web_mod.WebSearchUnavailable("MCP manager not available")
+        return await _doc_searcher(query)
 
     async def _doc_fetch_page(url: str) -> str:
         """Fetch a public web page as text."""
@@ -5216,6 +5244,20 @@ async def idp_agent(req: AgentRequest):
             ollama_base=OLLAMA_BASE,
         )
     )
+
+    async def _doc_retrieve_chunks(doc_id: str, query: str, k: int) -> list[str]:
+        """RAG over one document: (re)index it (no-op when the content hash is
+        unchanged), embed the query and return the top-k chunks in document order."""
+        doc = _idp.get_document(doc_id)
+        if not doc or not (doc.text or "").strip() or not (query or "").strip():
+            return []
+        await _doc_index.index_document(doc.id, doc.text or "")
+        qvec = await _emb.embed_one(query)
+        hits = await _doc_index.search(qvec, [doc.id], k=k)
+        hits.sort(key=lambda h: h.get("position", 0))
+        return [h["text"] for h in hits if h.get("text")]
+
+    hooks.retrieve_chunks = _doc_retrieve_chunks
 
     return StreamingResponse(
         _doc_agent_service.agent_sse(req_dict, hooks, _db), media_type="text/event-stream",

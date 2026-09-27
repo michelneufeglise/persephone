@@ -373,7 +373,9 @@ def test_delete_document():
 
             # Verify it was deleted
             graph_after = await _kg.get_graph(scope="all")
-            assert len(graph_after["entities"]) == 1  # Only person remains
+            # The person was only known through doc-1 (no other mention or
+            # relation), so it is garbage-collected along with the document.
+            assert len(graph_after["entities"]) == 0
             assert not any(e["type"] == "document" for e in graph_after["entities"])
         finally:
             await _teardown()
@@ -468,6 +470,98 @@ def test_ingest_run_with_web_candidates():
             # Verify profile was created
             graph = await _kg.get_graph(scope="all")
             assert any(e["type"] == "profile" for e in graph["entities"])
+            assert any(r["type"] == "likely_profile" for r in graph["relations"])
+        finally:
+            await _teardown()
+
+    asyncio.run(run_test())
+
+
+def test_ingest_run_per_platform_verdict():
+    """Per-platform verdict: the Facebook profile cited on the Facebook "Likely match
+    found" line becomes likely_profile; the LinkedIn "Possible match" stays a candidate;
+    social non-profile pages (directories, posts) are skipped."""
+    async def run_test():
+        await _setup()
+        try:
+            from types import SimpleNamespace
+
+            doc = SimpleNamespace(id="doc-fb", filename="cv.pdf", mime="application/pdf", text="Jane Example")
+            candidates = [
+                {"url": "https://www.linkedin.com/in/jane-example", "title": "Jane Example | LinkedIn",
+                 "snippet": "Engineer", "platform": "linkedin", "is_profile": True},
+                {"url": "https://www.facebook.com/jane.example", "title": "Jane Example | Facebook",
+                 "snippet": "Works at Acme", "platform": "facebook", "is_profile": True},
+                {"url": "https://www.facebook.com/public/Jane-Example", "title": "Jane Example profiles | Facebook",
+                 "snippet": "Directory", "platform": "facebook", "is_profile": False},
+                {"url": "https://www.facebook.com/jane.example/posts/123", "title": "Jane Example post",
+                 "snippet": "A post", "platform": "facebook", "is_profile": False},
+            ]
+            verdict = (
+                "**LinkedIn:** Possible match — same name [Jane Example | LinkedIn](https://www.linkedin.com/in/jane-example)\n"
+                "**Facebook:** Likely match found — [x](https://www.facebook.com/jane.example)\n"
+                "**Overall:** Likely match found on Facebook.\n"
+                "_Search results are not proof of identity._"
+            )
+
+            await _kg.ingest_run(
+                conversation_id="conv-fb",
+                run_id="run-fb",
+                intent="identify_person",
+                subject_docs=[doc],
+                answer_text="Found online",
+                person={"name": "Jane Example", "role": None, "org": None},
+                web_candidates=candidates,
+                verdict=verdict,
+            )
+
+            graph = await _kg.get_graph(scope="all")
+            profiles = {e["id"]: e for e in graph["entities"] if e["type"] == "profile"}
+            by_url = {(e.get("props") or {}).get("url"): e for e in profiles.values()}
+            assert set(by_url) == {
+                "https://www.linkedin.com/in/jane-example",
+                "https://www.facebook.com/jane.example",
+            }
+            fb = by_url["https://www.facebook.com/jane.example"]
+            li = by_url["https://www.linkedin.com/in/jane-example"]
+            assert fb["props"]["platform"] == "facebook"
+            assert li["props"]["platform"] == "linkedin"
+
+            rels = graph["relations"]
+            likely = {r["dst"] for r in rels if r["type"] == "likely_profile"}
+            candidate = {r["dst"] for r in rels if r["type"] == "candidate_profile"}
+            assert likely == {fb["id"]}
+            # ONE relation per (person, profile): likely_profile replaces candidate_profile
+            assert candidate == {li["id"]}
+        finally:
+            await _teardown()
+
+    asyncio.run(run_test())
+
+
+def test_ingest_run_legacy_verdict_likely_profile():
+    """Backward compat: single "**Likely match found**" verdict → first cited URL is likely."""
+    async def run_test():
+        await _setup()
+        try:
+            from types import SimpleNamespace
+
+            doc = SimpleNamespace(id="doc-li", filename="cv.pdf", mime="application/pdf", text="Jane Example")
+            candidates = [
+                {"url": "https://nl.linkedin.com/in/jane-example", "title": "Jane Example - LinkedIn", "snippet": "x"},
+                {"url": "https://example.com/jane", "title": "Jane Example homepage", "snippet": "y"},
+            ]
+            verdict = "**Likely match found** — ok\n- [Jane](https://nl.linkedin.com/in/jane-example)\n- [Home](https://example.com/jane)"
+            await _kg.ingest_run(
+                conversation_id="conv-li", run_id="run-li", intent="identify_person",
+                subject_docs=[doc], answer_text="", person={"name": "Jane Example"},
+                web_candidates=candidates, verdict=verdict,
+            )
+            graph = await _kg.get_graph(scope="all")
+            by_url = {(e.get("props") or {}).get("url"): e for e in graph["entities"] if e["type"] == "profile"}
+            likely = {r["dst"] for r in graph["relations"] if r["type"] == "likely_profile"}
+            assert likely == {by_url["https://nl.linkedin.com/in/jane-example"]["id"]}
+            assert by_url["https://example.com/jane"]["props"]["platform"] == "web"
         finally:
             await _teardown()
 

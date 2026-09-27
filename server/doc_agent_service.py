@@ -18,6 +18,76 @@ from typing import Any, AsyncIterator, Callable, Optional
 log = logging.getLogger("doc_agent_service")
 
 
+NO_DOCUMENT_REPLY = (
+    "Attach or select a document (or ask what I know about someone across your "
+    "documents) and I'll get started."
+)
+
+
+def _meta_of(msg: dict) -> dict:
+    """A message's meta as a dict (it may be stored as JSON text)."""
+    meta = msg.get("meta") or {}
+    if isinstance(meta, str):
+        try:
+            meta = json.loads(meta)
+        except Exception:
+            meta = {}
+    return meta if isinstance(meta, dict) else {}
+
+
+def _select_history(
+    all_msgs: list[dict],
+    current_ids: set,
+    *,
+    graph_request: bool = False,
+    limit: int = 6,
+) -> list[dict]:
+    """
+    Prior turns to give the agent (last `limit`, content trimmed to 1500).
+
+    - Assistant turns that failed (meta error/cancelled, or content starting
+      with "⚠") are dropped.
+    - Graph-query turns (a doc_user message with no attachments) form their own
+      scope: they are only included for graph requests.
+    - Document turns are included when the current document set is a superset
+      of (or equal to) the turn's documents — adding a document keeps context,
+      switching to other documents does not leak answers across them.
+    - Legacy turns without attachment info are always included.
+    - A graph request sees every (non-failed) turn so pronouns ("her") resolve.
+    """
+    history: list[dict] = []
+    turn_scope: Any = None  # None = legacy/unknown, "graph", or a set of doc ids
+    for msg in all_msgs:
+        role = msg.get("role")
+        meta = _meta_of(msg)
+        if role == "user":
+            attachments = meta.get("attachments") or []
+            if attachments:
+                turn_scope = {a.get("doc_id") for a in attachments if a.get("doc_id")}
+            elif meta.get("kind") == "doc_user":
+                turn_scope = "graph"
+            else:
+                turn_scope = None
+        if role not in ("user", "assistant"):
+            continue
+        content = msg.get("content") or ""
+        if role == "assistant" and (
+            meta.get("error") or meta.get("cancelled") or content.lstrip().startswith("⚠")
+        ):
+            continue
+        if graph_request:
+            include = True
+        elif turn_scope is None:
+            include = True
+        elif turn_scope == "graph":
+            include = False
+        else:
+            include = turn_scope <= current_ids
+        if include:
+            history.append({"role": role, "content": content[:1500]})
+    return history[-limit:]
+
+
 async def agent_sse(
     req: dict[str, Any],
     hooks: Any,  # AgentHooks
@@ -130,9 +200,16 @@ async def agent_sse(
     conv_id = req.get("conversation_id") or _gen_conv_id()
     run_id = str(uuid.uuid4()).replace("-", "")[:16]
 
-    # Early intent detection for graph_query
+    # Early intent detection for graph_query — with the real attachments, so
+    # "tell me everything about this invoice" + invoice.pdf is NOT a graph query,
+    # and with any web-lookup clause stripped (as run_agent does).
     from doc_agent import rules_intent as _rules_intent
-    early_rules_result = _rules_intent(message, [])
+    import doc_web as _doc_web
+    message_for_intent = message
+    if message and _doc_web.rules_web_lookup(message)[0]:
+        message_for_intent = _doc_web.strip_web_clause_or_empty(message) or "Who is this document about?"
+    early_files = [{"doc_id": a.get("doc_id"), "name": ""} for a in attachments if a.get("doc_id")]
+    early_rules_result = _rules_intent(message_for_intent, early_files)
     early_intent = early_rules_result[0] if early_rules_result else None
 
     # State for finally block
@@ -146,56 +223,56 @@ async def agent_sse(
         is_new_conv = existing_conv is None
 
         # ── Phase 2: Validate attachments or carry-over ──
-        # For graph_query, we don't require attachments
+        # Explicit attachments are ALWAYS validated and persisted (also for a
+        # graph query). Carry-over only applies to document questions, never to
+        # graph queries, and only a graph query may run with no documents.
         doc_ids = []
         carried_over = False
         final_attachments = attachments
 
-        if early_intent != "graph_query":
-            # Normal flow: require attachments
-            if attachments:
-                # Explicit attachments provided; validate each one
-                for att in attachments:
+        if attachments:
+            for att in attachments:
+                doc_id = att.get("doc_id")
+                if not doc_id:
+                    continue
+                doc = hooks.get_doc(doc_id)
+                if not doc:
+                    yield f'data: {json.dumps({"error": f"Document not found: {doc_id}"})}\n\n'
+                    yield "data: [DONE]\n\n"
+                    return
+                doc_ids.append(doc_id)
+        elif early_intent != "graph_query" and existing_conv:
+            # No explicit attachments; try to carry over from most recent user message
+            prior_user_msg = None
+            for msg in reversed(existing_conv.get("messages", [])):
+                if msg.get("role") == "user":
+                    msg_meta = _meta_of(msg)
+                    if msg_meta.get("kind") == "doc_user" and msg_meta.get("attachments"):
+                        prior_user_msg = msg
+                        break
+
+            if prior_user_msg:
+                prior_attachments = _meta_of(prior_user_msg).get("attachments", [])
+                carried_over_docs = []
+                for att in prior_attachments:
                     doc_id = att.get("doc_id")
-                    if not doc_id:
-                        continue
-                    doc = hooks.get_doc(doc_id)
-                    if not doc:
-                        yield f'data: {json.dumps({"error": f"Document not found: {doc_id}"})}\n\n'
-                        yield "data: [DONE]\n\n"
-                        return
-                    doc_ids.append(doc_id)
-            elif existing_conv:
-                # No explicit attachments; try to carry over from most recent user message
-                prior_user_msg = None
-                for msg in reversed(existing_conv.get("messages", [])):
-                    if msg.get("role") == "user":
-                        msg_meta = msg.get("meta", {})
-                        if msg_meta.get("kind") == "doc_user" and msg_meta.get("attachments"):
-                            prior_user_msg = msg
-                            break
+                    if doc_id:
+                        doc = hooks.get_doc(doc_id)
+                        if doc:  # Only keep if doc still exists
+                            doc_ids.append(doc_id)
+                            carried_over_docs.append({"doc_id": doc_id, "role": att.get("role", "auto")})
 
-                if prior_user_msg:
-                    # Found prior attachments; try to carry them over
-                    prior_attachments = prior_user_msg.get("meta", {}).get("attachments", [])
-                    carried_over_docs = []
-                    for att in prior_attachments:
-                        doc_id = att.get("doc_id")
-                        if doc_id:
-                            doc = hooks.get_doc(doc_id)
-                            if doc:  # Only keep if doc still exists
-                                doc_ids.append(doc_id)
-                                carried_over_docs.append({"doc_id": doc_id, "role": att.get("role", "auto")})
+                if doc_ids:
+                    carried_over = True
+                    final_attachments = carried_over_docs
 
-                    if doc_ids:
-                        carried_over = True
-                        final_attachments = carried_over_docs
-
-            # Final validation: must have at least one doc (for non-graph_query)
-            if not doc_ids:
-                yield f'data: {json.dumps({"error": "Attach at least one document."})}\n\n'
-                yield "data: [DONE]\n\n"
-                return
+        if not doc_ids and early_intent != "graph_query":
+            # Nothing to work on: reply with a friendly hint (no error, nothing
+            # persisted, no conversation created).
+            yield f'data: {json.dumps({"content": NO_DOCUMENT_REPLY})}\n\n'
+            yield f'data: {json.dumps({"done": True, "stats": {"intent": None, "no_documents": True}})}\n\n'
+            yield "data: [DONE]\n\n"
+            return
 
         # ── Phase 3: Mark validation as passed (now we'll persist things) ──
         validation_passed = True
@@ -261,40 +338,11 @@ async def agent_sse(
         # Only include history where the user's attachments match the current request's documents.
         # This prevents cross-document information leakage (e.g., answers about signatures
         # leaking into questions about CVs).
-        history = []
-        if existing_conv:
-            all_msgs = existing_conv.get("messages", [])
-            current_ids = {a["doc_id"] for a in final_attachments}
-            turn_ids = None  # Track the most recent user message's doc_ids (None = unknown/no attachments)
-
-            for msg in all_msgs:
-                role = msg.get("role")
-                if role == "user":
-                    # Extract doc_ids from this user message's attachments
-                    meta = msg.get("meta", {})
-                    if isinstance(meta, str):
-                        try:
-                            meta = json.loads(meta)
-                        except Exception:
-                            meta = {}
-                    attachments = meta.get("attachments", [])
-                    if attachments:
-                        # Message has explicit attachments
-                        turn_ids = {a["doc_id"] for a in attachments}
-                    else:
-                        # Message has no attachment info (pre-attachment tracking era)
-                        turn_ids = None
-
-                # Include this message if:
-                # 1. turn_ids is None (backward compat: no attachment info recorded), OR
-                # 2. turn_ids matches current_ids (same documents)
-                should_include = (turn_ids is None or turn_ids == current_ids)
-                if should_include and role in ("user", "assistant"):
-                    content = (msg.get("content") or "")[:1500]
-                    history.append({"role": role, "content": content})
-
-            # Keep only last 6
-            history = history[-6:]
+        history = _select_history(
+            existing_conv.get("messages", []) if existing_conv else [],
+            {a["doc_id"] for a in final_attachments if a.get("doc_id")},
+            graph_request=(early_intent == "graph_query" and not doc_ids),
+        )
 
         # ── Phase 8: Run agent ──
         agent_req = {

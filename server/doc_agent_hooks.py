@@ -10,11 +10,33 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Optional
 
 log = logging.getLogger("doc_agent_hooks")
+
+
+# ── Page rendering helpers ────────────────────────────────────────────────
+
+def _original_pdf_path(doc: Any) -> Optional[Path]:
+    """Return the stored original PDF for ``doc`` (STORAGE_DIR/doc.id/doc.filename),
+    or None when it is missing or not a PDF."""
+    from idp_engine import STORAGE_DIR
+    filename = Path(str(getattr(doc, "filename", "") or "")).name
+    if not filename:
+        return None
+    mime = str(getattr(doc, "mime", "") or "")
+    if not (filename.lower().endswith(".pdf") or mime == "application/pdf"):
+        return None
+    candidate = STORAGE_DIR / str(doc.id) / filename
+    return candidate if candidate.is_file() else None
+
+
+def _page_render_name(doc: Any, page: int, dpi: int) -> str:
+    """Unique temp filename for a re-rendered page (no cross-doc/run collisions)."""
+    return f"{doc.id}_{uuid.uuid4().hex[:6]}_p{page}_dpi{dpi}.png"
 
 
 # ── Configuration ──────────────────────────────────────────────────────────
@@ -250,8 +272,8 @@ async def rank_signature_models(
         base = model_name.split(":", 1)[0]
         return any(m.split(":", 1)[0] == base for m in installed)
 
-    # Helper to check if model is vision-capable
-    async def _is_vision_capable(name: str) -> bool:
+    # Helper to check if model is vision-capable (one /api/show round trip)
+    async def _probe_vision(name: str) -> bool:
         """Check vision capability via model_capabilities, fall back to name-check."""
         try:
             caps = await deps.model_capabilities(name)
@@ -261,6 +283,29 @@ async def rank_signature_models(
             pass
         # Fallback to name-based check
         return deps.name_is_vision(name)
+
+    # Probe every model we might consider concurrently instead of one
+    # /api/show call after another; the ranking below then reads the results.
+    _probe_names: list[str] = []
+    for _n in (cfg.get("handwriting_model", ""), cfg.get("vision_model", "")):
+        if _n and _is_installed(_n) and _n not in _probe_names:
+            _probe_names.append(_n)
+    for _n in installed:
+        if _n in _probe_names:
+            continue
+        is_llama_vision = _n.lower().startswith("llama3.2-vision")
+        is_ocr_only = any(h.lower() in _n.lower() for h in OCR_ONLY_HINTS)
+        if is_llama_vision or not is_ocr_only:
+            _probe_names.append(_n)
+    _probe_results = await asyncio.gather(*(_probe_vision(n) for n in _probe_names))
+    _capable: dict[str, bool] = dict(zip(_probe_names, _probe_results))
+
+    async def _is_vision_capable(name: str) -> bool:
+        if name in _capable:
+            return _capable[name]
+        result = await _probe_vision(name)
+        _capable[name] = result
+        return result
 
     # Helper to get parameter size from tags
     def _get_param_size(model_name: str) -> float:
@@ -463,17 +508,9 @@ async def build_hooks(deps: HookDeps) -> "AgentHooks":
                     result.append(doc.page_images[p - 1])
             return result
 
-        # Try to find and re-render the original PDF
-        from idp_engine import STORAGE_DIR
-        doc_dir = STORAGE_DIR / doc.id
-
-        # Look for original file (try various extensions)
-        original_file = None
-        for ext in [".pdf", ".PDF"]:
-            candidate = doc_dir / f"document{ext}"
-            if candidate.exists():
-                original_file = candidate
-                break
+        # Locate the original upload: ingest_file stores it as
+        # STORAGE_DIR / doc.id / doc.filename (not a fixed "document.pdf").
+        original_file = _original_pdf_path(doc)
 
         # If no original, fall back to stored images
         if not original_file:
@@ -498,7 +535,7 @@ async def build_hooks(deps: HookDeps) -> "AgentHooks":
                     pix = page.get_pixmap(matrix=mat, alpha=False)
 
                     # Save to temp PNG
-                    out_path = tmp / f"page_{p}_dpi{dpi}.png"
+                    out_path = tmp / _page_render_name(doc, p, dpi)
                     pix.save(str(out_path))
                     result.append(str(out_path))
 
@@ -541,11 +578,14 @@ async def build_hooks(deps: HookDeps) -> "AgentHooks":
                 raise ValueError("Single-image model requires both reference and subject images")
 
             tmp = deps.tmp_dir()
-            composite_path = tmp / "composite.png"
+            # Unique per call: concurrent comparisons must not share a file.
+            composite_path = tmp / f"composite_{uuid.uuid4().hex[:8]}.png"
 
             try:
-                # Compose the images
-                compose_comparison(reference_paths, subject_paths, str(composite_path))
+                # Compose the images (PIL work — keep it off the event loop)
+                await asyncio.to_thread(
+                    compose_comparison, reference_paths, subject_paths, str(composite_path),
+                )
 
                 # Call vision with composite
                 return await deps.vision_call(model, prompt, [str(composite_path)])

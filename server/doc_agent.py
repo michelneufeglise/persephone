@@ -12,12 +12,40 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
 from typing import Any, AsyncIterator, Callable, Optional
 
 log = logging.getLogger("doc_agent")
+
+# Prefer idp_engine.needs_ocr (single source of truth); fall back to the same
+# rule locally when it's unavailable (import-time, hook-free).
+try:  # pragma: no cover - trivial import guard
+    from idp_engine import needs_ocr as _idp_needs_ocr  # type: ignore
+except (ImportError, AttributeError):  # pragma: no cover
+    _idp_needs_ocr = None
+
+
+def _needs_ocr(doc: Any) -> bool:
+    """True when the document has page images but (almost) no text layer —
+    fewer than 40 chars per page — so a scan with a tiny text layer (a stamp,
+    page numbers) still gets OCR'd."""
+    if _idp_needs_ocr is not None:
+        try:
+            return bool(_idp_needs_ocr(doc))
+        except Exception:
+            pass
+    images = getattr(doc, "page_images", None)
+    if not images:
+        return False
+    meta = getattr(doc, "meta", None) or {}
+    if isinstance(meta, dict) and meta.get("last_ocr_at"):
+        return False
+    pages = getattr(doc, "pages", 0) or 0
+    text = getattr(doc, "text", "") or ""
+    return len(text.strip()) < 40 * max(1, pages)
 
 # ── Utility functions ──────────────────────────────────────────────────────
 
@@ -120,7 +148,7 @@ Write a concise answer in 3–6 sentences or a short bullet list grouped as:
 - Documents
 - Online presence
 
-Do NOT copy the facts list verbatim and do NOT repeat any line. Distinguish a *likely* LinkedIn profile from mere *candidates*. Cite document names in parentheses. If something isn't in the facts, say it's unknown. Refer to people by their name; do not assume gender or use he/she.
+Do NOT copy the facts list verbatim and do NOT repeat any line. Distinguish a *likely* LinkedIn profile from mere *candidates*. Cite the document names or website hosts given as "source" in parentheses (e.g. "(cv.pdf)", "(linkedin.com)"); never cite internal labels such as doc_agent or web_lookup. If something isn't in the facts, say it's unknown. Refer to people by their name; do not assume gender or use he/she.
 
 Facts:
 {document_content}"""
@@ -265,21 +293,89 @@ class AgentHooks:
     kg_search: Optional[Callable[[str], Any]] = None  # (text) -> awaitable list[dict] of entities
     kg_neighborhood: Optional[Callable[[str], Any]] = None  # (entity_id) -> awaitable dict with entities/relations
     kg_ingest: Optional[Callable[..., Any]] = None  # (conversation_id, run_id, intent, ...) -> awaitable dict
+    retrieve_chunks: Optional[Callable[[str, str, int], Any]] = None  # (doc_id, query, k) -> awaitable list[str] (RAG over the doc)
     now_ms: Callable[[], int] = field(default_factory=lambda: lambda: int(time.time() * 1000))
 
 # ── Pure functions for intent & role resolution ─────────────────────────────
 
+def _kw_re(kw: str) -> str:
+    """Word-bounded regex for a keyword. A trailing '*' makes it a prefix
+    ("samenvat*" matches "samenvatting"); multi-word phrases work as-is."""
+    kw = kw.lower()
+    if kw.endswith("*"):
+        return r"(?<!\w)" + re.escape(kw[:-1])
+    return r"(?<!\w)" + re.escape(kw) + r"(?!\w)"
+
+
+def _kw_hits(msg_lower: str, kws: list[str]) -> list[str]:
+    """Keywords that occur in msg_lower as whole words/phrases."""
+    return [kw.rstrip("*") for kw in kws if re.search(_kw_re(kw), msg_lower)]
+
+
+# Words that make a request explicitly about signatures (verify/compare/match
+# alone are NOT enough — "verify online whether this person exists").
+SIGNATURE_WORDS = [
+    "signature", "signatures", "signed", "handtekening", "handtekeningen",
+    "signatuur", "paraaf", "compare signature*",
+]
+SIGNATURE_VERBS = ["verify", "authentic*", "match", "compare", "genuine", "forged", "forgery"]
+
+# Markers that a question spans the whole knowledge store rather than the
+# attached document(s).
+CROSS_SCOPE_MARKERS = [
+    "across", "all documents", "all my documents", "all the documents",
+    "knowledge base", "knowledge graph", "knowledge store", "in my documents",
+    "in all documents", "in all my documents", "my files", "all my files",
+    "previous conversations",
+]
+GRAPH_QUERY_PHRASES = [
+    "what do we know about", "what do i know about", "what do you know about",
+    "which documents mention", "which document mentions", "which documents mentions",
+    "everything about", "all information about",
+]
+
+# "name of the company" etc. asks for an organisation, not a person
+_NON_PERSON_NAME_RE = re.compile(
+    r"\b(?:name|naam|nom)\s+(?:of|van|de|du)\s+(?:the\s+|de\s+|het\s+|la\s+|le\s+|l')?"
+    r"(?:company|companies|organi[sz]ation|organi[sz]ations|firm|business|employer|bank|school|"
+    r"university|product|file|document|project|street|city|town|shop|store|bedrijf|organisatie|"
+    r"firma|entreprise|soci[ée]t[ée]|vendor|supplier|leverancier|client|customer)\b"
+    r"|\b(?:company|organi[sz]ation|firm|business|employer|vendor|supplier|file|product)(?:'s)?\s+name\b"
+)
+_NAME_KWS = {"name of", "the name", "naam van", "de naam", "nom de"}
+
+# A single-fact question ("what is the total amount?", "how much…") is a
+# general_question, not a structured extraction.
+_QUESTION_START_RE = re.compile(
+    r"^\s*(?:what|what's|whats|when|how much|how many|how old|which|where|is there|is the|"
+    r"wat|wanneer|hoeveel|welke|waar|quel|quelle|quand|combien|was|wie viel)\b"
+)
+SINGLE_FACT_NOUNS = [
+    "total", "amount", "date", "fee", "fees", "price", "cost", "costs", "due", "balance",
+    "vat", "btw", "iban", "sum", "number", "deadline", "rate", "salary", "bedrag", "totaal",
+    "datum", "prijs", "kosten", "montant", "prix",
+]
+STRONG_EXTRACT_KWS = [
+    "extract*", "list all", "list every", "all fields", "all the fields", "every field",
+    "table of", "as a table", "in a table", "into a table", "tables", "all amounts", "all dates",
+    "all the amounts", "all the dates", "all data", "all the data", "structured data",
+    "extraheer*", "extraire",
+]
+WEAK_EXTRACT_KWS = ["table", "amount", "amounts", "invoice number", "dates", "fields", "data"]
+
+
 def rules_intent(message: str, files: list[dict]) -> tuple[Optional[str], list[str]]:
     """
-    Multilingual-ish keyword rules for intent detection.
+    Multilingual-ish keyword rules for intent detection (word-bounded).
 
     Returns (intent_name, matched_keywords) or (None, []) if no match.
+    `files` is the list of attached files ({"name": ...}); graph_query is only
+    chosen when nothing is attached or the request has a cross-scope marker.
     """
     # Handle empty or no-instruction messages
     if not message or not message.strip():
         return "summarize", ["no explicit instruction"]
 
-    # Check for "look at attached document" pattern (across languages)
     msg_lower = message.lower()
     no_instruction_patterns = [
         r"look at the attached",
@@ -287,82 +383,90 @@ def rules_intent(message: str, files: list[dict]) -> tuple[Optional[str], list[s
         r"bekijk de bijlage",
         r"regarde le document",
     ]
-    import re
     for pattern in no_instruction_patterns:
         if re.search(pattern, msg_lower):
             return "summarize", ["no explicit instruction"]
 
-    msg_lower = message.lower()
-    matched_kws = []
+    files = files or []
 
-    # verify_signature: signature + reference
-    verify_sig_kws = ["signature", "handtekening", "verify", "authentic", "match", "compare signature"]
-    for kw in verify_sig_kws:
-        if kw in msg_lower:
-            matched_kws.append(kw)
-
-    if matched_kws:
-        # Check if there's a reference-like file
+    # verify_signature: an explicit signature word + a reference-like file
+    sig_hits = _kw_hits(msg_lower, SIGNATURE_WORDS)
+    if "signed" in sig_hits and re.search(r"\bwho\s+(?:has\s+)?signed\b", msg_lower):
+        sig_hits.remove("signed")  # "who signed …?" asks for a person
+    if sig_hits:
+        matched_kws = sig_hits + _kw_hits(msg_lower, SIGNATURE_VERBS)
         for f in files:
             fname = (f.get("name") or "").lower()
             if any(ref_kw in fname for ref_kw in ["reference", "specimen", "sample", "card", "template"]):
                 return "verify_signature", matched_kws
 
-    # graph_query: ask what is known across all documents / knowledge base
-    graph_query_kws = [
-        "what do we know about", "what do i know about", "what do you know about",
-        "across all documents", "across my documents", "in my documents", "in all documents",
-        "which documents mention", "which document mentions",
-        "knowledge graph", "knowledge base", "everything about", "all information about",
-    ]
-    graph_query_matches = [kw for kw in graph_query_kws if kw in msg_lower]
-    if graph_query_matches:
-        return "graph_query", graph_query_matches
+    # graph_query: what is known across all documents / the knowledge base.
+    # With attachments, only an explicit cross-scope marker makes it a graph
+    # query ("tell me everything about this invoice" is about the invoice).
+    scope_hits = _kw_hits(msg_lower, CROSS_SCOPE_MARKERS)
+    graph_hits = _kw_hits(msg_lower, GRAPH_QUERY_PHRASES) + scope_hits
+    if graph_hits and (not files or scope_hits):
+        return "graph_query", graph_hits
 
     # identify_person: must ask WHO/WHOSE/which person/the name — NOT a fact lookup
     id_person_kws = [
-        "who is", "who signed", "who wrote", "which person", "whose", "name of", "person's name",
+        "who is", "who are", "who signed", "who wrote", "which person", "which people", "whose",
+        "name of", "person's name", "wie zijn", "qui sont",
         "persons name", "the name", "signer", "signatory",
         "wie is", "wie heeft", "naam van", "de naam", "ondertekenaar", "ondertekener",
         "qui est", "nom de", "find person", "identify",
     ]
-    id_person_matches = [kw for kw in id_person_kws if kw in msg_lower]
+    id_person_matches = _kw_hits(msg_lower, id_person_kws)
+    if id_person_matches and _NON_PERSON_NAME_RE.search(msg_lower):
+        id_person_matches = [kw for kw in id_person_matches if kw not in _NAME_KWS]
     if id_person_matches:
         return "identify_person", id_person_matches
 
     # summarize
-    summarize_kws = ["summarize", "summary", "tl;dr", "tl dr", "key points", "samenvat", "résum", "overview"]
-    summarize_matches = [kw for kw in summarize_kws if kw in msg_lower]
+    summarize_kws = ["summarize", "summarise", "summary", "tl;dr", "tl dr", "key points",
+                     "samenvat*", "résum*", "overview"]
+    summarize_matches = _kw_hits(msg_lower, summarize_kws)
     if summarize_matches:
         return "summarize", summarize_matches
 
-    # extract_data
-    extract_kws = ["extract", "table", "amount", "invoice number", "dates", "fields", "list all", "data"]
-    extract_matches = [kw for kw in extract_kws if kw in msg_lower]
-    if extract_matches:
-        return "extract_data", extract_matches
-
-    # translate
-    translate_kws = ["translate", "vertaal", "traduis", "translation"]
-    translate_matches = [kw for kw in translate_kws if kw in msg_lower]
+    # translate (before extract so "translate the table" is a translation)
+    translate_kws = ["translate*", "vertaal*", "traduis*", "traduire", "translation", "übersetz*"]
+    translate_matches = _kw_hits(msg_lower, translate_kws)
     if translate_matches:
         return "translate", translate_matches
 
-    # redact
-    redact_kws = ["redact", "anonymize", "anonymise", "remove personal", "hide", "obscure"]
-    redact_matches = [kw for kw in redact_kws if kw in msg_lower]
-    if redact_matches:
-        return "redact", redact_matches
+    # extract_data: explicit extraction requests
+    strong_extract = _kw_hits(msg_lower, STRONG_EXTRACT_KWS)
+    if strong_extract:
+        return "extract_data", strong_extract
 
-    # general_question: fact lookup keywords
-    # Check these LAST (after extract_data) so more specific keywords take precedence
     fact_lookup_kws = [
         "date of birth", "born", "birthday", "geboortedatum",
         "address", "adres", "age", "how old",
         "nationality", "when was", "what is his", "what is her", "what is their",
-        "what does it say", "due date", "telephone", "phone", "email"
+        "what does it say", "due date", "telephone", "phone", "email",
     ]
-    fact_matches = [kw for kw in fact_lookup_kws if kw in msg_lower]
+    fact_matches = _kw_hits(msg_lower, fact_lookup_kws)
+
+    # A single-fact question about an amount/date/… is a general question
+    if _QUESTION_START_RE.search(msg_lower):
+        fact_nouns = _kw_hits(msg_lower, SINGLE_FACT_NOUNS)
+        if fact_nouns:
+            return "general_question", fact_matches + [n for n in fact_nouns if n not in fact_matches]
+
+    weak_extract = _kw_hits(msg_lower, WEAK_EXTRACT_KWS)
+    if weak_extract:
+        return "extract_data", weak_extract
+
+    # redact
+    redact_kws = ["redact*", "anonymize", "anonymise", "anonymi*", "remove personal", "hide",
+                  "obscure", "black out", "anonimiseer*"]
+    redact_matches = _kw_hits(msg_lower, redact_kws)
+    if redact_matches:
+        return "redact", redact_matches
+
+    # general_question: fact lookup keywords (checked LAST so more specific
+    # keywords take precedence)
     if fact_matches:
         return "general_question", fact_matches
 
@@ -676,9 +780,23 @@ async def run_agent(
         conversation_id = req.get("conversation_id")
         run_id = req.get("run_id")
 
+        import doc_web as _doc_web
+
+        # Strip any web-lookup clause BEFORE intent detection so "…and check
+        # LinkedIn" / "verify online…" can't skew the intent. A message that is
+        # only a web clause ("search the web for this person") asks who the
+        # document is about.
+        rules_web = _doc_web.rules_web_lookup(message) if message else ([], [])
+        message_for_intent = message
+        if rules_web[0]:
+            message_for_intent = _doc_web.strip_web_clause_or_empty(message)
+            if len(message_for_intent.strip()) < 3:
+                message_for_intent = "Who is this document about?"
+
         # Early intent detection (rules only) to check for graph_query
         # This allows graph_query to bypass attachment validation
-        early_rules_result = rules_intent(message, [])
+        early_files = [{"doc_id": a.get("doc_id"), "name": ""} for a in attachments]
+        early_rules_result = rules_intent(message_for_intent, early_files)
         early_intent = early_rules_result[0] if early_rules_result else None
 
         # Validate: require at least one attachment (unless intent is graph_query)
@@ -687,13 +805,17 @@ async def run_agent(
             return
 
         # (a) Emit Laya tile (running, no decisions yet)
+        try:
+            laya_status = hooks.laya_info() or {}
+        except Exception:
+            laya_status = {"available": False}
         laya_tile = Tile(
             id="laya",
             kind="laya",
             title="Analyzing intent",
             status="running",
-            model="Laya" if hooks.laya_info().get("available") else "rules",
-            model_info=hooks.laya_info(),
+            model="Laya" if laya_status.get("available") else "rules",
+            model_info=laya_status,
             decisions=[],
             started_ms=start_ms,
         )
@@ -721,19 +843,19 @@ async def run_agent(
                 "snippet": (doc.text or "")[:300],
             })
 
-        # Decision 1: intent
+        # Decision 1: intent (on the message with any web clause stripped)
         laya_intent_result = None
-        if message and message.strip():
+        if message_for_intent and message_for_intent.strip():
             # Only call Laya if message is not empty
             try:
                 # Run in executor to avoid blocking
                 laya_intent_result = await asyncio.to_thread(
-                    hooks.laya_intent, message, files_meta
+                    hooks.laya_intent, message_for_intent, files_meta
                 )
             except Exception as e:
                 log.warning(f"Laya intent failed: {e}")
 
-        rules_intent_result = rules_intent(message, files_meta)
+        rules_intent_result = rules_intent(message_for_intent, files_meta)
 
         # Add note if message was empty (rules_intent handles this)
         if not message or not message.strip():
@@ -777,50 +899,8 @@ async def run_agent(
             tiles_emitted["kg-query"] = query_tile
 
             try:
-                # Extract subject phrase from message
-                # Prefer text after LAST occurrence of preferred keywords (prefer "about")
-                subject = message.strip()
-
-                # Try to extract text after last occurrence of each keyword (prefer "about")
-                preferred_keywords = ["about", "mention", "mentions", "on"]
-                best_match = None
-                best_keyword = None
-
-                for keyword in preferred_keywords:
-                    # Find LAST occurrence (not first)
-                    idx = subject.lower().rfind(keyword)
-                    if idx != -1:
-                        # Extract text after this keyword
-                        candidate = subject[idx + len(keyword):].strip()
-                        if candidate and (best_match is None or keyword == "about"):
-                            best_match = candidate
-                            best_keyword = keyword
-                            if keyword == "about":  # Stop early if we found "about"
-                                break
-
-                if best_match:
-                    subject = best_match
-
-                # Strip trailing scope phrases (case-insensitive, repeated)
-                scope_phrases = [
-                    "across my documents", "across all documents", "across all my documents",
-                    "in my documents", "in all documents", "in all my documents", "in my files",
-                    "in the knowledge base", "in the knowledge graph", "in my knowledge base",
-                    "so far", "overall"
-                ]
-
-                subject_lower = subject.lower()
-                for phrase in scope_phrases:
-                    # Keep stripping while phrase appears at end
-                    while subject_lower.endswith(phrase):
-                        subject = subject[:-len(phrase)].strip()
-                        subject_lower = subject.lower()
-
-                # Strip punctuation and quotes
-                subject = subject.strip("\"'.,;:!? ")
-
-                if not subject:
-                    subject = message
+                # Subject phrase (word-bounded keywords; pronouns resolved from history)
+                subject = graph_subject(message, history)
 
                 # Search knowledge graph
                 if hooks.kg_search:
@@ -867,17 +947,48 @@ async def run_agent(
                     entities_map = {e["id"]: e for e in neighborhood.get("entities", [])}
                     relations = neighborhood.get("relations", [])
 
+                    # Where each fact comes from: document names (via mentioned_in)
+                    # and website hosts — never internal labels like "doc_agent".
+                    docs_of: dict[str, list[str]] = {}
+                    for rel in relations:
+                        if rel.get("type") == "mentioned_in":
+                            dst_e = entities_map.get(rel.get("dst"), {})
+                            if dst_e.get("type") == "document":
+                                dname = (dst_e.get("props") or {}).get("filename") or dst_e.get("name") or ""
+                                if dname and dname not in docs_of.setdefault(rel.get("src"), []):
+                                    docs_of[rel.get("src")].append(dname)
+
+                    def _cite(rel: dict) -> str:
+                        src_e = entities_map.get(rel.get("src"), {})
+                        dst_e = entities_map.get(rel.get("dst"), {})
+                        for e in (dst_e, src_e):
+                            if e.get("type") == "profile":
+                                props = e.get("props") or {}
+                                host = props.get("host") or _doc_web._hostname(props.get("url", ""))
+                                return (host or "").removeprefix("www.")
+                        if dst_e.get("type") == "document":
+                            return (dst_e.get("props") or {}).get("filename") or dst_e.get("name") or ""
+                        names = docs_of.get(rel.get("src")) or docs_of.get(rel.get("dst")) or []
+                        return ", ".join(names[:3])
+
                     # Build fact dicts with rendered labels
                     fact_items = []
                     seen_labels = set()
                     for rel in relations:
                         src_id = rel.get("src")
                         dst_id = rel.get("dst")
+                        # Never cite legacy junk: profiles without an http(s)
+                        # URL ("ref://…") or answer-derived generic roles.
+                        if any(
+                            _is_junk_graph_entity(entities_map.get(x, {}))
+                            for x in (src_id, dst_id)
+                        ):
+                            continue
                         src_name = entities_map.get(src_id, {}).get("name", src_id)
                         dst_name = entities_map.get(dst_id, {}).get("name", dst_id)
                         rel_type = rel.get("type", "relates_to")
                         confidence = rel.get("confidence")
-                        source = rel.get("source", "unknown")
+                        source = _cite(rel)
 
                         # Render label for deduplication
                         label = f"{src_name} —{rel_type}→ {dst_name}"
@@ -889,7 +1000,7 @@ async def run_agent(
                         seen_labels.add(label_normalized)
 
                         conf_str = f" ({confidence:.0%})" if confidence else ""
-                        fact_text = f"- {label}{conf_str} (from: {source})"
+                        fact_text = f"- {label}{conf_str}" + (f" (source: {source})" if source else "")
 
                         fact_items.append({
                             "type": rel_type,
@@ -946,7 +1057,7 @@ async def run_agent(
                         items.append({
                             "kind": "result",
                             "label": f"{fact['src_name']} —{rel.get('type', 'relates_to')}→ {fact['dst_name']}",
-                            "detail": rel.get("source", ""),
+                            "detail": _cite(rel),
                             "url": url,
                         })
 
@@ -968,7 +1079,7 @@ async def run_agent(
                     # Resolve model (no doc context, use fallback chain)
                     llm_model = ""
                     model_reason = None
-                    if hasattr(hooks, 'resolve_text_model_info'):
+                    if hooks.resolve_text_model_info:
                         model_info = await hooks.resolve_text_model_info(None, "text")
                         llm_model = model_info.get("model", "")
                         model_reason = model_info.get("reason")
@@ -1069,31 +1180,32 @@ async def run_agent(
             }
             return
 
-        # Compute web lookup decision (after intent, before roles)
-        import doc_web as _doc_web
+        # Compute web lookup decision (after intent, before roles). A search
+        # only ever runs on an explicit keyword request (rules); Laya can
+        # corroborate but never trigger one on its own.
         web_lookup = None
-        if message and message.strip() and hooks.laya_web:
-            # Strip web keywords from message to avoid breaking intent detection
-            message_for_intent = _doc_web.strip_web_clause(message)
-            # Call Laya for web lookup (sync via thread)
+        if message and message.strip() and (hooks.laya_web or rules_web[0]):
             laya_web_result = None
-            try:
-                laya_web_result = await asyncio.to_thread(hooks.laya_web, message)
-            except Exception as e:
-                log.debug(f"Laya web lookup failed: {e}")
-            # Resolve web lookup
-            rules_web = _doc_web.rules_web_lookup(message)
+            if hooks.laya_web:
+                try:
+                    laya_web_result = await asyncio.to_thread(hooks.laya_web, message)
+                except Exception as e:
+                    log.debug(f"Laya web lookup failed: {e}")
             web_lookup = _doc_web.resolve_web_lookup(laya_web_result, rules_web)
 
         # Add web lookup decision to Laya tile
+        web_targets: list[str] = list(web_lookup.get("targets") or []) if web_lookup else []
         if web_lookup:
+            web_note = web_lookup.get("note")
+            if web_targets and not web_note:
+                web_note = "Sends the person's name/role to DuckDuckGo — leaves this machine"
             laya_tile.decisions.append(Decision(
                 id="web_lookup",
                 label="Web lookup",
-                value=web_lookup.get("target") or "none",
+                value=", ".join(web_targets) if web_targets else "none",
                 confidence=web_lookup.get("confidence"),
                 source=web_lookup.get("source") or "rules",
-                note=web_lookup.get("note"),
+                note=web_note,
             ))
         yield {"tile": laya_tile.to_dict()}
 
@@ -1124,13 +1236,18 @@ async def run_agent(
                 ))
             yield {"tile": laya_tile.to_dict()}
 
-        # Decision: doc kind per document (if has text layer)
+        # Decision: doc kind per document (if has text layer). Reuse a kind
+        # cached on the document (doc.meta["doc_kind"] from an earlier run, or
+        # the /api/idp/route decision) instead of calling Laya again.
         for doc, att in docs:
             if doc.text and len(doc.text.strip()) >= 40:
                 try:
-                    doc_kind_result = await asyncio.to_thread(
-                        hooks.laya_doc_kind, doc.text[:6000]
-                    )
+                    doc_kind_result = _cached_doc_kind(doc)
+                    if doc_kind_result is None:
+                        doc_kind_result = await asyncio.to_thread(
+                            hooks.laya_doc_kind, doc.text[:6000]
+                        )
+                        _cache_doc_kind(doc, doc_kind_result)
                     if doc_kind_result and doc_kind_result.get("confidence", 0) >= LAYA_DOC_KIND_MIN_CONFIDENCE:
                         laya_tile.decisions.append(Decision(
                             id=f"doc_kind-{doc.id}",
@@ -1167,22 +1284,18 @@ async def run_agent(
                 doc={"doc_id": doc.id, "name": doc.filename},
             )
 
-            # Check if has usable text layer (>= 1 char)
+            # A scan with a tiny text layer (stamp, page numbers) still needs
+            # OCR: < 40 chars per page with page images → OCR.
             text_len = len(doc.text.strip()) if doc.text else 0
-            if text_len > 0:
-                # Text layer present (even if short); skip OCR
-                extract_tile.status = "done"
-                extract_tile.kind = "extract"
-                if text_len >= 40:
-                    extract_tile.detail = f"Text layer present ({text_len} chars) — OCR skipped"
-                else:
-                    extract_tile.detail = f"Short text layer ({text_len} chars) — OCR skipped"
-                extract_tile.output_preview = doc.text[:300]
-                yield {"tile": extract_tile.to_dict()}
-                tiles_emitted[extract_tile.id] = extract_tile
-
-            elif doc.page_images and intent != "verify_signature":
-                # No text layer but has images; run OCR
+            already_ocrd = bool((getattr(doc, "meta", None) or {}).get("last_ocr_at"))
+            ocr_needed = (
+                intent != "verify_signature"
+                and bool(doc.page_images)
+                and (_needs_ocr(doc) or (text_len == 0 and not already_ocrd))
+            )
+            doc_budget = _doc_budget(len(subject_docs))
+            if ocr_needed:
+                # Too little text for the page images; run OCR
                 extract_tile.kind = "ocr"
                 extract_tile.status = "running"
                 extract_tile.started_ms = hooks.now_ms()
@@ -1193,7 +1306,10 @@ async def run_agent(
                     label="OCR Needed",
                     value="yes",
                     source="probe",
-                    note="No text layer, page images available",
+                    note=(
+                        "No text layer, page images available" if text_len == 0 else
+                        f"Text layer too small ({text_len} chars for {max(1, getattr(doc, 'pages', 0) or 0)} page(s)) — page images available"
+                    ),
                 ))
                 yield {"tile": laya_tile.to_dict()}
                 yield {"tile": extract_tile.to_dict()}
@@ -1207,6 +1323,8 @@ async def run_agent(
                     ocr_text = await hooks.run_ocr(doc, ocr_model)
                     extract_tile.status = "done"
                     extract_tile.detail = f"{len(ocr_text)} chars from {len(doc.page_images)} page(s)"
+                    if len(doc.text or ocr_text or "") > doc_budget:
+                        extract_tile.detail += " · excerpts used"
                     extract_tile.output_preview = ocr_text[:300]
                     extract_tile.ms = hooks.now_ms() - extract_tile.started_ms
                     yield {"tile": extract_tile.to_dict()}
@@ -1218,6 +1336,24 @@ async def run_agent(
                     yield {"tile": extract_tile.to_dict()}
                     yield {"error": f"OCR failed: {str(e)}"}
                     return
+
+            elif text_len > 0:
+                # Text layer present; skip OCR
+                extract_tile.status = "done"
+                extract_tile.kind = "extract"
+                meta = getattr(doc, "meta", None) or {}
+                if isinstance(meta, dict) and (meta.get("last_ocr_at") or meta.get("ocr_model")):
+                    # Text comes from an earlier OCR pass (e.g. an image-only scan)
+                    extract_tile.detail = f"OCR text (cached, {text_len} chars)"
+                elif text_len >= 40:
+                    extract_tile.detail = f"Text layer present ({text_len} chars) — OCR skipped"
+                else:
+                    extract_tile.detail = f"Short text layer ({text_len} chars) — OCR skipped"
+                if len(doc.text) > doc_budget and intent != "verify_signature":
+                    extract_tile.detail = f"{len(doc.text):,} chars · excerpts used"
+                extract_tile.output_preview = doc.text[:300]
+                yield {"tile": extract_tile.to_dict()}
+                tiles_emitted[extract_tile.id] = extract_tile
 
             elif intent == "verify_signature" and not doc.page_images:
                 # Signature comparison but no images
@@ -1322,14 +1458,14 @@ async def run_agent(
                     role = _find_role(doc, laya_tile, docs)
                     if role == "reference" and doc.page_images:
                         # Get first page of reference
-                        ref_paths = hooks.page_image_paths(doc, [1], 200)
+                        ref_paths = await asyncio.to_thread(hooks.page_image_paths, doc, [1], 200)
                         reference_images.extend(ref_paths)
                     elif role == "subject" and doc.page_images:
                         # Get first and last page of subject (deduped, max 3)
                         pages_to_check = [1, len(doc.page_images)]
                         pages_to_check = list(dict.fromkeys(pages_to_check))  # dedup
                         pages_to_check = pages_to_check[:3]  # max 3
-                        subject_paths = hooks.page_image_paths(doc, pages_to_check, 200)
+                        subject_paths = await asyncio.to_thread(hooks.page_image_paths, doc, pages_to_check, 200)
                         subject_images.extend(subject_paths)
             except Exception as e:
                 answer_tile.status = "error"
@@ -1470,36 +1606,100 @@ async def run_agent(
             yield {"tile": answer_tile.to_dict()}
 
             try:
-                # Strip web keywords from message if web lookup is enabled
-                message_for_answer = message
-                if web_lookup and web_lookup.get("target"):
-                    message_for_answer = _doc_web.strip_web_clause(message)
-                    # If stripped message is too short, use generic question
-                    if not message_for_answer or len(message_for_answer) < 3:
-                        message_for_answer = "Who or what is this document about?"
+                # With a web lookup on, answer the document part only (the web
+                # clause was stripped; a pure web clause → "who is this about").
+                message_for_answer = message_for_intent if web_targets else message
+
+                # Retrieval for long documents on passage-level intents
+                retrieved: dict[str, list[Any]] = {}
+                budget = _doc_budget(len([d for d in subject_docs if d.text]) or 1)
+                if intent in RAG_INTENTS and hooks.retrieve_chunks:
+                    for d in subject_docs:
+                        if d.text and len(d.text) > budget:
+                            try:
+                                chunks = await hooks.retrieve_chunks(d.id, message_for_answer, RAG_TOP_K)
+                                if chunks:
+                                    retrieved[d.id] = list(chunks)
+                            except Exception as e:
+                                log.debug(f"retrieve_chunks failed for {d.id}: {e}")
 
                 # Build prompt
-                prompt = _build_prompt(
-                    intent, subject_docs, message_for_answer, history, max_chars=24000
+                prompt, excerpts = _build_prompt_ex(
+                    intent, subject_docs, message_for_answer, history,
+                    max_chars=PROMPT_MAX_CHARS, retrieved=retrieved,
+                    web_lookup_on=bool(web_targets),
                 )
+                if excerpts:
+                    longest = max(v["chars"] for v in excerpts.values())
+                    answer_tile.detail = f"Document is long ({longest:,} chars) — used excerpts"
+                    for d in subject_docs:
+                        info = excerpts.get(d.id)
+                        if info:
+                            how = {
+                                "rag": f"{len(retrieved.get(d.id, []))} retrieved passages",
+                                "head_tail": "beginning and end",
+                                "sampled": "beginning, middle and end",
+                            }.get(info["mode"], info["mode"])
+                            answer_tile.items.append({
+                                "kind": "note",
+                                "label": f"{d.filename}: {info['chars']:,} chars — excerpts ({how})",
+                            })
+                    yield {"tile": answer_tile.to_dict()}
 
-                # Stream LLM
+                # Stream LLM (see _stream_answer). An empty/garbled answer or a
+                # transient Ollama failure before any output (GPU memory
+                # pressure) is retried once with the same model.
                 answer_text = ""
-                async for delta in hooks.stream_llm(llm_model, prompt, think=False):
-                    if "thinking" in delta:
-                        yield {"thinking": delta["thinking"]}
-                    elif "content" in delta:
-                        chunk = delta["content"]
-                        answer_text += chunk
-                        yield {"content": chunk}
-                    elif delta.get("done"):
-                        break
+                attempt = 0
+                while True:
+                    run = {"text": "", "emitted": False}
+                    try:
+                        async for ev in _stream_answer(
+                            hooks, llm_model, prompt,
+                            intent in ("translate", "redact", "summarize"), run,
+                        ):
+                            yield ev
+                    except Exception as e:
+                        if attempt == 0 and not run["emitted"] and _is_transient_llm_error(e):
+                            attempt += 1
+                            answer_tile.items.append({
+                                "kind": "note",
+                                "label": f"Model error ({str(e)[:80]}) — retrying once",
+                            })
+                            yield {"tile": answer_tile.to_dict()}
+                            await asyncio.sleep(ANSWER_RETRY_DELAY_S)
+                            continue
+                        raise
+                    visible = _visible_len(run["text"])
+                    if visible <= ANSWER_MIN_VISIBLE_CHARS and attempt == 0:
+                        attempt += 1
+                        answer_tile.items.append({
+                            "kind": "note",
+                            "label": "Empty answer from the model — retrying once",
+                        })
+                        yield {"tile": answer_tile.to_dict()}
+                        await asyncio.sleep(ANSWER_RETRY_DELAY_S)
+                        continue
+                    if visible == 0:
+                        raise EmptyAnswerError(EMPTY_ANSWER_MESSAGE)
+                    if not run["emitted"]:
+                        # Short (≤ 3 chars) answer confirmed by the retry.
+                        yield {"content": run["text"]}
+                    answer_text = run["text"]
+                    break
 
                 answer_tile.status = "done"
                 answer_tile.output_preview = answer_text[:300]
                 answer_tile.ms = hooks.now_ms() - answer_tile.started_ms
                 yield {"tile": answer_tile.to_dict()}
 
+            except EmptyAnswerError as e:
+                answer_tile.status = "error"
+                answer_tile.detail = str(e)
+                answer_tile.ms = hooks.now_ms() - answer_tile.started_ms
+                yield {"tile": answer_tile.to_dict()}
+                yield {"error": str(e)}
+                return
             except Exception as e:
                 answer_tile.status = "error"
                 answer_tile.detail = str(e)[:200]
@@ -1509,10 +1709,15 @@ async def run_agent(
 
             # (d) Run web lookup if requested
             web_result = None  # Capture _web_result event for kg_ingest
-            if web_lookup and web_lookup.get("target"):
+            if web_targets:
                 try:
-                    # Extract person from the answer
+                    # Extract person from the answer; fall back to the document
+                    # itself (small JSON extraction by the answer model).
                     person = _doc_web.extract_person(answer_text, history)
+                    if person is None and subject_docs and subject_docs[0].text:
+                        person = await _doc_web.llm_extract_person(hooks, llm_model, subject_docs[0].text)
+                        if person:
+                            person = _doc_web.merge_person_with_headline(person, subject_docs[0].text)
                     if person is None:
                         # No person found; emit error tile
                         web_plan_tile = Tile(
@@ -1520,7 +1725,10 @@ async def run_agent(
                             kind="planner",
                             title="Query planner",
                             status="error",
-                            detail="Couldn't find a person's name in the answer to search for",
+                            detail=(
+                                "Couldn't find a person's name in the answer to search for"
+                                f" → {_doc_web.targets_label(web_targets)}"
+                            ),
                         )
                         yield {"tile": web_plan_tile.to_dict()}
                         tiles_emitted["web-plan"] = web_plan_tile
@@ -1546,7 +1754,7 @@ async def run_agent(
                         # Run web lookup (will merge headline from full doc_text before creating planner tile)
                         async for web_event in _doc_web.run_web_lookup(
                             person,
-                            web_lookup.get("target"),
+                            web_targets,
                             hooks,
                             answer_model=llm_model,
                             now_ms=hooks.now_ms(),
@@ -1598,8 +1806,22 @@ async def run_agent(
                     web_candidates = web_result.get("candidates", [])
                     verdict_text = web_result.get("verdict", "")
 
+                # identify_person over several documents/people: ingest every
+                # person, each tied to the document(s) that actually name them.
+                persons_for_kg = None
+                if intent == "identify_person":
+                    found = _doc_web.extract_persons(answer_text)
+                    if len(found) > 1 or (found and len(subject_docs) > 1):
+                        persons_for_kg = _tie_persons_to_docs(found, subject_docs)
+                        if person_for_kg and person_for_kg.get("name"):
+                            key = _normalize_for_dedup(person_for_kg["name"])
+                            for p in persons_for_kg:
+                                if _normalize_for_dedup(p["name"]) == key:
+                                    p["role"] = p.get("role") or person_for_kg.get("role")
+                                    p["org"] = p.get("org") or person_for_kg.get("org")
+
                 # Call kg_ingest with exact signature from kg_store.ingest_run
-                counts = await hooks.kg_ingest(
+                ingest_kwargs = dict(
                     conversation_id=req.get("conversation_id"),
                     run_id=req.get("run_id"),
                     intent=intent,
@@ -1609,6 +1831,9 @@ async def run_agent(
                     web_candidates=web_candidates,
                     verdict=verdict_text,
                 )
+                if persons_for_kg:
+                    ingest_kwargs["persons"] = persons_for_kg
+                counts = await hooks.kg_ingest(**ingest_kwargs)
 
                 # If ingest returned counts, emit a kg-ingest tile
                 if counts and any(counts.get(k, 0) > 0 for k in ["entities", "relations", "mentions"]):
@@ -1660,11 +1885,15 @@ async def run_agent(
         }
 
     except asyncio.CancelledError:
-        # Best-effort: mark tiles as cancelled
+        # Mark tiles as cancelled in memory only — never yield while being
+        # cancelled (the consumer is gone; a yield here can hang/mask the cancel).
         if laya_tile:
             laya_tile.status = "error"
             laya_tile.detail = "Cancelled"
-            yield {"tile": laya_tile.to_dict()}
+        for t in tiles_emitted.values():
+            if isinstance(t, Tile) and t.status in ("pending", "running"):
+                t.status = "error"
+                t.detail = "Cancelled"
         raise
 
 
@@ -1689,6 +1918,59 @@ def _mime_to_kind(mime: str) -> str:
     return "file"
 
 
+def _cached_doc_kind(doc: Any) -> Optional[dict]:
+    """A document kind already known for this doc: doc.meta["doc_kind"] (cached
+    by an earlier agent run) or the /api/idp/route decision
+    (doc.meta["route"]["decision"]). None when unknown."""
+    meta = getattr(doc, "meta", None)
+    if not isinstance(meta, dict):
+        return None
+    cached = meta.get("doc_kind")
+    if isinstance(cached, dict) and cached.get("kind"):
+        return cached
+    route = meta.get("route")
+    if isinstance(route, dict):
+        decision = route.get("decision")
+        if isinstance(decision, dict) and decision.get("kind"):
+            return {
+                "kind": decision["kind"],
+                "confidence": decision.get("confidence") or 0.0,
+            }
+    return None
+
+
+def _cache_doc_kind(doc: Any, result: Optional[dict]) -> None:
+    """Remember a computed doc kind on doc.meta (in memory only — persistence
+    is left to the existing registry save paths)."""
+    if not result or not result.get("kind"):
+        return
+    meta = getattr(doc, "meta", None)
+    if not isinstance(meta, dict):
+        return
+    meta["doc_kind"] = {
+        "kind": result.get("kind"),
+        "confidence": result.get("confidence"),
+    }
+
+
+def _tie_persons_to_docs(persons: list[dict], docs: list[Any]) -> list[dict]:
+    """Attach doc_id to each person whose name occurs in exactly the subset of
+    documents that name them (one entry per (person, document)); a person found
+    in no document text is tied to all documents (no doc_id)."""
+    out: list[dict] = []
+    for p in persons:
+        key = _normalize_for_dedup(p.get("name") or "")
+        if not key:
+            continue
+        hits = [d for d in docs if key in _normalize_for_dedup(getattr(d, "text", "") or "")]
+        if not hits:
+            out.append({**p})
+            continue
+        for d in hits:
+            out.append({**p, "doc_id": d.id})
+    return out
+
+
 def _find_role(doc: Any, laya_tile: Tile, docs: list[tuple[Any, dict]]) -> str:
     """Find the role assigned to a document in the Laya tile decisions."""
     for decision in laya_tile.decisions:
@@ -1697,25 +1979,288 @@ def _find_role(doc: Any, laya_tile: Tile, docs: list[tuple[Any, dict]]) -> str:
     return "subject"
 
 
-def _build_prompt(
+def _is_junk_graph_entity(entity: dict) -> bool:
+    """Profile without an http(s) URL, or a generic/fragment role — never a fact."""
+    etype = entity.get("type")
+    if etype == "profile":
+        url = str((entity.get("props") or {}).get("url") or "")
+        return not url.lower().startswith(("http://", "https://"))
+    if etype == "role":
+        import doc_web as _doc_web
+        return _doc_web._is_generic_role(entity.get("name") or "")
+    return False
+
+
+# Intents that answer from specific passages → retrieval over long documents
+RAG_INTENTS = {"general_question", "extract_data", "identify_person"}
+PROMPT_MAX_CHARS = 24000
+RAG_HEAD_CHARS = 1500
+RAG_TOP_K = 8
+
+# Empty/garbled answers (Ollama under GPU memory pressure) → one retry
+ANSWER_RETRY_DELAY_S = 2.0
+ANSWER_MIN_VISIBLE_CHARS = 3
+EMPTY_ANSWER_MESSAGE = "The model returned an empty answer (Ollama may be low on memory — try again)"
+_TRANSIENT_LLM_ERROR_RE = re.compile(
+    r"\b500\b|out of memory|\boom\b|\beof\b|unexpected end|connection reset|server disconnected",
+    re.IGNORECASE,
+)
+
+
+class EmptyAnswerError(RuntimeError):
+    """The answer model produced no visible text (even after a retry)."""
+
+
+def _visible_len(text: str) -> int:
+    """Number of non-whitespace characters."""
+    return len(re.sub(r"\s+", "", text or ""))
+
+
+def _is_transient_llm_error(exc: BaseException) -> bool:
+    """Ollama failures worth one retry: HTTP 500, out of memory, truncated stream."""
+    return bool(_TRANSIENT_LLM_ERROR_RE.search(str(exc) or ""))
+
+
+async def _stream_answer(
+    hooks: Any, model: str, prompt: str, strip_wrapper: bool, run: dict,
+) -> AsyncIterator[dict]:
+    """
+    One streaming pass of the answer model. Yields {"thinking"} / {"content"}
+    events and accumulates the answer in run["text"]. Content is held back
+    until it has more than ANSWER_MIN_VISIBLE_CHARS visible characters, so an
+    empty or garbled pass ("", "Tab") can be retried without the client having
+    seen it; run["emitted"] tells whether any content reached the client.
+    For translate/redact/summarize the first line is also held until we know
+    it isn't an echoed "=== file ===" wrapper.
+    """
+    pending = ""   # wrapper hold-back
+    held = ""      # short-answer hold-back
+
+    def _release(chunk: str) -> Optional[str]:
+        nonlocal held
+        run["text"] += chunk
+        if run["emitted"]:
+            return chunk
+        held += chunk
+        if _visible_len(held) > ANSWER_MIN_VISIBLE_CHARS:
+            out, held = held, ""
+            run["emitted"] = True
+            return out
+        return None
+
+    async for delta in hooks.stream_llm(model, prompt, think=False):
+        if "thinking" in delta:
+            yield {"thinking": delta["thinking"]}
+        elif "content" in delta:
+            chunk = delta["content"]
+            if strip_wrapper:
+                pending += chunk
+                head = pending.lstrip()
+                if not head or (
+                    head[0] in "=<" and "\n" not in head and len(pending) < 400
+                ):
+                    continue  # might still be a wrapper line
+                chunk = strip_leading_wrapper(pending)
+                pending = ""
+                strip_wrapper = False
+                if not chunk:
+                    continue
+            out = _release(chunk)
+            if out:
+                yield {"content": out}
+        elif delta.get("done"):
+            break
+    if pending:
+        chunk = strip_leading_wrapper(pending)
+        if chunk:
+            out = _release(chunk)
+            if out:
+                yield {"content": out}
+
+
+ONLINE_LOOKUP_NOTE = (
+    "An online lookup is performed separately after your answer — "
+    "do not say you lack internet access."
+)
+
+
+def _doc_budget(n_docs: int, max_chars: int = PROMPT_MAX_CHARS) -> int:
+    """Per-document character budget."""
+    return max_chars // max(1, n_docs)
+
+
+def _order_chunks(text: str, chunks: list[Any]) -> list[str]:
+    """De-duplicate retrieved chunks and put them in document order."""
+    seen: set = set()
+    items: list[tuple[int, int, str]] = []
+    for i, c in enumerate(chunks or []):
+        if isinstance(c, dict):
+            c_text = c.get("text") or ""
+            pos = c.get("position")
+        else:
+            c_text = str(c or "")
+            pos = None
+        c_text = c_text.strip()
+        if not c_text or c_text in seen:
+            continue
+        seen.add(c_text)
+        where = text.find(c_text[:200])
+        if where < 0:
+            where = len(text) + (pos if isinstance(pos, int) else i)
+        items.append((where, i, c_text))
+    items.sort()
+    return [t for _, _, t in items]
+
+
+PAGE_MARKER_RE = re.compile(r"^--- Page \d+ ---")
+
+
+def _paged_text(doc: Any) -> tuple[Optional[str], list[tuple[int, int]]]:
+    """
+    Document text with "--- Page N ---" markers when the document has at least
+    two non-empty pages whose text matches doc.text (so OCR/edited text that no
+    longer maps onto pages is never mislabelled). Returns (paged_text, starts)
+    where starts is [(offset_of_marker, page_no), …]; (None, []) otherwise.
+    """
+    pages = getattr(doc, "page_texts", None) or []
+    if not isinstance(pages, (list, tuple)):
+        return None, []
+    pages = [p if isinstance(p, str) else "" for p in pages]
+    if sum(1 for p in pages if p.strip()) < 2:
+        return None, []
+    text = getattr(doc, "text", "") or ""
+    norm = lambda s: re.sub(r"\s+", " ", s or "").strip()
+    if norm("\n\n".join(pages)) != norm(text):
+        return None, []
+    parts: list[str] = []
+    starts: list[tuple[int, int]] = []
+    offset = 0
+    for i, p in enumerate(pages, 1):
+        body = p.strip()
+        if not body:
+            continue
+        block = f"--- Page {i} ---\n{body}"
+        if parts:
+            offset += 2  # "\n\n" separator
+        starts.append((offset, i))
+        parts.append(block)
+        offset += len(block)
+    return "\n\n".join(parts), starts
+
+
+def _page_label(start: int, page_starts: Optional[list[tuple[int, int]]], segment: str) -> str:
+    """Prefix an excerpt segment with the marker of the page it starts on."""
+    if not page_starts or start < 0 or PAGE_MARKER_RE.match(segment.lstrip()):
+        return segment
+    page_no = None
+    for off, n in page_starts:
+        if off <= start:
+            page_no = n
+        else:
+            break
+    if page_no is None:
+        return segment
+    return f"--- Page {page_no} ---\n" + segment
+
+
+def _excerpt_doc(
+    text: str,
+    budget: int,
+    intent: str,
+    chunks: Optional[list[Any]],
+    page_starts: Optional[list[tuple[int, int]]] = None,
+) -> tuple[str, Optional[str]]:
+    """
+    Fit one document into `budget` chars. Returns (content, mode) where mode is
+    None (full text), "rag" (head + retrieved passages), "head_tail"
+    (60% head + 40% tail) or "sampled" (head + middle + tail).
+    With `page_starts` (from _paged_text) every excerpt segment keeps the
+    "--- Page N ---" marker of the page it starts on.
+    """
+    if len(text) <= budget:
+        return text, None
+    lab = lambda start, seg: _page_label(start, page_starts, seg)
+    if intent in RAG_INTENTS:
+        ordered = _order_chunks(text, chunks or [])
+        if ordered:
+            head = text[:min(RAG_HEAD_CHARS, budget)]
+            parts = [lab(0, head)]
+            used = len(head)
+            for c in ordered:
+                if c in head:
+                    continue
+                pos = text.find(c[:200])
+                if used + len(c) + 3 > budget:
+                    remaining = budget - used - 3
+                    if remaining > 200:
+                        parts.append(lab(pos, c[:remaining]))
+                    break
+                parts.append(lab(pos, c))
+                used += len(c) + 3
+            if len(parts) > 1:
+                return "\n…\n".join(parts), "rag"
+        head_n = int(budget * 0.6)
+        tail_n = budget - head_n
+        return (
+            lab(0, text[:head_n]) + "\n[…]\n" + lab(len(text) - tail_n, text[-tail_n:]),
+            "head_tail",
+        )
+    third = budget // 3
+    mid = len(text) // 2
+    mid_start = max(0, mid - third // 2)
+    middle = text[mid_start: mid - third // 2 + third]
+    return (
+        lab(0, text[:third]) + "\n[…]\n" + lab(mid_start, middle) + "\n[…]\n"
+        + lab(len(text) - third, text[-third:]),
+        "sampled",
+    )
+
+
+def _doc_block(filename: str, content: str) -> str:
+    """Wrap a document in a delimiter models don't echo back."""
+    name = (filename or "document").replace('"', "'")
+    return f'<document name="{name}">\n{content}\n</document>'
+
+
+def _build_prompt_ex(
     intent: str,
     docs: list[Any],
     message: str,
     history: list[dict],
-    max_chars: int = 24000,
-) -> str:
-    """Build LLM prompt from intent, documents, and context."""
-    # Collect document text
+    max_chars: int = PROMPT_MAX_CHARS,
+    retrieved: Optional[dict[str, list[Any]]] = None,
+    web_lookup_on: bool = False,
+) -> tuple[str, dict[str, dict[str, Any]]]:
+    """
+    Build the LLM prompt. Returns (prompt, excerpts) where excerpts maps
+    doc_id → {"chars": N, "mode": "rag"|"head_tail"|"sampled"} for every
+    document that did not fit its budget (max_chars // number of docs).
+    """
+    retrieved = retrieved or {}
+    budget = _doc_budget(len([d for d in docs if getattr(d, "text", "")]) or 1, max_chars)
     doc_texts = []
+    excerpts: dict[str, dict[str, Any]] = {}
+    any_paged = False
     for doc in docs:
-        if doc.text:
-            text_snippet = doc.text[:5000]  # Limit per-doc
-            doc_texts.append(f"=== {doc.filename} ===\n{text_snippet}")
+        text = getattr(doc, "text", "") or ""
+        if not text:
+            continue
+        # Page markers help page questions; translate/redact reproduce the
+        # document, so they get the plain text.
+        paged, page_starts = (None, []) if intent in ("translate", "redact") else _paged_text(doc)
+        content, mode = _excerpt_doc(
+            paged or text, budget, intent, retrieved.get(doc.id),
+            page_starts=page_starts or None,
+        )
+        any_paged = any_paged or bool(paged)
+        if mode:
+            excerpts[doc.id] = {"chars": len(text), "mode": mode}
+        doc_texts.append(_doc_block(doc.filename, content))
 
-    # Combine with truncation
     full_context = "\n\n".join(doc_texts)
-    if len(full_context) > max_chars:
-        full_context = full_context[:max_chars] + "\n\n[... truncated ...]"
+    hard_cap = max_chars + 2000  # wrappers + separators
+    if len(full_context) > hard_cap:
+        full_context = full_context[:hard_cap] + "\n\n[... truncated ...]"
 
     # Add history (last 6 turns)
     history_text = ""
@@ -1724,7 +2269,7 @@ def _build_prompt(
         history_lines = []
         for turn in recent_history:
             role = turn.get("role", "unknown")
-            content = turn.get("content", "")[:500]  # Trim
+            content = (turn.get("content") or "")[:500]  # Trim
             history_lines.append(f"{role}: {content}")
         history_text = "\n".join(history_lines)
 
@@ -1742,6 +2287,23 @@ def _build_prompt(
     if not prompt_template and intent != "general_question":
         prompt_template = IDENTIFY_PERSON_PROMPT
 
+    if excerpts:
+        note = (
+            "Some documents are long; only excerpts are shown (gaps are marked with … or […]). "
+            "If the answer is not in the excerpts, say so."
+        )
+        prompt_template = (prompt_template + "\n\n" + note) if prompt_template else note
+    if any_paged:
+        page_note = 'Page boundaries are marked with "--- Page N ---" lines; use them for questions about specific pages.'
+        prompt_template = (prompt_template + "\n" + page_note) if prompt_template else page_note
+    if intent in ("translate", "redact", "summarize"):
+        prompt_template += (
+            "\nThe document is enclosed in <document> tags. Output only the result — "
+            "do not repeat the tags, the file name or any header."
+        )
+    if web_lookup_on:
+        prompt_template = (prompt_template + "\n" + ONLINE_LOOKUP_NOTE) if prompt_template else ONLINE_LOOKUP_NOTE
+
     # Build final prompt
     parts = []
     if history_text:
@@ -1751,19 +2313,116 @@ def _build_prompt(
         parts.append("TASK:\n" + prompt_template)
     parts.append("USER REQUEST:\n" + message)
 
-    return "\n\n".join(parts)
+    return "\n\n".join(parts), excerpts
+
+
+def _build_prompt(
+    intent: str,
+    docs: list[Any],
+    message: str,
+    history: list[dict],
+    max_chars: int = PROMPT_MAX_CHARS,
+    retrieved: Optional[dict[str, list[Any]]] = None,
+    web_lookup_on: bool = False,
+) -> str:
+    """Build LLM prompt from intent, documents, and context."""
+    return _build_prompt_ex(intent, docs, message, history, max_chars, retrieved, web_lookup_on)[0]
+
+
+_LANGUAGES = {
+    "english": "English", "engels": "English", "anglais": "English", "englisch": "English",
+    "french": "French", "frans": "French", "français": "French", "francais": "French", "französisch": "French",
+    "german": "German", "duits": "German", "deutsch": "German", "allemand": "German",
+    "spanish": "Spanish", "spaans": "Spanish", "español": "Spanish", "espanol": "Spanish", "spanisch": "Spanish",
+    "dutch": "Dutch", "nederlands": "Dutch", "néerlandais": "Dutch", "niederländisch": "Dutch",
+    "italian": "Italian", "italiaans": "Italian", "italiano": "Italian",
+    "portuguese": "Portuguese", "portugees": "Portuguese", "português": "Portuguese",
+}
+_TARGET_LANG_RE = re.compile(
+    r"\b(?:to|into|naar|in het|in|en|vers|nach|auf)\s+(?:het\s+)?"
+    r"(english|engels|anglais|englisch|french|frans|français|francais|französisch|german|duits|deutsch|"
+    r"allemand|spanish|spaans|español|espanol|spanisch|dutch|nederlands|néerlandais|niederländisch|"
+    r"italian|italiaans|italiano|portuguese|portugees|português)\b",
+    re.IGNORECASE,
+)
+
+
+def translate_target_language(message: str) -> str:
+    """Target language of a translate request (the LAST "to/into/naar … <language>"),
+    defaulting to English."""
+    matches = _TARGET_LANG_RE.findall(message or "")
+    if not matches:
+        return "English"
+    return _LANGUAGES.get(matches[-1].lower(), "English")
 
 
 def _build_translate_prompt(message: str) -> str:
-    """Extract target language from message."""
-    # Simple heuristic: look for language names
-    target_lang = "English"
-    if any(kw in message.lower() for kw in ["french", "français", "fr"]):
-        target_lang = "French"
-    elif any(kw in message.lower() for kw in ["spanish", "español", "es"]):
-        target_lang = "Spanish"
-    elif any(kw in message.lower() for kw in ["german", "deutsch", "de"]):
-        target_lang = "German"
-    elif any(kw in message.lower() for kw in ["dutch", "nederlands", "nl"]):
-        target_lang = "Dutch"
-    return TRANSLATE_PROMPT.format(language=target_lang)
+    """Translate task prompt with the target language from the message."""
+    return TRANSLATE_PROMPT.format(language=translate_target_language(message))
+
+
+_LEADING_WRAPPER_RE = re.compile(r'^\s*(?:={2,}[^\n]*={2,}|<document[^>]*>)[ \t]*\n?')
+
+
+def strip_leading_wrapper(text: str) -> str:
+    """Remove a leading "=== file ===" / <document …> line a model echoed back."""
+    return _LEADING_WRAPPER_RE.sub("", text, count=1)
+
+
+# ── graph_query subject extraction ─────────────────────────────────────────
+
+_GRAPH_SCOPE_SUFFIXES = [
+    "across my documents", "across all documents", "across all my documents", "across the documents",
+    "in my documents", "in all documents", "in all my documents", "in my files", "in the documents",
+    "in the knowledge base", "in the knowledge graph", "in my knowledge base", "in the knowledge store",
+    "so far", "overall",
+]
+_PRONOUN_SUBJECTS = {
+    "her", "him", "them", "she", "he", "they", "this person", "that person", "the person",
+    "this guy", "this man", "this woman", "zij", "ze", "hij", "hem", "haar", "hen", "deze persoon",
+    "die persoon", "elle", "lui", "cette personne",
+}
+
+
+def graph_subject(message: str, history: Optional[list[dict]] = None) -> str:
+    """
+    Subject of a graph_query ("what do we know about Jane Example across my
+    documents" → "Jane Example"). Keywords are matched as whole words (never
+    "on" inside "Neuféglise"). A pronoun subject ("her", "this person", "hem")
+    is resolved from the latest person named in the assistant history.
+    """
+    subject = (message or "").strip()
+    best = None
+    for keyword in ["about", "mention", "mentions", "regarding", "on", "over"]:
+        hits = list(re.finditer(r"(?<!\w)" + re.escape(keyword) + r"(?!\w)", subject, re.IGNORECASE))
+        if hits:
+            candidate = subject[hits[-1].end():].strip()
+            if candidate:
+                best = candidate
+                break
+    if best:
+        subject = best
+
+    changed = True
+    while changed:
+        changed = False
+        low = subject.lower().rstrip("\"'.,;:!? ")
+        for phrase in _GRAPH_SCOPE_SUFFIXES:
+            if low.endswith(phrase):
+                subject = subject.rstrip("\"'.,;:!? ")[: -len(phrase)].strip()
+                changed = True
+                break
+
+    subject = subject.strip("\"'.,;:!? ")
+    if not subject:
+        subject = (message or "").strip()
+
+    if subject.lower() in _PRONOUN_SUBJECTS and history:
+        try:
+            import doc_web as _doc_web
+            person = _doc_web.extract_person("", history)
+            if person and person.get("name"):
+                return person["name"]
+        except Exception:
+            pass
+    return subject

@@ -20,58 +20,155 @@ log = logging.getLogger("doc_web")
 
 # ── Configuration ──────────────────────────────────────────────────────────
 
-# Web lookup target keywords
-WEB_TARGET_KWS = {
-    "linkedin": ["linkedin", "linked in", "linked-in"],
-    "web": [
-        "check online", "search online", "search the web", "web search",
-        "look up online", "look him up", "look her up", "look them up",
-        "google", "verify online", "check the internet", "on the internet",
-        "does this person exist", "really exist", "real person", "actually exist",
-        "exists online", "find online", "find this person online",
-        "zoek op internet", "bestaat deze persoon", "echt bestaat",
-    ],
+# Social platforms the web lookup can target. Each entry:
+#   label            — display name ("LinkedIn")
+#   domains          — hostnames (subdomains match too); the first is the primary
+#   site             — the site: filter used in search queries (defaults to domains[0])
+#   query_term       — word appended to the name+role query (defaults to label)
+#   profile_patterns — regexes a profile URL must match
+#   exclude_patterns — regexes that mark a URL as NOT a profile (posts, directories…)
+#   keywords         — request phrases that select this platform (word-bounded)
+# End of a standalone "x": not followed by a word char, hyphen, or ".<word>"
+_X_END = r"(?![\w\-]|\.\w)"
+
+PLATFORMS: dict[str, dict] = {
+    "linkedin": {
+        "label": "LinkedIn",
+        "domains": ["linkedin.com"],
+        "site": "linkedin.com/in",
+        "profile_patterns": [r"linkedin\.com/in/"],
+        "exclude_patterns": [r"/pub/dir/", r"/search/", r"/posts?/", r"/pulse/"],
+        "keywords": ["linkedin", "linked in", "linked-in"],
+    },
+    "facebook": {
+        "label": "Facebook",
+        "domains": ["facebook.com", "fb.com"],
+        "profile_patterns": [
+            r"facebook\.com/(?!public/|pages/category|search|groups/|events/|watch|marketplace)[A-Za-z0-9.\-]+/?$",
+            r"facebook\.com/profile\.php\?id=\d+",
+        ],
+        "exclude_patterns": [r"/public/", r"/posts/", r"/photos/", r"/videos/"],
+        "keywords": ["facebook", "fb "],
+    },
+    "instagram": {
+        "label": "Instagram",
+        "domains": ["instagram.com"],
+        "profile_patterns": [r"instagram\.com/[A-Za-z0-9._]+/?$"],
+        "exclude_patterns": [r"/p/", r"/reel/", r"/explore/"],
+        "keywords": ["instagram", "insta "],
+    },
+    "x": {
+        "label": "X",
+        "domains": ["x.com", "twitter.com"],
+        "query_term": "Twitter",
+        "profile_patterns": [r"(?:^|[/.])(?:x|twitter)\.com/[A-Za-z0-9_]+/?$"],
+        "exclude_patterns": [
+            r"/status/", r"/search", r"/hashtag/",
+            r"\.com/(?:home|explore|i|intent|share|login|signup)/?$",
+        ],
+        "keywords": ["twitter", "x.com", "x/twitter"],
+        # "X" alone is too short for a keyword: only these word-bounded forms
+        # count (never "xbox", "x-ray", "max", "tax", "x.y").
+        "patterns": [
+            r"\bor x" + _X_END,
+            r"\bon x" + _X_END,
+            r"\band x" + _X_END,
+            r"(?<![\w\-.])x\s*\?",
+            r"\bx\.com\b",
+            r"\btwitter\b",
+            r"\bx/twitter\b",
+            r"\bx \(twitter\)",
+        ],
+    },
 }
 
-# System prompt for tool-capable models
-VERIFY_SYSTEM_PROMPT = """You are a web search assistant. Your task is to verify whether a person exists online.
+# Generic web keywords (only used when no specific platform is named)
+WEB_KEYWORDS: list[str] = [
+    "check online", "search online", "search the web", "web search",
+    "look up online", "look him up", "look her up", "look them up",
+    "google", "verify online", "check the internet", "on the internet",
+    "does this person exist", "really exist", "real person", "actually exist",
+    "exists online", "find online", "find this person online",
+    "look this person up", "look up this person", "search for this person online",
+    "search the internet", "find this person on the web", "look it up online",
+    "zoek op internet", "bestaat deze persoon", "echt bestaat",
+]
 
-Use web_search to find information about the person. For LinkedIn targets, prefer searching with site:linkedin.com/in queries.
+# Web lookup target keywords (kept for backward compatibility: platform → keywords)
+WEB_TARGET_KWS: dict[str, list[str]] = {
+    **{pid: list(p["keywords"]) for pid, p in PLATFORMS.items()},
+    "web": WEB_KEYWORDS,
+}
 
-Perform up to 3 search rounds. On the final response (after searching or if no more searches are needed), provide your answer in this exact format:
+# Max platforms per lookup and max planned queries
+MAX_TARGETS = 3
+MAX_QUERIES = 6
 
-**[Verdict]** — one of: "**Likely match found**", "**Possible match**", "**No match found**"
+
+def platform_label(target: Optional[str]) -> str:
+    """Display label for a target id ("linkedin" → "LinkedIn", "web" → "Web")."""
+    if not target:
+        return "Web"
+    p = PLATFORMS.get(target)
+    return p["label"] if p else ("Web" if target == "web" else str(target))
+
+
+def targets_label(targets: list[str], sep: str = " + ") -> str:
+    """"LinkedIn + Facebook" for a list of targets."""
+    return sep.join(platform_label(t) for t in targets)
+
+
+def _normalize_targets(targets: Any) -> list[str]:
+    """Accept a str, None or list of targets; return a de-duplicated list (max 3)."""
+    if targets is None:
+        return []
+    if isinstance(targets, str):
+        targets = [targets]
+    out: list[str] = []
+    for t in targets:
+        if not t:
+            continue
+        t = str(t).strip().lower()
+        if t == "twitter":
+            t = "x"
+        if (t in PLATFORMS or t == "web") and t not in out:
+            out.append(t)
+    return out[:MAX_TARGETS]
+
+
+def _verify_system_prompt(targets: list[str]) -> str:
+    """System prompt for the tool-capable model, mentioning the requested platforms."""
+    targets = _normalize_targets(targets) or ["web"]
+    hints = []
+    for t in targets:
+        p = PLATFORMS.get(t)
+        if p:
+            site = p.get("site") or p["domains"][0]
+            hints.append(f"for {p['label']}, search with site:{site} queries")
+    hint_text = ("; ".join(hints) + ".") if hints else "search the open web."
+    lines = "\n".join(
+        f'**{platform_label(t)}:** one of "Likely match found", "Possible match", "No match found" — short reason and the matching [title](url)'
+        for t in targets
+    )
+    return f"""You are a web search assistant. Your task is to verify whether a person exists online on: {targets_label(targets, ", ")}.
+
+Use web_search to find information about the person — {hint_text} Social network pages (LinkedIn, Facebook, Instagram, X) require login and cannot be fetched; rely on their search snippets.
+
+Perform up to 3 search rounds. On the final response (after searching or if no more searches are needed), give a per-platform verdict, one line per requested platform:
+{lines}
+**Overall:** one-line summary.
 
 Followed by:
 - Up to 3 candidate profiles as a bullet list with [name](url) and snippet evidence
 - Which details match the document (name / role / employer)
 - A one-line caveat: "Note: Search results are not proof of identity."
 
+Refer to people by their name; do not assume gender or use he/she.
 Never cite URLs that did not appear in search results. If search failed, be honest about it."""
 
-# Prompt for direct search fallback (no tools)
-VERDICT_PROMPT = """Given the person details from the document and the search results below, provide your verdict:
 
-**Person from document:**
-Name: {name}
-Role: {role}
-Organization: {org}
-
-**Search results:**
-{results}
-
-Provide your answer in this exact format:
-
-**[Verdict]** — one of: "**Likely match found**", "**Possible match**", "**No match found**"
-
-Followed by:
-- Up to 3 candidate profiles as a bullet list with [name](url) if URLs exist in results, or just name if not
-- Which details match the search results (name / role / employer)
-- A one-line caveat: "Note: Search results are not proof of identity."
-
-Refer to people by their name; do not assume gender or use he/she.
-
-If no results, respond with: **No match found** — no LinkedIn profiles or public records with this name appeared in the search results. Note: Search results are not proof of identity."""
+# System prompt for tool-capable models (default: LinkedIn target)
+VERIFY_SYSTEM_PROMPT = _verify_system_prompt(["linkedin"])
 
 # Tool schema for Ollama
 TOOLS = [
@@ -96,7 +193,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "fetch_page",
-            "description": "Fetch a public web page as text. LinkedIn pages require login and are not fetchable — rely on search snippets for LinkedIn.",
+            "description": "Fetch a public web page as text. LinkedIn, Facebook, Instagram and X pages require login and are not fetchable — rely on search snippets for those.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -119,38 +216,240 @@ class WebSearchUnavailable(Exception):
     pass
 
 
+class SearchBlocked(Exception):
+    """The search engine answered with its bot-detection / "no results" notice
+    (DuckDuckGo rate limiting) — the query was NOT really searched."""
+    pass
+
+
+SEARCH_BLOCKED_DETAIL = (
+    "Web search is temporarily blocked by DuckDuckGo (bot detection) — try again in a few "
+    "minutes or enable Brave Search in Settings → Tools"
+)
+SEARCH_UNAVAILABLE_STATE = "Search unavailable — couldn't verify"
+_BLOCKED_NOTICE_RE = re.compile(r"bot[\s-]*detection", re.IGNORECASE)
+
+
+def is_blocked_notice(text: Any) -> bool:
+    """True for DuckDuckGo's "No results were found … DuckDuckGo's bot detection …"
+    notice (the MCP server returns it for every query while rate-limited)."""
+    if not isinstance(text, str) or not text.strip():
+        return False
+    low = text.lower()
+    if _BLOCKED_NOTICE_RE.search(low):
+        return True
+    return "no results were found" in low and "duckduckgo" in low
+
+
+DDG_SERVER = "duckduckgo-search"
+BRAVE_SERVER = "brave-search"
+
+
+class WebSearcher:
+    """
+    Per-run web search over the DuckDuckGo / Brave MCP servers.
+
+    - DuckDuckGo first. When it answers with its bot-detection notice, retry once
+      (after `retry_delay` seconds, first time in the run only); if still
+      blocked, fall back to Brave Search when that server is running.
+    - When DuckDuckGo stays blocked and Brave isn't available, raise
+      SearchBlocked (callers must never turn that into a "no match" verdict).
+    - WebSearchUnavailable when no search server is running at all.
+
+    `call(server_id, query) -> raw text`, `running() -> [server ids]`,
+    `parse(text) -> [{url, title, snippet}]` are injected (main.py wires the MCP
+    manager in; tests pass fakes).
+    """
+
+    def __init__(
+        self,
+        call: Callable[[str, str], Any],
+        running: Callable[[], list],
+        parse: Callable[[str], list],
+        *,
+        retry_delay: float = 3.0,
+        sleep: Optional[Callable[[float], Any]] = None,
+    ) -> None:
+        self._call = call
+        self._running = running
+        self._parse = parse
+        self.retry_delay = retry_delay
+        self._sleep = sleep or asyncio.sleep
+        self._retried = False
+        self.blocked_queries = 0
+
+    async def __call__(self, query: str) -> list[dict]:
+        running = list(self._running() or [])
+        if DDG_SERVER not in running and BRAVE_SERVER not in running:
+            raise WebSearchUnavailable("No web search MCP server running")
+        blocked_text = None
+        if DDG_SERVER in running:
+            try:
+                text = await self._call(DDG_SERVER, query)
+                if is_blocked_notice(text) and not self._retried:
+                    self._retried = True
+                    log.info("DuckDuckGo returned its bot-detection notice — retrying in %.0fs", self.retry_delay)
+                    await self._sleep(self.retry_delay)
+                    text = await self._call(DDG_SERVER, query)
+                if is_blocked_notice(text):
+                    blocked_text = text
+                else:
+                    return self._parse(text or "")
+            except (WebSearchUnavailable, SearchBlocked):
+                raise
+            except Exception as exc:
+                log.warning("search via %s failed: %s", DDG_SERVER, exc)
+        if BRAVE_SERVER in running:
+            try:
+                text = await self._call(BRAVE_SERVER, query)
+                return self._parse(text or "")
+            except Exception as exc:
+                log.warning("search via %s failed: %s", BRAVE_SERVER, exc)
+        if blocked_text is not None:
+            self.blocked_queries += 1
+            raise SearchBlocked(str(blocked_text)[:300])
+        return []
+
+
+# ── Fetch guard (SSRF / privacy) ──────────────────────────────────────────
+
+FETCH_REFUSED_UNSEEN = "Fetch refused: URL was not returned by the search"
+FETCH_REFUSED_PRIVATE = "Fetch refused: URL points to a private address"
+FETCH_REFUSED_SCHEME = "Fetch refused: only http(s) URLs can be fetched"
+_BLOCKED_HOSTNAMES = {"localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback"}
+_BLOCKED_HOST_SUFFIXES = (".local", ".internal", ".localhost", ".localdomain", ".lan", ".home.arpa", ".intranet")
+
+
+def _url_key_for_fetch(url: str) -> str:
+    return (url or "").strip().rstrip("/")
+
+
+def _ip_is_private(ip_text: str) -> bool:
+    import ipaddress
+    try:
+        ip = ipaddress.ip_address(ip_text.split("%", 1)[0])
+    except ValueError:
+        return True  # unparsable → treat as unsafe
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped:
+        ip = ip.ipv4_mapped
+    return (
+        ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+        or ip.is_multicast or ip.is_unspecified
+    )
+
+
+async def check_fetch_url(url: str, allowed_urls: set) -> Optional[str]:
+    """
+    Decide whether fetch_page may fetch `url`. Returns None when allowed, or the
+    refusal message. Rules: http(s) only; the URL must have been returned by
+    web_search in this run; the host must not be localhost/.local/.internal nor
+    a loopback/private/link-local IP, literally or after DNS resolution.
+    """
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+
+    raw = (url or "").strip()
+    try:
+        parsed = urlparse(raw)
+    except Exception:
+        return FETCH_REFUSED_SCHEME
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
+        return FETCH_REFUSED_SCHEME
+    allowed_keys = {_url_key_for_fetch(u) for u in (allowed_urls or set())}
+    if _url_key_for_fetch(raw) not in allowed_keys:
+        return FETCH_REFUSED_UNSEEN
+
+    host = parsed.hostname.lower().rstrip(".")
+    if host in _BLOCKED_HOSTNAMES or host.endswith(_BLOCKED_HOST_SUFFIXES):
+        return FETCH_REFUSED_PRIVATE
+    try:
+        ipaddress.ip_address(host.split("%", 1)[0])
+        is_literal = True
+    except ValueError:
+        is_literal = False
+    if is_literal:
+        return FETCH_REFUSED_PRIVATE if _ip_is_private(host) else None
+    if "." not in host:
+        return FETCH_REFUSED_PRIVATE  # single-label intranet names
+
+    port = parsed.port or (443 if parsed.scheme.lower() == "https" else 80)
+    try:
+        infos = await asyncio.to_thread(socket.getaddrinfo, host, port, 0, socket.SOCK_STREAM)
+    except Exception:
+        return "Fetch refused: host could not be resolved"
+    addrs = {info[4][0] for info in infos if info and len(info) > 4 and info[4]}
+    if not addrs or any(_ip_is_private(a) for a in addrs):
+        return FETCH_REFUSED_PRIVATE
+    return None
+
+
 # ── Pure functions ────────────────────────────────────────────────────────
 
 
-def rules_web_lookup(message: str) -> tuple[Optional[str], list[str]]:
+def _kw_positions(msg_lower: str, kw: str) -> list[int]:
+    """Start positions of a keyword, word-bounded (no letter/digit right before/after)."""
+    kw = kw.strip().lower()
+    if not kw:
+        return []
+    pattern = r"(?<![a-z0-9])" + re.escape(kw) + r"(?![a-z0-9])"
+    return [m.start() for m in re.finditer(pattern, msg_lower)]
+
+
+def rules_web_lookup(message: str) -> tuple[list[str], list[str]]:
     """
     Detect if message requests web lookup via keyword rules.
 
-    Returns (target, matched_keywords):
-    - target: "linkedin" | "web" | None
+    Returns (targets, matched_keywords):
+    - targets: ordered list of requested platforms in mention order
+      (e.g. ["linkedin", "facebook"]), or ["web"] for generic web keywords,
+      or [] when no web lookup is requested
     - matched_keywords: list of keywords that matched
     """
     if not message or not message.strip():
-        return None, []
+        return [], []
 
     msg_lower = message.lower()
-    matched = []
 
-    # Check LinkedIn keywords first
-    for kw in WEB_TARGET_KWS["linkedin"]:
+    # Platform keywords (word-bounded so "fb"/"x" never fire inside other words)
+    found: list[tuple[int, str]] = []
+    matched: list[str] = []
+    for pid, p in PLATFORMS.items():
+        first_pos = None
+        for kw in p["keywords"]:
+            positions = _kw_positions(msg_lower, kw)
+            if positions:
+                matched.append(kw.strip())
+                pos = positions[0]
+                if first_pos is None or pos < first_pos:
+                    first_pos = pos
+        for pat in p.get("patterns", []):
+            m = re.search(pat, msg_lower)
+            if m:
+                if m.group(0).strip() not in matched:
+                    matched.append(m.group(0).strip())
+                if first_pos is None or m.start() < first_pos:
+                    first_pos = m.start()
+        if first_pos is not None:
+            found.append((first_pos, pid))
+    if found:
+        found.sort(key=lambda x: x[0])
+        return [pid for _, pid in found][:MAX_TARGETS], matched
+
+    # Generic web keywords
+    for kw in WEB_KEYWORDS:
         if kw in msg_lower:
             matched.append(kw)
     if matched:
-        return "linkedin", matched
+        return ["web"], matched
 
-    # Check generic web keywords
-    for kw in WEB_TARGET_KWS["web"]:
-        if kw in msg_lower:
-            matched.append(kw)
-    if matched:
-        return "web", matched
+    return [], []
 
-    return None, []
+
+def rules_web_lookup_single(message: str) -> tuple[Optional[str], list[str]]:
+    """Backward-compatible wrapper: (first target or None, matched_keywords)."""
+    targets, kws = rules_web_lookup(message)
+    return (targets[0] if targets else None), kws
 
 
 def strip_web_clause(message: str) -> str:
@@ -159,20 +458,20 @@ def strip_web_clause(message: str) -> str:
 
     This prevents rules_intent from picking the wrong intent when the message
     contains both a real intent (e.g., "who is this document about") and web
-    keywords (e.g., "check linkedin if this person really exists").
+    keywords (e.g., "check linkedin if this person really exists", "is she on
+    Instagram?", "look him up on LinkedIn and Facebook").
 
-    Handles commas before "and" (e.g., ", and check LinkedIn ...").
+    Each sentence is split on ", and" / " and "; parts that mention a web or
+    platform keyword are dropped, the rest is kept.
 
     Returns the stripped message, or the original if stripping would leave <3 chars.
     """
-    target, _ = rules_web_lookup(message)
+    targets, _ = rules_web_lookup(message)
 
-    if not target:
+    if not targets:
         # No web clause; return original
         return message
 
-    # Split on sentence boundaries and commas before "and"
-    # Handle patterns like "... who is this? and check linkedin" or "... who is this, and check linkedin"
     sentences = re.split(r'[.!?;]', message)
     kept_sentences = []
 
@@ -181,29 +480,24 @@ def strip_web_clause(message: str) -> str:
         if not sent_stripped:
             continue
 
-        # Check for "and <web_keywords>" pattern and split
-        # Match ", and ..." or " and ..." followed by web keywords
-        and_match = re.match(r"^(.+?)(?:,?\s+and\s+)(.+)$", sent_stripped, re.IGNORECASE)
-        if and_match:
-            before_and = and_match.group(1).strip()
-            after_and = and_match.group(2).strip()
+        _, kws = rules_web_lookup(sent_stripped)
+        if not kws:
+            kept_sentences.append(sent_stripped)
+            continue
 
-            # Check if the part after "and" has web keywords
-            _, kws_after = rules_web_lookup(after_and)
-            if kws_after:
-                # Web clause is after "and"; keep the before part
-                if before_and and len(before_and) >= 3:
-                    kept_sentences.append(before_and)
-            else:
-                # No web keywords in after part; keep entire sentence
-                _, kws = rules_web_lookup(sent_stripped)
-                if not kws:
-                    kept_sentences.append(sent_stripped)
-        else:
-            # No "and" pattern; check if sentence has web keywords
-            _, kws = rules_web_lookup(sent_stripped)
-            if not kws:
-                kept_sentences.append(sent_stripped)
+        # Split on ", and" / " and " and keep the parts without web keywords
+        parts = re.split(r",?\s+and\s+", sent_stripped, flags=re.IGNORECASE)
+        kept_parts = []
+        for part in parts:
+            part = part.strip().strip(",").strip()
+            if not part:
+                continue
+            _, part_kws = rules_web_lookup(part)
+            if not part_kws:
+                kept_parts.append(part)
+        kept = " and ".join(kept_parts).strip()
+        if kept and len(kept) >= 3:
+            kept_sentences.append(kept)
 
     result = ". ".join(kept_sentences).strip()
     if result and len(result) >= 3:
@@ -211,20 +505,40 @@ def strip_web_clause(message: str) -> str:
     return message
 
 
+def strip_web_clause_or_empty(message: str) -> str:
+    """
+    Like strip_web_clause, but a message that is ONLY a web clause ("search the
+    web for this person", "look this person up online") becomes "" instead of
+    being returned unchanged.
+    """
+    targets, _ = rules_web_lookup(message)
+    if not targets:
+        return message
+    stripped = strip_web_clause(message)
+    if stripped == message or len(stripped.strip()) < 3:
+        return ""
+    return stripped
+
+
+LAYA_ONLY_WEB_NOTE = "Laya suggested a web lookup — not run without an explicit request"
+
+
 def resolve_web_lookup(
     laya_result: Optional[dict],
-    rules_result: tuple[Optional[str], list[str]]
+    rules_result: tuple[Any, list[str]]
 ) -> dict:
     """
     Resolve web lookup decision from Laya and rules.
 
     Args:
         laya_result: {"value": "yes"|"no", "confidence": float} or None
-        rules_result: (target, keywords) from rules_web_lookup
+        rules_result: (targets, keywords) from rules_web_lookup
+            (the legacy (target: str|None, keywords) shape is accepted too)
 
     Returns:
         {
-            "target": "linkedin" | "web" | None,
+            "targets": ["linkedin", "facebook"] | ["web"] | [],
+            "target": first target or None (backward compat),
             "source": "laya" | "rules" | "laya+rules",
             "confidence": float | None,
             "note": str | None
@@ -232,10 +546,11 @@ def resolve_web_lookup(
 
     The source field is never None; defaults to "rules" when no match is found.
     """
-    rules_target, rules_kws = rules_result
+    rules_targets_raw, rules_kws = rules_result
+    rules_targets = _normalize_targets(rules_targets_raw)
 
     # Rules match → use it
-    if rules_target:
+    if rules_targets:
         source = "rules"
         confidence = 0.95  # High confidence for rules
         note = None
@@ -243,25 +558,27 @@ def resolve_web_lookup(
             source = "laya+rules"
             confidence = min(1.0, (0.95 + laya_result.get("confidence", 0.5)) / 2)
         return {
-            "target": rules_target,
+            "targets": rules_targets,
+            "target": rules_targets[0],
             "source": source,
             "confidence": confidence,
             "note": note,
         }
 
-    # Laya yes WITHOUT rules → use only if high confidence
+    # Laya yes WITHOUT an explicit keyword request → never search. A web lookup
+    # sends the person's name off this machine, so it needs an explicit ask.
     if laya_result and laya_result.get("value") == "yes":
-        conf = laya_result.get("confidence", 0.5)
-        if conf >= 0.9:
-            return {
-                "target": "web",
-                "source": "laya",
-                "confidence": conf,
-                "note": None,
-            }
+        return {
+            "targets": [],
+            "target": None,
+            "source": "laya",
+            "confidence": laya_result.get("confidence"),
+            "note": LAYA_ONLY_WEB_NOTE,
+        }
 
     # No match: source defaults to "laya" if laya_result exists, else "rules"
     return {
+        "targets": [],
         "target": None,
         "source": "laya" if laya_result else "rules",
         "confidence": None,
@@ -362,64 +679,426 @@ def extract_headline(doc_text: str) -> dict:
 
         # Check for any job keyword
         if any(kw in line_lower for kw in job_keywords):
-            role_line = line.strip()
+            role_line = line.strip().rstrip(".")
+
+            def _has_job(text: str) -> bool:
+                t = text.lower()
+                return any(kw in t for kw in job_keywords)
+
+            def _ok(role: Optional[str], org: Optional[str]) -> bool:
+                return bool(
+                    role and org and not _is_generic_role(role) and not _is_bad_org(org)
+                    and not _VERB_ROLE_RE.search(role)
+                )
+
+            # Sentences: "X works at ORG as ROLE", "works as ROLE at ORG",
+            # "werkt bij ORG als ROLE"
+            for pat in _HEADLINE_SENTENCE_RES:
+                m = pat.search(role_line)
+                if m:
+                    role_s = m.group("role").strip(" ,;:")
+                    org_s = m.group("org").strip(" ,;:")
+                    if _ok(role_s, org_s):
+                        return {"role": role_s, "org": org_s}
 
             # Check for separator patterns (in order): " – ", " — ", " - ", " | ", " at ", " bij ", " @ "
             separators = [" – ", " — ", " - ", " | ", " at ", " bij ", " @ "]
-            org = None
-
             for sep in separators:
                 # Case-insensitive search for the separator
                 sep_idx = role_line.lower().find(sep.lower())
-                if sep_idx != -1:
-                    # Split on this separator
-                    role_part = role_line[:sep_idx].strip()
-                    org_part = role_line[sep_idx + len(sep):].strip()
-
-                    if org_part and 1 <= len(org_part) <= 60:
-                        result["role"] = role_part
-                        result["org"] = org_part
-                        return result
-                    else:
-                        # Separator found but org part invalid; keep role, try fallback below
-                        result["role"] = role_part
-                        break
+                if sep_idx == -1:
+                    continue
+                left = role_line[:sep_idx].strip()
+                right = role_line[sep_idx + len(sep):].strip()
+                role_part, org_part = left, right
+                if sep.strip() in ("–", "—", "-", "|") and _has_job(right) and not _has_job(left):
+                    # "ORG — ROLE"
+                    role_part, org_part = right, left
+                # "ROLE at ORG as …" / "ORG as ROLE" leftovers
+                as_m = re.search(r"\s(?:as|als)\s+(?:an?\s+)?", org_part, re.IGNORECASE)
+                if as_m:
+                    tail = org_part[as_m.end():].strip()
+                    org_part = org_part[:as_m.start()].strip()
+                    if _has_job(tail):
+                        role_part = tail
+                if org_part and 1 <= len(org_part) <= 60 and _ok(role_part, org_part):
+                    result["role"] = role_part
+                    result["org"] = org_part
+                    return result
+                if (
+                    org_part and not _is_bad_org(org_part) and role_part
+                    and not _VERB_ROLE_RE.search(role_part) and _is_generic_role(role_part)
+                ):
+                    # "Owner – Acme": a real organisation, a generic role
+                    return {"role": None, "org": org_part}
+                if role_part and not _VERB_ROLE_RE.search(role_part) and not _is_generic_role(role_part):
+                    # Separator found but org part invalid; keep role, try fallback below
+                    result["role"] = role_part
+                break
 
             # Fallback: if no separator split happened, use existing regex on this line or next line
             if not result["org"]:
-                org_match = re.search(r'(?:at|bij|@)\s+([A-Za-z0-9\s&\-]+?)(?:,|$)', role_line, re.IGNORECASE)
+                org_match = re.search(r'(?:\bat|\bbij|@)\s+([A-Za-z0-9\s&\-]+?)(?:,|$)', role_line, re.IGNORECASE)
                 if not org_match and i + 1 < len(lines):
                     # Try next line
                     next_line = lines[i + 1]
-                    org_match = re.search(r'(?:at|bij|@)\s+([A-Za-z0-9\s&\-]+?)(?:,|$)', next_line, re.IGNORECASE)
+                    org_match = re.search(r'(?:\bat|\bbij|@)\s+([A-Za-z0-9\s&\-]+?)(?:,|$)', next_line, re.IGNORECASE)
 
                 if org_match:
                     org = org_match.group(1).strip()
-                    if org and len(org) < 100:  # Sanity check
+                    if org and len(org) < 100 and not _is_bad_org(org):  # Sanity check
                         result["org"] = org
 
-            if not result["role"]:
+            if not result["role"] and not _VERB_ROLE_RE.search(role_line) and not _is_generic_role(role_line):
                 result["role"] = role_line
 
-            return result
+            if result["role"] or result["org"]:
+                return result
+            result = {"role": None, "org": None}
 
     return result
 
 
+# "Temp Person works" — a sentence fragment, not a job title
+_VERB_ROLE_RE = re.compile(r"\b(?:works|worked|working|werkt|is|was|has|heeft|as|als)\b", re.IGNORECASE)
+_HEADLINE_SENTENCE_RES = [
+    re.compile(
+        r"\b(?:works|worked|working|is employed|employed)\s+(?:at|for|with)\s+(?P<org>.+?)\s+as\s+(?:an?\s+)?(?P<role>.+?)$",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:works|worked|working|is employed|employed)\s+as\s+(?:an?\s+)?(?P<role>.+?)\s+(?:at|for|with)\s+(?P<org>.+?)$",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bwerk(?:t|te)?\s+bij\s+(?P<org>.+?)\s+als\s+(?P<role>.+?)$", re.IGNORECASE),
+    re.compile(r"\bwerk(?:t|te)?\s+als\s+(?P<role>.+?)\s+bij\s+(?P<org>.+?)$", re.IGNORECASE),
+]
+
+
+_GENERIC_ROLE_EXACT = {
+    "holder", "subject", "subject of the cv", "candidate", "applicant",
+    "candidate/applicant", "owner", "author", "signer", "signatory",
+    "person", "individual", "employee", "n/a", "unknown",
+    "professional profile", "profile", "cv", "resume", "curriculum vitae",
+    "cv owner", "document owner", "subject of the document",
+}
+# Answer-derived descriptions of "the person in the document", never job titles.
+_GENERIC_ROLE_RE = re.compile(
+    r"\bindividual\b|\bperson whose\b|\bcv holder\b|\bholder\b|\bwhose cv\b|\bthe person\b"
+    r"|\bdocument\b(?!\s+(?:controller|control|specialist|manager|management|analyst|engineer|designer))"
+    r"|\bsubject\b(?!\s+matter)"
+    r"|^the\s+(?:individual|person|people|candidate|applicant|author|employee|signer|signatory|owner"
+    r"|holder|subject|client|customer|user|writer|sender|recipient|addressee|party|parties|undersigned"
+    r"|professional|profile|resume|cv|document)\b",
+    re.IGNORECASE,
+)
+ROLE_MAX_CHARS = 60
+
+
 def _is_generic_role(role: str) -> bool:
-    """Check if role is a generic placeholder that should be treated as None."""
+    """Check if role is a generic placeholder (or an answer-derived description
+    such as "the individual whose CV is presented") that should be treated as None."""
     if not role:
         return True
     # Strip parentheses content first
     role_stripped = re.sub(r'\([^)]+\)', '', role).strip()
-    generic_roles = {
-        "holder", "subject", "subject of the cv", "candidate", "applicant",
-        "candidate/applicant", "owner", "author", "signer", "signatory",
-        "person", "individual", "employee", "n/a", "unknown",
-        "professional profile", "profile", "cv", "resume", "curriculum vitae",
-        "cv owner", "document owner", "subject of the document"
-    }
-    return role_stripped.lower() in generic_roles
+    low = role_stripped.lower().strip(" .:;,*_")
+    if not low or low in _GENERIC_ROLE_EXACT:
+        return True
+    if len(role_stripped) > ROLE_MAX_CHARS:
+        return True
+    return bool(_GENERIC_ROLE_RE.search(low))
+
+
+def _is_bad_org(org: str) -> bool:
+    """An organisation string that is really a sentence fragment ("Temp Corp as
+    Temp Engineer.") or too long to be a name."""
+    if not org:
+        return True
+    o = org.strip().strip(".")
+    return (not o) or len(o) > ROLE_MAX_CHARS or bool(re.search(r"\s(?:as|als)\s", o, re.IGNORECASE))
+
+
+# Organisation / company suffixes — a "name" containing one is not a person.
+_ORG_SUFFIX_SHORT_RE = re.compile(  # legal forms: case-sensitive, never the first word
+    r"[\s,](?:B\.\s?V\.?|BV|N\.\s?V\.?|NV|AG|SA|S\.A\.?|SARL|S\.A\.R\.L\.?|Co\.|CO\.|LLC|L\.L\.C\.?"
+    r"|Ltd\.?|LTD\.?|Inc\.?|INC\.?|GmbH|GMBH|PLC|plc|Plc|Corp\.?|CORP\.?)(?=$|[\s,.)])"
+)
+_ORG_SUFFIX_WORD_RE = re.compile(
+    r"\b(?:limited|incorporated|corporation|company|group|holding|holdings|stichting|vereniging"
+    r"|foundation|university|universiteit|bank)\b",
+    re.IGNORECASE,
+)
+
+
+def looks_like_organization(name: str) -> bool:
+    """True for "Acme B.V.", "Foo Holding", "Rabobank Group", "Delft University" …"""
+    if not name:
+        return False
+    n = name.strip()
+    return bool(_ORG_SUFFIX_SHORT_RE.search(n) or _ORG_SUFFIX_WORD_RE.search(n))
+
+
+_NAME_STOPWORDS = {
+    "document", "documents", "summary", "key", "points", "point", "takeaways", "takeaway",
+    "name", "names", "role", "roles", "organization", "organisation", "company", "employer",
+    "date", "dates", "amount", "amounts", "total", "invoice", "contract", "address",
+    "main", "overview", "conclusion", "conclusions", "information", "details", "detail",
+    "person", "people", "persons", "signature", "signatures", "holder", "subject",
+    "supporting", "text", "quote", "source", "sources", "answer", "note", "notes",
+    "online", "verification", "overall", "likely", "possible", "match", "found", "no",
+    "the", "this", "that", "of", "and", "for", "with", "not", "unknown", "data", "fields",
+    "contact", "info", "type", "status", "number", "table", "section", "page", "pages",
+    "important", "decisions", "email", "phone", "linkedin", "facebook", "instagram", "twitter",
+    "web", "search", "results", "result", "document's", "cv", "resume", "id", "card",
+}
+_NAME_PARTICLES = {"de", "van", "der", "den", "von", "la", "le", "di", "da", "du", "del", "ter", "te", "het", "'t", "bin", "al", "dos", "das", "y"}
+
+
+def _strip_name_decorations(name: str) -> str:
+    """Drop trailing parentheticals / role suffixes and punctuation from a name."""
+    if not name:
+        return ""
+    name = re.sub(r'\s*\([^)]*\)\s*', ' ', name)
+    name = re.split(r'\s+[–—-]\s+|,|;', name)[0]
+    return name.strip().strip(":.*_\'\"` ").strip()
+
+
+def _is_valid_name(name: str) -> bool:
+    """Check if name is valid (2–6 words of letters, accents, hyphens, apostrophes)."""
+    if not name:
+        return False
+    if name.lower() in ("unknown", "not specified", "n/a", "none", "not given"):
+        return False
+    words = name.split()
+    if not (2 <= len(words) <= 6):
+        return False
+    if looks_like_organization(name):
+        return False  # "Acme B.V." is an organisation, not a person
+    return all(re.fullmatch(r"[^\W\d_](?:[^\W\d_]|[-'’.])*", w) for w in words)
+
+
+def _is_proper_name(name: str) -> bool:
+    """A 2–5-word proper name: capitalised words (lower-case particles such as
+    "de"/"van" allowed inside), none of them a heading/label word."""
+    if not _is_valid_name(name):
+        return False
+    words = name.split()
+    if not (2 <= len(words) <= 5):
+        return False
+    if any(w.lower().strip(".") in _NAME_STOPWORDS for w in words):
+        return False
+    if not words[0][0].isupper() or not words[-1][0].isupper():
+        return False
+    return all(w[0].isupper() or w.lower() in _NAME_PARTICLES for w in words)
+
+
+def _clean_md(text: str) -> str:
+    """Remove markdown formatting (bold/italic/code) and surrounding quotes."""
+    if not text:
+        return ""
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    text = re.sub(r'__(.+?)__', r'\1', text)
+    text = re.sub(r'\*(.+?)\*', r'\1', text)
+    text = re.sub(r'_(.+?)_', r'\1', text)
+    text = re.sub(r'`(.+?)`', r'\1', text)
+    text = text.strip('\'"')
+    return text.strip()
+
+
+def _role_org_from(text: str) -> tuple[Optional[str], Optional[str]]:
+    """The first "Role:" and "Organization/Company/Employer:" values in `text`."""
+    role: Optional[str] = None
+    org: Optional[str] = None
+    if not text:
+        return None, None
+    role_match = re.search(r'\*\*Role:\*?\*?\s+(.+?)(?:\n|$)', text, re.IGNORECASE)
+    if not role_match:
+        role_match = re.search(r'(?:^|\n)[ \t]*(?:(?:[-*•+]|\d+[.)])[ \t]+)?Role:\s+(.+?)(?:\n|$)', text, re.IGNORECASE)
+    if role_match:
+        r = _clean_md(role_match.group(1).strip())
+        # If role contains parentheses, prefer text inside
+        paren_match = re.search(r'\(([^)]+)\)', r)
+        if paren_match:
+            r = _clean_md(paren_match.group(1))
+        if r and not _is_generic_role(r):
+            role = r
+    for org_label in ["Organization", "Organisation", "Company", "Employer"]:
+        org_match = re.search(rf'\*\*{org_label}:\*?\*?\s+(.+?)(?:\n|$)', text, re.IGNORECASE)
+        if not org_match:
+            org_match = re.search(
+                rf'(?:^|\n)[ \t]*(?:(?:[-*•+]|\d+[.)])[ \t]+)?{org_label}:\s+(.+?)(?:\n|$)', text, re.IGNORECASE
+            )
+        if org_match:
+            o = _clean_md(org_match.group(1).strip())
+            if o:
+                org = o
+                break
+    return role, org
+
+
+_NAME_LABEL_RE = re.compile(r'(?:^|\n)[ \t]*(?:[-*•]\s*)?(?:\*\*)?Name:(?:\*\*)?\s+(.+?)(?:\n|$)', re.IGNORECASE)
+_BULLET_LINE_RE = re.compile(r'^([ \t]*)(?:[-*•+]|\d+[.)])[ \t]+', re.MULTILINE)
+
+
+def _entity_markers(text: str) -> list[tuple[int, str]]:
+    """(start, normalised name) of every named entity in an answer: bold proper
+    names, bold organisations and "Name:" labels. "**Role:**"-style labels are not
+    entities."""
+    out: list[tuple[int, str]] = []
+    for m in re.finditer(r'\*\*(.+?)\*\*', text):
+        raw = m.group(1).strip()
+        if raw.endswith(":"):
+            continue
+        cleaned = _clean_md(raw)
+        name = _strip_name_decorations(cleaned)
+        if _is_proper_name(name) or looks_like_organization(name) or looks_like_organization(cleaned):
+            out.append((m.start(), _normalize_text(name)))
+    for m in _NAME_LABEL_RE.finditer(text):
+        name = _strip_name_decorations(_clean_md(m.group(1).strip()))
+        if name:
+            out.append((m.start(1), _normalize_text(name)))
+    out.sort(key=lambda x: x[0])
+    return out
+
+
+def _entity_block(text: str, start: int, end: int, labelled: bool,
+                  markers: Optional[list[tuple[int, str]]] = None) -> str:
+    """The part of `text` that belongs to the entity named at [start, end): from
+    the name to the next entity (bold name/org or "Name:" label) or — for a name
+    that heads a bullet — the next bullet at the same or a shallower level."""
+    if markers is None:
+        markers = _entity_markers(text)
+    stop = len(text)
+    for pos, _ in markers:
+        if pos >= end:
+            stop = min(stop, pos)
+            break
+    if not labelled:
+        line_start = text.rfind("\n", 0, start) + 1
+        bm = _BULLET_LINE_RE.match(text, line_start)
+        indent = len(bm.group(1).expandtabs(4)) if bm and bm.end() <= start else 0
+        for b in _BULLET_LINE_RE.finditer(text, end):
+            if b.start() >= stop:
+                break
+            if b.start() > line_start and len(b.group(1).expandtabs(4)) <= indent:
+                stop = b.start()
+                break
+    return text[end:stop]
+
+
+def extract_persons(answer_text: str) -> list[dict]:
+    """
+    Every distinct person named in an answer (several documents / people):
+    "**Name:** X" lines, bold proper names, and "Jane Example (contract)"-style
+    names followed by a parenthetical. Returns [{"name", "role", "org"}] in order
+    of appearance. With several persons, each one's role/org is read only from
+    that person's own bullet/block (never from a neighbouring entity).
+    """
+    if not answer_text:
+        return []
+    found: list[tuple[int, int, str, bool]] = []
+
+    def _add(pos: int, endpos: int, raw: str, require_proper: bool = True, labelled: bool = False) -> None:
+        cleaned = re.sub(r'[*_`]', '', raw or '')
+        name = _strip_name_decorations(cleaned)
+        ok = _is_proper_name(name) if require_proper else _is_valid_name(name)
+        # "Acme B.V." / "Foo Holding" are organisations, not persons
+        if ok and (looks_like_organization(name) or looks_like_organization(cleaned.strip())):
+            ok = False
+        if ok:
+            found.append((pos, endpos, name, labelled))
+
+    for m in _NAME_LABEL_RE.finditer(answer_text):
+        _add(m.start(1), m.end(1), m.group(1), require_proper=False, labelled=True)
+    for m in re.finditer(r'\*\*(.+?)\*\*', answer_text):
+        _add(m.start(1), m.end(1), m.group(1))
+    name_re = r"([^\W\d_][\w'’-]*(?:\s+(?:[a-z]{1,3}\s+)*[^\W\d_][\w'’-]*){1,4})\s*\("
+    for m in re.finditer(name_re, answer_text):
+        _add(m.start(1), m.end(1), m.group(1))
+
+    found.sort(key=lambda x: x[0])
+    markers = _entity_markers(answer_text)
+    out: list[dict] = []
+    seen: set = set()
+    for pos, endpos, name, labelled in found:
+        key = _normalize_text(name)
+        if key in seen:
+            continue
+        seen.add(key)
+        role, org = _role_org_from(_entity_block(answer_text, pos, endpos, labelled, markers))
+        out.append({"name": name, "role": role, "org": org})
+    if len(out) == 1:
+        single = extract_person(answer_text, [])
+        if single and _normalize_text(single["name"]) == _normalize_text(out[0]["name"]):
+            return [single]
+    return out
+
+
+PERSON_JSON_PROMPT = """Who is the main person this document is about, issued to, or signed by?
+Answer with ONLY one JSON object and nothing else:
+{{"name": "<full name or empty>", "role": "<job title/role or empty>", "org": "<organisation or empty>"}}
+Use only information from the document. If no person is named, use an empty name.
+
+<document>
+{doc}
+</document>"""
+
+
+def parse_person_json(text: str) -> Optional[dict]:
+    """Parse the first JSON object in an LLM reply into {name, role, org} (or None)."""
+    import json
+    if not text:
+        return None
+    start = text.find("{")
+    while start != -1:
+        depth = 0
+        for i in range(start, len(text)):
+            ch = text[i]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    try:
+                        obj = json.loads(text[start:i + 1])
+                    except Exception:
+                        break
+                    if not isinstance(obj, dict):
+                        return None
+                    name = _strip_name_decorations(str(obj.get("name") or "").strip())
+                    if not _is_valid_name(name):
+                        return None
+                    role = str(obj.get("role") or "").strip() or None
+                    org = str(obj.get("org") or obj.get("organization") or "").strip() or None
+                    if role and _is_generic_role(role):
+                        role = None
+                    return {"name": name, "role": role, "org": org}
+        start = text.find("{", start + 1)
+    return None
+
+
+async def llm_extract_person(hooks: Any, model: str, doc_text: str) -> Optional[dict]:
+    """Document-first fallback: ask the answer model for the person as strict JSON
+    over the first ~3000 chars of the subject document. None on any failure."""
+    if not model or not doc_text or not getattr(hooks, "stream_llm", None):
+        return None
+    prompt = PERSON_JSON_PROMPT.format(doc=doc_text[:3000])
+    reply = ""
+    try:
+        try:
+            stream = hooks.stream_llm(model, prompt, think=False, num_predict=200)
+        except TypeError:
+            stream = hooks.stream_llm(model, prompt, think=False)
+        async for delta in stream:
+            if "content" in delta:
+                reply += delta["content"]
+            elif delta.get("done"):
+                break
+    except Exception as e:
+        log.debug(f"llm_extract_person failed: {e}")
+        return None
+    return parse_person_json(reply)
 
 
 def extract_person(answer_text: str, history: list[dict]) -> Optional[dict]:
@@ -440,45 +1119,26 @@ def extract_person(answer_text: str, history: list[dict]) -> Optional[dict]:
 
     If role contains parentheses, prefer text inside them (e.g., "Subject of CV (Solution Architect)" → "Solution Architect").
     """
-    def clean_text(text: str) -> str:
-        """Remove markdown formatting."""
-        if not text:
-            return ""
-        # Remove **bold**, __bold__, *italic*, _italic_, `code`
-        text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
-        text = re.sub(r'__(.+?)__', r'\1', text)
-        text = re.sub(r'\*(.+?)\*', r'\1', text)
-        text = re.sub(r'_(.+?)_', r'\1', text)
-        text = re.sub(r'`(.+?)`', r'\1', text)
-        # Remove surrounding quotes
-        text = text.strip('\'"')
-        return text.strip()
+    clean_text = _clean_md
 
     def is_valid_name(name: str) -> bool:
-        """Check if name is valid (2–6 words, letters + accents/hyphens/apostrophes)."""
-        if not name:
-            return False
-        # Reject generic values
-        if name.lower() in ("unknown", "not specified", "n/a", "none", "not given"):
-            return False
-        words = name.split()
-        if not (2 <= len(words) <= 6):
-            return False
-        # Allow letters, accents, hyphens, apostrophes
-        return bool(re.match(r"^[a-zA-Zàâäéèêëìîïóòôöùûüçñ\-']+(\s+[a-zA-Zàâäéèêëìîïóòôöùûüçñ\-']+)*$", name))
+        return _is_valid_name(name)
 
     def extract_from_text(text: str) -> dict:
         """Extract name, role, org from text."""
         result = {"name": None, "role": None, "org": None}
+        span: Optional[tuple[int, int]] = None  # where the chosen name sits in `text`
+        labelled = False  # chosen via a "Name:" label (sibling bullets are its attributes)
 
         # Pattern: **Name:** X or Name: X
         name_match = re.search(r'\*\*Name:\*?\*?\s+(.+?)(?:\n|$)', text, re.IGNORECASE)
         if not name_match:
             name_match = re.search(r'(?:^|\n)Name:\s+(.+?)(?:\n|$)', text, re.IGNORECASE)
         if name_match:
-            name = clean_text(name_match.group(1).strip())
+            name = _strip_name_decorations(clean_text(name_match.group(1).strip()))
             if is_valid_name(name):
                 result["name"] = name
+                span, labelled = name_match.span(1), True
 
         # Pattern: This document is about **X** or is about X.
         if not result["name"]:
@@ -487,47 +1147,56 @@ def extract_person(answer_text: str, history: list[dict]) -> Optional[dict]:
                 name = clean_text(about_match.group(1).strip())
                 if is_valid_name(name):
                     result["name"] = name
+                    span = about_match.span(1)
             if not result["name"]:
                 about_match = re.search(r'is about ([^.]+)\.', text, re.IGNORECASE)
                 if about_match:
                     name = clean_text(about_match.group(1).strip())
                     if is_valid_name(name):
                         result["name"] = name
+                        span = about_match.span(1)
 
-        # Pattern: **Role:** X or Role: X
-        role_match = re.search(r'\*\*Role:\*?\*?\s+(.+?)(?:\n|$)', text, re.IGNORECASE)
-        if not role_match:
-            role_match = re.search(r'(?:^|\n)Role:\s+(.+?)(?:\n|$)', text, re.IGNORECASE)
-        if role_match:
-            role = clean_text(role_match.group(1).strip())
-            # If role contains parentheses, prefer text inside
-            paren_match = re.search(r'\(([^)]+)\)', role)
-            if paren_match:
-                role = clean_text(paren_match.group(1))
-            # Check if this is a generic role
-            if role and not _is_generic_role(role):
-                result["role"] = role
-
-        # Pattern: **Organization:** X, **Company:** X, or **Employer:** X
-        for org_label in ["Organization", "Company", "Employer"]:
-            if result["org"]:
-                break
-            org_match = re.search(
-                rf'\*\*{org_label}:\*?\*?\s+(.+?)(?:\n|$)',
-                text,
-                re.IGNORECASE
+        # Pattern: "… about:" followed by a bullet whose first bold span is a name
+        #   "The document is about:\n\n*   **Michel Neuféglise** (holder)"
+        if not result["name"]:
+            about_bullet = re.search(
+                r'about:?\s*\n+\s*(?:[-*•]|\d+[.)])\s+[^\n]*?\*\*(.+?)\*\*', text, re.IGNORECASE
             )
-            if not org_match:
-                org_match = re.search(
-                    rf'(?:^|\n){org_label}:\s+(.+?)(?:\n|$)',
-                    text,
-                    re.IGNORECASE
-                )
-            if org_match:
-                org = clean_text(org_match.group(1).strip())
-                if org:
-                    result["org"] = org
+            if about_bullet:
+                name = _strip_name_decorations(clean_text(about_bullet.group(1)))
+                if _is_proper_name(name):
+                    result["name"] = name
+                    span = about_bullet.span(1)
 
+        # Fallback: the first bold 2–5-word proper name anywhere in the answer
+        if not result["name"]:
+            for m in re.finditer(r'\*\*(.+?)\*\*', text):
+                name = _strip_name_decorations(clean_text(m.group(1)))
+                if _is_proper_name(name):
+                    result["name"] = name
+                    span = m.span(1)
+                    break
+
+        # Role / organisation: read from the chosen name's OWN bullet/block first.
+        # When the answer lists several entities (e.g. "**Acme B.V.**" then
+        # "**Jane Example**", each with a "Role:" sub-bullet) a label outside that
+        # block belongs to someone else, so it is never borrowed.
+        role: Optional[str] = None
+        org: Optional[str] = None
+        if result["name"] and span:
+            markers = _entity_markers(text)
+            block = _entity_block(text, span[0], span[1], labelled, markers)
+            role, org = _role_org_from(block)
+            entities = {k for _, k in markers if k}
+            entities.add(_normalize_text(result["name"]))
+            if len(entities) <= 1:
+                g_role, g_org = _role_org_from(text)
+                role = role or g_role
+                org = org or g_org
+        else:
+            role, org = _role_org_from(text)
+        result["role"] = role
+        result["org"] = org
         return result
 
     # Try answer text first
@@ -604,13 +1273,18 @@ def merge_person_with_headline(person: Optional[dict], doc_text: str) -> Optiona
     return merged
 
 
-def build_queries(person: dict, target: str) -> list[str]:
+def build_queries(person: dict, targets: Any) -> list[str]:
     """
     Build search queries for a person.
 
     Args:
         person: {"name": str, "role": str|None, "org": str|None}
-        target: "linkedin" | "web"
+        targets: list of targets (["linkedin", "facebook"], ["web"]) — a single
+            target string is accepted too
+
+    Per platform: `site:<domain> "<name>"` plus `"<name>" <role or org> <Platform>`
+    (the second only when role/org is known). For "web": `"<name>" <org or role>`
+    and `"<name>"`. At most 3 targets and 6 queries.
 
     Returns:
         list of unique search queries (deduplicated)
@@ -618,24 +1292,32 @@ def build_queries(person: dict, target: str) -> list[str]:
     name = (person.get("name") or "").strip()
     role = (person.get("role") or "").strip()
     org = (person.get("org") or "").strip()
+    if role and _is_generic_role(role):
+        role = ""
+    if org and _is_bad_org(org):
+        org = ""
 
     if not name:
         return []
 
-    queries = []
+    target_list = _normalize_targets(targets) or ["web"]
 
-    if target == "linkedin":
-        # LinkedIn-specific queries
-        queries.append(f'site:linkedin.com/in "{name}"')
-        if role or org:
-            queries.append(f'"{name}" {role or org} linkedin')
-    else:
-        # Generic web queries
-        query1_parts = [f'"{name}"']
-        if org or role:
-            query1_parts.append(org or role)
-        queries.append(" ".join(query1_parts).strip())
-        queries.append(f'"{name}"')
+    queries = []
+    for target in target_list:
+        p = PLATFORMS.get(target)
+        if p:
+            site = p.get("site") or p["domains"][0]
+            queries.append(f'site:{site} "{name}"')
+            if role or org:
+                term = p.get("query_term") or p["label"]
+                queries.append(f'"{name}" {role or org} {term}')
+        else:
+            # Generic web queries
+            query1_parts = [f'"{name}"']
+            if org or role:
+                query1_parts.append(org or role)
+            queries.append(" ".join(query1_parts).strip())
+            queries.append(f'"{name}"')
 
     # Deduplicate
     seen = set()
@@ -645,21 +1327,188 @@ def build_queries(person: dict, target: str) -> list[str]:
             seen.add(q)
             unique.append(q)
 
-    return unique
+    return unique[:MAX_QUERIES]
+
+
+def _query_target(query: str, targets: list[str]) -> Optional[str]:
+    """Which requested target a search query is for: the platform whose site:
+    domain or label/query term it mentions, else "web" (when requested), else None."""
+    low = (query or "").lower()
+    for t in targets:
+        p = PLATFORMS.get(t)
+        if not p:
+            continue
+        keys = [p.get("site") or "", *p.get("domains", []), p.get("query_term") or "", p.get("label") or ""]
+        for k in keys:
+            k = k.lower().strip()
+            if k and re.search(rf"(?<![\w.]){re.escape(k)}(?![\w-])", low):
+                return t
+    return "web" if "web" in targets else None
+
+
+def _plain_queries(person: dict, targets: list[str], planned: list[str]) -> list[str]:
+    """Plain (non-`site:`) queries per target, used when `site:` searches are
+    blocked: the planned `"<name>" <role/org> <Platform>` ones, plus
+    `"<name>" <Platform>` for a platform that has none planned."""
+    name = (person.get("name") or "").strip()
+    out: list[str] = []
+    if not name:
+        return out
+    plain = [q for q in planned if "site:" not in q.lower()]
+    for t in targets:
+        mine = [q for q in plain if _query_target(q, targets) == t]
+        if not mine and t in PLATFORMS:
+            p = PLATFORMS[t]
+            mine = [f'"{name}" {p.get("query_term") or p["label"]}']
+        for q in mine:
+            if q not in out:
+                out.append(q)
+    return out
+
+
+async def _rescue_blocked_searches(
+    person: dict,
+    targets: list[str],
+    planned: list[str],
+    *,
+    executed: set,
+    blocked_targets: set,
+    ok_targets: set,
+    budget: int,
+    hooks: Any,
+    search_tile: Any,
+    all_results: dict,
+    seen_urls: set,
+    show_results: bool = True,
+) -> dict:
+    """A `site:` search that DuckDuckGo blocks often succeeds as a plain query.
+    For every target whose searches were blocked and that has no successful
+    search yet, run its not-yet-run plain queries (at most `budget` searches).
+    Results are merged into all_results/seen_urls. Returns
+    {"searches", "blocked", "ok", "raw"} counts."""
+    stats = {"searches": 0, "blocked": 0, "ok": 0, "raw": 0}
+    name = person.get("name", "")
+    need = [t for t in targets if t in blocked_targets and t not in ok_targets]
+    if not need or budget <= 0:
+        return stats
+    todo = [q for q in _plain_queries(person, targets, planned)
+            if q not in executed and _query_target(q, targets) in need]
+    if not todo:
+        return stats
+    search_tile.items.append({
+        "kind": "note",
+        "label": "site: search blocked — trying plain queries",
+    })
+    for query in todo:
+        if stats["searches"] >= budget:
+            break
+        target = _query_target(query, targets)
+        if target in ok_targets:
+            continue
+        executed.add(query)
+        stats["searches"] += 1
+        try:
+            results = await hooks.web_search(query)
+        except WebSearchUnavailable:
+            raise
+        except SearchBlocked:
+            stats["blocked"] += 1
+            search_tile.items.append({
+                "kind": "query",
+                "label": query,
+                "detail": "blocked (DuckDuckGo bot detection)",
+            })
+            continue
+        except Exception as e:
+            log.debug(f"web_search failed: {e}")
+            continue
+        results = results or []
+        stats["ok"] += 1
+        stats["raw"] += len(results)
+        if target:
+            ok_targets.add(target)
+        matching = [res for res in results if _accept_result(name, res)]
+        search_tile.items.append({
+            "kind": "query",
+            "label": query,
+            "detail": f"{len(matching)}/{len(results)} matching" if results else "no results",
+        })
+        for res in sorted(matching, key=lambda r: _rank(r.get("url", ""), targets)):
+            url = res.get("url", "")
+            if url and url not in all_results:
+                all_results[url] = {
+                    "title": res.get("title", ""),
+                    "snippet": res.get("snippet", ""),
+                    "name_matched": True,
+                    "platform": platform_of(url),
+                }
+                seen_urls.add(url)
+                if show_results:
+                    search_tile.items.append(_result_item(url, res))
+    return stats
+
+
+def _hostname(url: str) -> str:
+    """Lower-case hostname of a URL ('' when unparsable). Scheme-less URLs are accepted."""
+    if not url:
+        return ""
+    from urllib.parse import urlparse
+    u = url.strip()
+    if "://" not in u:
+        u = "https://" + u
+    try:
+        return (urlparse(u).hostname or "").lower()
+    except Exception:
+        return ""
+
+
+def platform_of(url: str) -> Optional[str]:
+    """Platform id for a URL by its domain ("linkedin", "facebook", …) or None."""
+    host = _hostname(url)
+    if not host:
+        return None
+    for pid, p in PLATFORMS.items():
+        for domain in p["domains"]:
+            if host == domain or host.endswith("." + domain):
+                return pid
+    return None
+
+
+def is_profile_url(url: str, platform: Optional[str] = None) -> bool:
+    """
+    True when the URL looks like a personal profile on the platform: a profile
+    pattern matches and no exclude pattern (posts, directories, search…) does.
+    """
+    if not url:
+        return False
+    pid = platform or platform_of(url)
+    if not pid or pid not in PLATFORMS or platform_of(url) != pid:
+        return False
+    p = PLATFORMS[pid]
+    full = url.strip().split("#", 1)[0]
+    no_query = full.split("?", 1)[0]
+    if any(re.search(pat, full, re.IGNORECASE) for pat in p["exclude_patterns"]):
+        return False
+    return any(
+        re.search(pat, full, re.IGNORECASE) or re.search(pat, no_query, re.IGNORECASE)
+        for pat in p["profile_patterns"]
+    )
 
 
 def is_linkedin_url(url: str) -> bool:
     """Check if URL is a LinkedIn domain."""
-    if not url:
-        return False
-    return "linkedin.com" in url.lower()
+    return platform_of(url) == "linkedin"
 
 
 def is_linkedin_profile(url: str) -> bool:
     """Check if URL is a LinkedIn profile."""
-    if not url:
-        return False
-    return "linkedin.com/in/" in url.lower()
+    return is_profile_url(url, "linkedin")
+
+
+def _is_social_non_profile(url: str) -> bool:
+    """A social-network URL that is not a profile (post, directory, search page…)."""
+    pid = platform_of(url)
+    return bool(pid) and not is_profile_url(url, pid)
 
 
 def _normalize_text(text: str) -> str:
@@ -750,44 +1599,104 @@ def _strip_unseen_links(text: str, seen_urls: set[str]) -> str:
 
 # ── Web lookup verdict building ───────────────────────────────────────────
 
+VERDICT_STATES = ("Likely match found", "Possible match", "No match found")
+CAVEAT = "_Search results are not proof of identity._"
 
-def _build_candidates(all_results: dict) -> list[dict]:
+
+def _accept_result(name: str, res: dict) -> bool:
+    """A search result is kept when it names the person and is not a social
+    non-profile page (post, directory listing, search page…)."""
+    url = res.get("url", "") or ""
+    if not url:
+        return False
+    if _is_social_non_profile(url):
+        return False
+    return name_matches(name, f"{res.get('title', '')} {url} {res.get('snippet', '')}")
+
+
+def _rank(url: str, targets: list[str]) -> tuple[int, int]:
+    """Sort key: requested-platform profiles (target order), other profiles, web pages."""
+    pid = platform_of(url)
+    if pid and is_profile_url(url, pid):
+        if pid in targets:
+            return (0, targets.index(pid))
+        return (1, 0)
+    return (2, 0)
+
+
+def _order_urls(urls: list[str], targets: list[str]) -> list[str]:
+    """Stable ordering of URLs by _rank."""
+    return sorted(urls, key=lambda u: _rank(u, targets))
+
+
+def _result_item(url: str, res: dict) -> dict:
+    """Tile item for a search result (carries its platform, None for generic pages)."""
+    return {
+        "kind": "result",
+        "label": res.get("title", "") or url,
+        "url": url,
+        "detail": (res.get("snippet", "") or "")[:160],
+        "platform": platform_of(url),
+    }
+
+
+def _build_candidates(all_results: dict, targets: Any = None) -> list[dict]:
     """
     Build a list of candidates from all_results.
 
-    Returns unique name-matching results, LinkedIn profiles first, max 6.
-    Format: [{"title": str, "url": str, "snippet": str}, ...]
+    Returns unique name-matching results ordered: profiles of the requested
+    platforms first (in target order), then other profiles, then web pages; max 8.
+    Format: [{"title", "url", "snippet", "platform", "is_profile"}, ...]
     """
+    target_list = _normalize_targets(targets) or ["linkedin"]
     candidates = []
-
-    # Sort LinkedIn profiles first
-    linkedin_urls = [url for url in all_results if is_linkedin_profile(url)]
-    other_urls = [url for url in all_results if url not in linkedin_urls]
-    sorted_urls = linkedin_urls + other_urls
-
-    for url in sorted_urls[:6]:  # Max 6 candidates
+    urls = [
+        u for u in all_results
+        # Only real web links (never DuckDuckGo "ref://…" short links) and no social non-profiles
+        if (u or "").strip().lower().startswith(("http://", "https://")) and not _is_social_non_profile(u)
+    ]
+    for url in _order_urls(urls, target_list)[:8]:
         res = all_results[url]
+        pid = platform_of(url)
         candidates.append({
             "title": res.get("title", ""),
             "url": url,
             "snippet": res.get("snippet", ""),
+            "platform": pid,
+            "is_profile": bool(pid) and is_profile_url(url, pid),
         })
-
     return candidates
 
 
-def _build_verdict_prompt(person: dict, doc_excerpt: str, candidates: list[dict]) -> str:
+def _no_match_verdict(targets: list[str]) -> str:
+    """Per-platform "No match found" verdict when no candidate matched (no LLM call)."""
+    lines = []
+    for t in targets or ["web"]:
+        p = PLATFORMS.get(t)
+        if p:
+            lines.append(
+                f"**{p['label']}:** No match found — no {p['label']} profiles with this exact name appeared in the search results."
+            )
+        else:
+            lines.append("**Web:** No match found — no pages with this exact name appeared in the search results.")
+    lines.append("**Overall:** No match found.")
+    return "\n".join(lines) + "\n\n" + CAVEAT
+
+
+def _build_verdict_prompt(person: dict, doc_excerpt: str, candidates: list[dict], targets: Any = None) -> str:
     """
     Build verdict prompt with person dict, document excerpt, and candidates.
 
     Args:
         person: {"name": str, "role": str|None, "org": str|None}
         doc_excerpt: First ~1500 chars of document
-        candidates: List of {"title": str, "url": str, "snippet": str}
+        candidates: List of {"title", "url", "snippet", "platform", "is_profile"}
+        targets: requested platforms (["linkedin", "facebook"], ["web"])
 
     Returns:
-        Formatted verdict prompt
+        Formatted verdict prompt asking for one verdict line per platform
     """
+    target_list = _normalize_targets(targets) or ["linkedin"]
     name = person.get("name", "")
     role = person.get("role", "")
     org = person.get("org", "")
@@ -807,11 +1716,23 @@ def _build_verdict_prompt(person: dict, doc_excerpt: str, candidates: list[dict]
     # Build candidates section
     candidates_section = "\n\n**Search results (numbered candidates):**\n"
     for i, cand in enumerate(candidates, 1):
-        candidates_section += f"{i}. [{cand.get('title', 'Unknown')}]({cand.get('url', '')})\n"
+        pid = cand.get("platform") if "platform" in cand else platform_of(cand.get("url", ""))
+        is_prof = cand.get("is_profile") if "is_profile" in cand else is_profile_url(cand.get("url", ""))
+        kind = f"{platform_label(pid)} profile" if pid and is_prof else (f"{platform_label(pid)} page" if pid else "Web page")
+        candidates_section += f"{i}. ({kind}) [{cand.get('title', 'Unknown')}]({cand.get('url', '')})\n"
         if cand.get('snippet'):
             candidates_section += f"   {cand.get('snippet', '')}\n"
 
+    labels = [platform_label(t) for t in target_list]
+    example_lines = "\n".join(
+        f"   **{label}:** Likely match found — <short reason> [title](url)" if i == 0
+        else f"   **{label}:** No match found — <short reason>"
+        for i, label in enumerate(labels)
+    )
+
     prompt = f"""{person_section}{doc_section}{candidates_section}
+
+**Requested platforms:** {", ".join(labels)}
 
 **Your task:**
 Compare each candidate's headline/snippet with the document excerpt (if provided). If several candidates share the name:
@@ -819,21 +1740,94 @@ Compare each candidate's headline/snippet with the document excerpt (if provided
 - Note which ones appear to be different people
 
 Output format:
-1. First line MUST be exactly one of:
-   - "**Likely match found**"
-   - "**Possible match**"
-   - "**No match found**"
+1. One verdict line per requested platform, in this order, each starting with the bold platform label, e.g.:
+{example_lines}
+   After the label use exactly one of "Likely match found", "Possible match" or "No match found", then a short reason.
+   On a platform's line cite only that platform's candidate (as [title](url)); if none of its candidates match, say "No match found".
 
-   Followed by a short reason on the same line or next line.
+2. Then one line: "**Overall:** <one-line summary>"
 
-2. Then bullet points with each candidate:
+3. Then bullet points with each candidate:
    - `[title](url) — why it matches / doesn't`
 
-3. Last line: "_Search results are not proof of identity._"
+4. Last line: "{CAVEAT}"
 
+Refer to people by their name; do not assume gender or use he/she.
 Only use URLs that appear above. Do not fabricate or change URLs."""
 
     return prompt
+
+
+async def _generate_verdict(
+    person: dict,
+    targets: list[str],
+    all_results: dict,
+    seen_urls: set[str],
+    hooks: Any,
+    *,
+    answer_model: str,
+    doc_excerpt: str,
+) -> tuple[str, list[dict]]:
+    """Produce the verdict text (LLM, or a canned no-match text) and the candidates."""
+    candidates = _build_candidates(all_results, targets)
+    verdict_text = ""
+    if not candidates:
+        # No matches: emit verdict without LLM call
+        verdict_text = _no_match_verdict(targets)
+    else:
+        verdict_prompt = _build_verdict_prompt(person, doc_excerpt, candidates, targets)
+        try:
+            async for event in hooks.stream_llm(answer_model, verdict_prompt, think=False):
+                if "content" in event:
+                    verdict_text += event["content"]
+                elif event.get("done"):
+                    break
+        except Exception as e:
+            log.debug(f"Verdict LLM failed: {e}")
+            verdict_text = f"Verdict generation failed: {str(e)[:100]}"
+    verdict_text = _strip_unseen_links(verdict_text, seen_urls)
+    return verdict_text, candidates
+
+
+def _search_unavailable_verdict(targets: list[str]) -> str:
+    """Per-platform "Search unavailable" text — never a negative verdict."""
+    lines = [
+        f"**{platform_label(t)}:** {SEARCH_UNAVAILABLE_STATE} — DuckDuckGo is temporarily blocking automated searches."
+        for t in (targets or ["web"])
+    ]
+    lines.append(f"**Overall:** {SEARCH_UNAVAILABLE_STATE}.")
+    return (
+        "\n".join(lines)
+        + "\n\n_Try again in a few minutes, or enable **Brave Search** in Settings → Tools._"
+    )
+
+
+async def _emit_search_unavailable(
+    person: dict, targets: list[str], search_tile: Any, n_searches: int,
+) -> AsyncIterator[dict]:
+    """Every search was blocked (bot detection) and none returned results: say
+    so honestly — error tile, "Search unavailable" per platform, no verdict."""
+    text = _search_unavailable_verdict(targets)
+    yield {
+        "_web_result": {
+            "person": person,
+            "targets": targets,
+            "candidates": [],
+            "verdict": "",
+            "unavailable": True,
+        }
+    }
+    yield {"content": "\n\n---\n\n### Online verification\n\n" + text}
+    search_tile.status = "error"
+    search_tile.detail = SEARCH_BLOCKED_DETAIL
+    search_tile.items.append({
+        "kind": "note",
+        "label": f"{n_searches} search(es) blocked by DuckDuckGo bot detection — no verdict",
+    })
+    search_tile.output_preview = text[:300]
+    if getattr(search_tile, "started_ms", None):
+        search_tile.ms = int(time.time() * 1000) - search_tile.started_ms
+    yield {"tile": search_tile.to_dict()}
 
 
 # ── Web lookup execution ──────────────────────────────────────────────────
@@ -841,7 +1835,7 @@ Only use URLs that appear above. Do not fabricate or change URLs."""
 
 async def run_web_lookup(
     person: dict,
-    target: str,
+    targets: Any,
     hooks: Any,  # AgentHooks
     *,
     answer_model: str,
@@ -855,11 +1849,12 @@ async def run_web_lookup(
     Yields events in the same format as run_agent:
     - {"tile": {...}} for tile state changes
     - {"content": "..."} for text content (final verdict)
+    - {"_web_result": {...}} internal event (person, targets, candidates, verdict)
     - Handles tool calls, fallback paths, and error cases
 
     Args:
         person: {"name": str, "role": str|None, "org": str|None}
-        target: "linkedin" | "web"
+        targets: ["linkedin", "facebook", ...] | ["web"] (a single string is accepted)
         hooks: AgentHooks with web_search, fetch_page, chat_tools, etc.
         answer_model: Model name for fallback LLM verdict
         now_ms: Start time in ms
@@ -871,6 +1866,8 @@ async def run_web_lookup(
     """
     from doc_agent import Tile  # Import here to avoid circular dependency
 
+    target_list = _normalize_targets(targets) or ["web"]
+
     # Merge headline data (role/org from document text)
     # Prefer full doc_text over excerpt; if only excerpt provided, use it
     text_for_headline = doc_text if doc_text else doc_excerpt
@@ -878,7 +1875,7 @@ async def run_web_lookup(
         person = merge_person_with_headline(person, text_for_headline)
 
     # Build queries
-    queries = build_queries(person, target)
+    queries = build_queries(person, target_list)
     name = person.get("name", "")
     role = person.get("role", "")
     org = person.get("org", "")
@@ -890,16 +1887,20 @@ async def run_web_lookup(
         title="Query planner",
         status="done",
         model=None,
-        detail=f"Person: {name}" + (f" · {role}" if role else "") + (f" · {org}" if org else ""),
+        detail=(
+            f"Person: {name}" + (f" · {role}" if role else "") + (f" · {org}" if org else "")
+            + f" → {targets_label(target_list)}"
+        ),
         items=[{"kind": "query", "label": q} for q in queries],
     )
     yield {"tile": plan_tile.to_dict()}
 
     # Create main web-search tile
+    social = [t for t in target_list if t in PLATFORMS]
     search_tile = Tile(
         id="web-search",
         kind="web",
-        title="Web lookup" + (" · LinkedIn" if target == "linkedin" else ""),
+        title="Web lookup" + (f" · {targets_label(social)}" if social else ""),
         status="running",
         model=None,
         started_ms=int(time.time() * 1000),
@@ -966,7 +1967,7 @@ async def run_web_lookup(
     if tool_model and hooks.chat_tools:
         try:
             async for event in _tool_path(
-                tool_model, queries, person, target, search_tile, hooks,
+                tool_model, queries, person, target_list, search_tile, hooks,
                 answer_model=answer_model, doc_excerpt=doc_excerpt
             ):
                 yield event
@@ -985,7 +1986,7 @@ async def run_web_lookup(
     # Fallback path: direct search + LLM verdict
     try:
         async for event in _fallback_path(
-            queries, person, target, search_tile, answer_model, hooks,
+            queries, person, target_list, search_tile, answer_model, hooks,
             doc_excerpt=doc_excerpt
         ):
             yield event
@@ -1001,7 +2002,7 @@ async def _tool_path(
     model: str,
     queries: list[str],
     person: dict,
-    target: str,
+    targets: list[str],
     search_tile: Tile,
     hooks: Any,
     *,
@@ -1009,6 +2010,7 @@ async def _tool_path(
     doc_excerpt: str = "",
 ) -> AsyncIterator[dict]:
     """Execute tool-based web lookup with query rewriting and name filtering."""
+    targets = _normalize_targets(targets) or ["web"]
     name = person.get("name", "")
     role = person.get("role", "")
     org = person.get("org", "")
@@ -1019,20 +2021,26 @@ async def _tool_path(
         user_msg += f"; role={role}"
     if org:
         user_msg += f"; organization={org}"
-    user_msg += f". Target: {target}."
+    user_msg += f". Targets: {targets_label(targets, ', ')}."
     if queries:
-        user_msg += f" Suggested first query: {queries[0]}"
+        user_msg += " Suggested queries: " + " | ".join(queries)
 
     messages = [
-        {"role": "system", "content": VERIFY_SYSTEM_PROMPT},
+        {"role": "system", "content": _verify_system_prompt(targets)},
         {"role": "user", "content": user_msg},
     ]
 
     all_results = {}  # url -> result dict (with name_matching info)
     seen_urls = set()
-    search_count = 0  # Track web_search calls to cap at 4
-    tool_results_raw = []  # Store raw results for verdict
-    tool_queries_executed = []  # Track queries actually sent
+    search_urls: set = set()  # every URL web_search returned in THIS run (fetch allow-list)
+    search_count = 0  # Track web_search calls (capped)
+    blocked_count = 0  # searches answered with the bot-detection notice
+    ok_count = 0  # searches that really ran (not blocked, no error)
+    raw_total = 0  # raw results over all searches (before name filtering)
+    max_searches = min(MAX_QUERIES, max(4, 2 * len(targets)))
+    executed: set = set()  # queries actually sent this run
+    blocked_targets: set = set()  # targets with a blocked search
+    ok_targets: set = set()  # targets with a search that really ran
 
     # Tool loop (max 3 rounds)
     for round_num in range(3):
@@ -1074,7 +2082,7 @@ async def _tool_path(
                     continue
 
                 # Check if we've hit the cap
-                if search_count >= 4:
+                if search_count >= max_searches:
                     # Add budget exhausted message
                     search_tile.items.append({
                         "kind": "query",
@@ -1091,7 +2099,6 @@ async def _tool_path(
                 search_count += 1
 
                 # Rewrite query if needed to stay on person
-                original_query = query
                 query_rewritten = False
                 if name:
                     # Check if query contains the surname (accent-insensitive)
@@ -1103,33 +2110,59 @@ async def _tool_path(
                         query = f'"{name}" {query}'.strip()
                         query_rewritten = True
 
+                blocked = False
+                errored = False
+                executed.add(query)
+                q_target = _query_target(query, targets)
                 try:
                     results = await hooks.web_search(query)
                 except WebSearchUnavailable:
                     # Propagate to caller - must not swallow this
                     raise
+                except SearchBlocked:
+                    results = []
+                    blocked = True
+                    blocked_count += 1
+                    blocked_targets.update([q_target] if q_target else targets)
                 except Exception as e:
                     results = []
+                    errored = True
                     log.debug(f"web_search failed: {e}")
+                if not blocked and not errored:
+                    ok_count += 1
+                    if q_target:
+                        ok_targets.add(q_target)
+                results = results or []
+                raw_total += len(results)
 
-                # Filter results by name matching and sort LinkedIn profiles first
-                matching_results = []
-                for res in results:
-                    title = res.get("title", "")
-                    url = res.get("url", "")
-                    snippet = res.get("snippet", "")
+                if blocked:
+                    search_tile.items.append({
+                        "kind": "query",
+                        "label": query,
+                        "detail": "blocked (DuckDuckGo bot detection)",
+                    })
+                    messages.append({
+                        "role": "tool",
+                        "content": "Search unavailable: DuckDuckGo is blocking automated searches right now. "
+                                   "Do not conclude that the person doesn't exist.",
+                    })
+                    yield {"tile": search_tile.to_dict()}
+                    continue
 
-                    # Check if result matches the person's name
-                    if name_matches(name, f"{title} {url} {snippet}"):
-                        matching_results.append(res)
+                for res in results or []:
+                    if res.get("url"):
+                        search_urls.add(res["url"])
+
+                # Filter results by name matching (drops social posts/directories)
+                matching_results = [res for res in results if _accept_result(name, res)]
 
                 total_results = len(results)
                 matching_count = len(matching_results)
 
-                # Sort LinkedIn profiles first
-                linkedin_results = [r for r in matching_results if is_linkedin_profile(r.get("url", ""))]
-                other_results = [r for r in matching_results if not is_linkedin_profile(r.get("url", ""))]
-                sorted_results = linkedin_results + other_results
+                # Requested-platform profiles first, then other profiles, then web pages
+                sorted_results = sorted(
+                    matching_results, key=lambda r: _rank(r.get("url", ""), targets)
+                )
 
                 # Add query item to tile with detail
                 detail_str = f"{matching_count}/{total_results} matching"
@@ -1150,18 +2183,14 @@ async def _tool_path(
                             "title": res.get("title", ""),
                             "snippet": res.get("snippet", ""),
                             "name_matched": True,
+                            "platform": platform_of(url),
                         }
-                        tool_results_raw.append(res)
-                    search_tile.items.append({
-                        "kind": "result",
-                        "label": res.get("title", url),
-                        "url": url,
-                        "detail": res.get("snippet", "")[:160],
-                    })
+                    search_tile.items.append(_result_item(url, res))
 
                 # Tool message for LLM (only matching results)
                 tool_content = "\n".join(
-                    f"{i+1}. {r.get('title', 'No title')} — {r.get('url', 'No URL')} — {r.get('snippet', '')[:100]}"
+                    f"{i+1}. [{platform_label(platform_of(r.get('url', ''))) if platform_of(r.get('url', '')) else 'Web'}] "
+                    f"{r.get('title', 'No title')} — {r.get('url', 'No URL')} — {r.get('snippet', '')[:100]}"
                     for i, r in enumerate(sorted_results)
                 ) or "No matching results."
 
@@ -1170,8 +2199,6 @@ async def _tool_path(
                     "content": tool_content,
                 })
 
-                tool_queries_executed.append(original_query)
-
                 yield {"tile": search_tile.to_dict()}
 
             elif tool_name == "fetch_page":
@@ -1179,13 +2206,22 @@ async def _tool_path(
                 if not url:
                     continue
 
-                seen_urls.add(url)
-
-                if is_linkedin_url(url):
-                    tool_content = "LinkedIn pages require login; use the search snippets instead."
+                # Social networks are never fetched (login walls); everything
+                # else must pass the allow-list / private-address guard.
+                pid = platform_of(url)
+                refusal = None if pid else await check_fetch_url(url, search_urls)
+                if refusal:
+                    tool_content = refusal
                     search_tile.items.append({
                         "kind": "note",
-                        "label": f"Skipped {url} (LinkedIn requires login)",
+                        "label": f"{refusal}: {url[:120]}",
+                    })
+                elif pid:
+                    label = platform_label(pid)
+                    tool_content = f"{label} pages require login; use the search snippets instead."
+                    search_tile.items.append({
+                        "kind": "note",
+                        "label": f"Skipped {url} ({label} requires login)",
                     })
                 else:
                     try:
@@ -1209,33 +2245,37 @@ async def _tool_path(
 
                 yield {"tile": search_tile.to_dict()}
 
+    # site: searches blocked → try the plain queries for those platforms
+    if blocked_count:
+        rescue = await _rescue_blocked_searches(
+            person, targets, queries, executed=executed, blocked_targets=blocked_targets,
+            ok_targets=ok_targets, budget=MAX_QUERIES - search_count, hooks=hooks,
+            search_tile=search_tile, all_results=all_results, seen_urls=seen_urls,
+        )
+        search_count += rescue["searches"]
+        blocked_count += rescue["blocked"]
+        ok_count += rescue["ok"]
+        raw_total += rescue["raw"]
+        if rescue["searches"]:
+            yield {"tile": search_tile.to_dict()}
+
+    # Every search (site: and plain) blocked → "search unavailable", never "no match"
+    if blocked_count and ok_count == 0 and raw_total == 0:
+        async for ev in _emit_search_unavailable(person, targets, search_tile, blocked_count):
+            yield ev
+        return
+
     # Generate dedicated verdict from matching results
-    candidates = _build_candidates(all_results)
-
-    verdict_text = ""
-    if not candidates:
-        # No matches: emit verdict without LLM call
-        verdict_text = "**No match found** — no LinkedIn profiles (or pages) with this exact name appeared in the search results.\n\n_Search results are not proof of identity._"
-    else:
-        # Use LLM to generate verdict
-        verdict_prompt = _build_verdict_prompt(person, doc_excerpt, candidates)
-        try:
-            async for event in hooks.stream_llm(answer_model, verdict_prompt, think=False):
-                if "content" in event:
-                    verdict_text += event["content"]
-                elif event.get("done"):
-                    break
-        except Exception as e:
-            log.debug(f"Verdict LLM failed: {e}")
-            verdict_text = f"Verdict generation failed: {str(e)[:100]}"
-
-    verdict_text = _strip_unseen_links(verdict_text, seen_urls)
+    verdict_text, candidates = await _generate_verdict(
+        person, targets, all_results, seen_urls, hooks,
+        answer_model=answer_model, doc_excerpt=doc_excerpt,
+    )
 
     # Emit internal _web_result event for kg_ingest (before yielding content)
-    candidates = _build_candidates(all_results)
     yield {
         "_web_result": {
             "person": person,
+            "targets": targets,
             "candidates": candidates,
             "verdict": verdict_text,
         }
@@ -1259,7 +2299,7 @@ async def _tool_path(
 async def _fallback_path(
     queries: list[str],
     person: dict,
-    target: str,
+    targets: list[str],
     search_tile: Tile,
     answer_model: str,
     hooks: Any,
@@ -1267,29 +2307,50 @@ async def _fallback_path(
     doc_excerpt: str = "",
 ) -> AsyncIterator[dict]:
     """Execute fallback direct search + LLM verdict."""
+    targets = _normalize_targets(targets) or ["web"]
     name = person.get("name", "")
     all_results = {}  # url -> result dict
     seen_urls = set()
 
+    blocked_count = 0  # searches answered with the bot-detection notice
+    ok_count = 0  # searches that really ran (not blocked, no error)
+    raw_total = 0  # raw results over all searches (before name filtering)
+    executed: set = set()
+    blocked_targets: set = set()
+    ok_targets: set = set()
+
     # Perform searches
     for query in queries:
+        executed.add(query)
+        q_target = _query_target(query, targets)
+        errored = False
         try:
             results = await hooks.web_search(query)
         except WebSearchUnavailable:
             # Propagate to caller - must not swallow this
             raise
+        except SearchBlocked:
+            blocked_count += 1
+            blocked_targets.update([q_target] if q_target else targets)
+            search_tile.items.append({
+                "kind": "query",
+                "label": query,
+                "detail": "blocked (DuckDuckGo bot detection)",
+            })
+            continue
         except Exception as e:
             log.debug(f"web_search failed: {e}")
             results = []
+            errored = True
+        if not errored:
+            ok_count += 1
+            if q_target:
+                ok_targets.add(q_target)
+        results = results or []
+        raw_total += len(results)
 
-        # Filter results by name matching
-        matching_results = []
-        for res in results:
-            title = res.get("title", "")
-            url = res.get("url", "")
-            snippet = res.get("snippet", "")
-            if name_matches(name, f"{title} {url} {snippet}"):
-                matching_results.append(res)
+        # Filter results by name matching (drops social posts/directories)
+        matching_results = [res for res in results if _accept_result(name, res)]
 
         # Add query item to tile
         search_tile.items.append({
@@ -1305,57 +2366,44 @@ async def _fallback_path(
                 all_results[url] = {
                     "title": res.get("title", ""),
                     "snippet": res.get("snippet", ""),
+                    "platform": platform_of(url),
                 }
                 seen_urls.add(url)
 
-    # Format results for display
-    result_items = []
-    if target == "linkedin":
-        # Sort LinkedIn profiles first
-        linkedin_urls = [url for url in all_results if is_linkedin_profile(url)]
-        other_urls = [url for url in all_results if url not in linkedin_urls]
-        sorted_urls = linkedin_urls + other_urls
-    else:
-        sorted_urls = list(all_results.keys())
+    # site: searches blocked → try the plain queries for those platforms
+    if blocked_count:
+        rescue = await _rescue_blocked_searches(
+            person, targets, queries, executed=executed, blocked_targets=blocked_targets,
+            ok_targets=ok_targets, budget=MAX_QUERIES - len(executed), hooks=hooks,
+            search_tile=search_tile, all_results=all_results, seen_urls=seen_urls,
+            show_results=False,  # listed with all results below
+        )
+        blocked_count += rescue["blocked"]
+        ok_count += rescue["ok"]
+        raw_total += rescue["raw"]
 
-    for url in sorted_urls[:10]:  # Limit to 10 for tile display
-        res = all_results[url]
-        result_items.append({
-            "kind": "result",
-            "label": res.get("title", url),
-            "url": url,
-            "detail": res.get("snippet", "")[:160],
-        })
+    # Every search (site: and plain) blocked → "search unavailable", never "no match"
+    if blocked_count and ok_count == 0 and raw_total == 0:
+        async for ev in _emit_search_unavailable(person, targets, search_tile, blocked_count):
+            yield ev
+        return
 
+    # Format results for display: requested-platform profiles first
+    sorted_urls = _order_urls(list(all_results.keys()), targets)
+    result_items = [_result_item(url, all_results[url]) for url in sorted_urls[:10]]  # Limit to 10
     search_tile.items.extend(result_items)
 
     # Generate dedicated verdict from matching results
-    candidates = _build_candidates(all_results)
-
-    verdict_text = ""
-    if not candidates:
-        # No matches: emit verdict without LLM call
-        verdict_text = "**No match found** — no LinkedIn profiles (or pages) with this exact name appeared in the search results.\n\n_Search results are not proof of identity._"
-    else:
-        # Use LLM to generate verdict
-        verdict_prompt = _build_verdict_prompt(person, doc_excerpt, candidates)
-        try:
-            async for event in hooks.stream_llm(answer_model, verdict_prompt, think=False):
-                if "content" in event:
-                    verdict_text += event["content"]
-                elif event.get("done"):
-                    break
-        except Exception as e:
-            log.debug(f"Verdict LLM failed: {e}")
-            verdict_text = f"Verdict generation failed: {str(e)[:100]}"
-
-    verdict_text = _strip_unseen_links(verdict_text, seen_urls)
+    verdict_text, candidates = await _generate_verdict(
+        person, targets, all_results, seen_urls, hooks,
+        answer_model=answer_model, doc_excerpt=doc_excerpt,
+    )
 
     # Emit internal _web_result event for kg_ingest (before yielding content)
-    candidates = _build_candidates(all_results)
     yield {
         "_web_result": {
             "person": person,
+            "targets": targets,
             "candidates": candidates,
             "verdict": verdict_text,
         }

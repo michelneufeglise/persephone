@@ -110,7 +110,8 @@ class TestAgentSSEValidation:
     """Test validation and error handling."""
 
     def test_no_attachments_error(self):
-        """No attachments and no prior docs -> error event + [DONE], zero DB writes."""
+        """No attachments and no prior docs -> friendly hint (content + done, no
+        error event) + [DONE], zero DB writes."""
         async def run_test():
             fake_db = FakeDb()
             fake_hooks = FakeHooks()
@@ -125,12 +126,14 @@ class TestAgentSSEValidation:
             async for chunk in agent_sse(req, fake_hooks, fake_db):
                 events.append(chunk)
 
-            # Should have error event and [DONE]
-            assert len(events) == 2
-            error_event = json.loads(events[0].replace("data: ", "").strip())
-            assert "error" in error_event
-            assert "Attach at least one document" in error_event["error"]
-            assert events[1] == "data: [DONE]\n\n"
+            # Friendly assistant hint instead of an error event, then [DONE]
+            assert len(events) == 3
+            content_event = json.loads(events[0].replace("data: ", "").strip())
+            assert "error" not in content_event
+            assert "Attach or select a document" in content_event["content"]
+            done_event = json.loads(events[1].replace("data: ", "").strip())
+            assert done_event["done"] is True
+            assert events[2] == "data: [DONE]\n\n"
 
             # No DB writes
             assert len(fake_db.call_order) == 1  # Only get_conversation

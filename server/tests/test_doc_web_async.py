@@ -717,8 +717,8 @@ Experience: 10 years building distributed systems."""
 
         # Should have web_lookup decision
         web_decisions = [d for d in decisions if d.get("label") == "Web lookup"]
-        if web_decisions:
-            assert web_decisions[0].get("value") in ["linkedin", "web", "none"]
+        assert web_decisions
+        assert web_decisions[0].get("value") == "linkedin"
 
         # Check for web-plan and web-search tiles
         web_plan_tiles = [e.get("tile") for e in events if e.get("tile", {}).get("id") == "web-plan"]
@@ -854,6 +854,251 @@ Experience: 10 years building distributed systems."""
         query_text = " ".join(queries)
         assert "Senior Engineer" in query_text or "Acme" in query_text, \
             f"At least one query should contain 'Senior Engineer' or 'Acme', but got: {queries}"
+
+
+class TestMultiPlatformLookup:
+    """Web lookup across several social platforms (LinkedIn + Facebook)."""
+
+    WEB_RESULTS = [
+        {
+            "url": "https://www.linkedin.com/in/jane-example",
+            "title": "Jane Example - Senior Engineer - Acme | LinkedIn",
+            "snippet": "Senior Engineer at Acme",
+        },
+        {
+            "url": "https://www.facebook.com/jane.example",
+            "title": "Jane Example | Facebook",
+            "snippet": "Jane Example works at Acme. Lives in Amsterdam.",
+        },
+        {
+            "url": "https://www.facebook.com/public/Jane-Example",
+            "title": "Jane Example profiles | Facebook",
+            "snippet": "View the profiles of people named Jane Example.",
+        },
+        {
+            "url": "https://example.com/unrelated",
+            "title": "Bob Other",
+            "snippet": "Nothing to see",
+        },
+    ]
+
+    VERDICT = (
+        "**LinkedIn:** Likely match found — same role and employer "
+        "[Jane Example - Senior Engineer - Acme | LinkedIn](https://www.linkedin.com/in/jane-example)\n"
+        "**Facebook:** Possible match — same name and employer "
+        "[Jane Example | Facebook](https://www.facebook.com/jane.example)\n"
+        "**Overall:** Likely match found.\n"
+        "_Search results are not proof of identity._"
+    )
+
+    def _run(self, hooks, targets):
+        person = {"name": "Jane Example", "role": "Senior Engineer", "org": "Acme"}
+        return collect(_doc_web.run_web_lookup(
+            person, targets, hooks, answer_model="llm", now_ms=1000000000, doc_excerpt=""
+        ))
+
+    def test_fallback_linkedin_and_facebook(self):
+        hooks = build_web_lookup_hooks(
+            pick_tool_model_result=None,  # direct search
+            web_search_result=self.WEB_RESULTS,
+            stream_llm_result=[{"content": self.VERDICT}, {"done": True}],
+        )
+        events = self._run(hooks, ["linkedin", "facebook"])
+
+        # Queries cover both platforms
+        calls = hooks.tracker.web_search_calls
+        assert any("site:linkedin.com" in q for q in calls)
+        assert any("site:facebook.com" in q for q in calls)
+        assert len(calls) <= 6
+
+        # Planner tile names both platforms
+        plan = [e["tile"] for e in events if "tile" in e and e["tile"]["id"] == "web-plan"][-1]
+        assert "LinkedIn + Facebook" in plan["detail"]
+
+        # Search tile: title + result items carry their platform
+        tile = [e["tile"] for e in events if "tile" in e and e["tile"]["id"] == "web-search"][-1]
+        assert tile["title"] == "Web lookup · LinkedIn + Facebook"
+        assert tile["status"] == "done"
+        results = [i for i in tile["items"] if i["kind"] == "result"]
+        by_url = {i["url"]: i for i in results}
+        assert by_url["https://www.linkedin.com/in/jane-example"]["platform"] == "linkedin"
+        assert by_url["https://www.facebook.com/jane.example"]["platform"] == "facebook"
+        # Directory page and unrelated page are excluded
+        assert "https://www.facebook.com/public/Jane-Example" not in by_url
+        assert "https://example.com/unrelated" not in by_url
+        # Requested-platform order: LinkedIn profile first, then Facebook
+        assert [i["platform"] for i in results] == ["linkedin", "facebook"]
+
+        # Verdict prompt asks for per-platform lines
+        prompt = hooks.tracker.stream_llm_calls[0]["prompt"]
+        assert "**LinkedIn:**" in prompt and "**Facebook:**" in prompt
+        assert "public/Jane-Example" not in prompt
+        assert "not proof of identity" in prompt
+        assert "do not assume gender" in prompt
+
+        # Internal result carries targets and per-candidate platform flags
+        web_result = [e["_web_result"] for e in events if "_web_result" in e][0]
+        assert web_result["targets"] == ["linkedin", "facebook"]
+        cands = {c["url"]: c for c in web_result["candidates"]}
+        assert cands["https://www.facebook.com/jane.example"]["platform"] == "facebook"
+        assert cands["https://www.facebook.com/jane.example"]["is_profile"] is True
+        assert cands["https://www.linkedin.com/in/jane-example"]["is_profile"] is True
+        assert "https://www.facebook.com/public/Jane-Example" not in cands
+
+        # Content has the per-platform verdict
+        content = "".join(e["content"] for e in events if "content" in e)
+        assert "**LinkedIn:** Likely match found" in content
+        assert "**Facebook:** Possible match" in content
+
+        # Social pages are never fetched
+        assert hooks.tracker.fetch_page_calls == []
+
+    def test_tool_path_skips_facebook_fetch(self):
+        chat_tools_responses = [
+            {
+                "content": "",
+                "tool_calls": [
+                    {"name": "web_search", "arguments": {"query": 'site:facebook.com "Jane Example"'}},
+                    {"name": "fetch_page", "arguments": {"url": "https://www.facebook.com/jane.example"}},
+                    {"name": "fetch_page", "arguments": {"url": "https://www.instagram.com/jane.example/"}},
+                    {"name": "fetch_page", "arguments": {"url": "https://x.com/jane_example"}},
+                ],
+            },
+            {"content": "done", "tool_calls": []},
+        ]
+        hooks = build_web_lookup_hooks(
+            pick_tool_model_result="qwen3:8b",
+            chat_tools_result=chat_tools_responses,
+            web_search_result=self.WEB_RESULTS,
+            stream_llm_result=[{"content": self.VERDICT}, {"done": True}],
+        )
+        events = self._run(hooks, ["linkedin", "facebook"])
+
+        # fetch_page never called for social platforms
+        assert hooks.tracker.fetch_page_calls == []
+        tile = [e["tile"] for e in events if "tile" in e and e["tile"]["id"] == "web-search"][-1]
+        notes = [i["label"] for i in tile["items"] if i["kind"] == "note"]
+        assert "Skipped https://www.facebook.com/jane.example (Facebook requires login)" in notes
+        assert "Skipped https://www.instagram.com/jane.example/ (Instagram requires login)" in notes
+        assert "Skipped https://x.com/jane_example (X requires login)" in notes
+
+        # The tool model was told about both platforms
+        system = hooks.tracker.chat_tools_calls[0]["messages"][0]["content"]
+        assert "LinkedIn" in system and "Facebook" in system
+        tool_msgs = [m["content"] for m in hooks.tracker.chat_tools_calls[-1]["messages"] if m["role"] == "tool"]
+        assert any("Facebook pages require login; use the search snippets instead." in m for m in tool_msgs)
+
+        # Result items carry platforms; directory page excluded
+        results = [i for i in tile["items"] if i["kind"] == "result"]
+        assert {i["platform"] for i in results} == {"linkedin", "facebook"}
+        assert all("/public/" not in i["url"] for i in results)
+
+        content = "".join(e["content"] for e in events if "content" in e)
+        assert "**Facebook:** Possible match" in content
+
+    def test_no_candidates_per_platform_no_match(self):
+        hooks = build_web_lookup_hooks(
+            pick_tool_model_result=None,
+            web_search_result=[self.WEB_RESULTS[2], self.WEB_RESULTS[3]],  # directory + unrelated
+        )
+        events = self._run(hooks, ["facebook", "instagram"])
+
+        assert hooks.tracker.stream_llm_calls == []  # no LLM call
+        content = "".join(e["content"] for e in events if "content" in e)
+        assert "**Facebook:** No match found" in content
+        assert "**Instagram:** No match found" in content
+        assert "not proof of identity" in content
+        web_result = [e["_web_result"] for e in events if "_web_result" in e][0]
+        assert web_result["candidates"] == []
+        assert web_result["targets"] == ["facebook", "instagram"]
+
+
+class TestRunAgentFacebook:
+    """run_agent routes a Facebook request to identify_person + web lookup on Facebook."""
+
+    def test_run_agent_identify_plus_facebook(self):
+        doc_text = """Jane Example
+Senior Engineer at Acme
+Amsterdam, Netherlands"""
+        doc = fake_document(doc_id="d1", filename="profile.txt", text=doc_text)
+        searches = []
+
+        async def stream_llm_handler(model: str, prompt: str, think: bool = False):
+            if "candidate" not in prompt.lower():
+                yield {"content": "This document is about **Jane Example**.\n- **Name:** Jane Example\n- **Role:** Senior Engineer"}
+            else:
+                yield {"content": "**Facebook:** Likely match found — [Jane Example | Facebook](https://www.facebook.com/jane.example)\n**Overall:** Likely match found.\n_Search results are not proof of identity._"}
+            yield {"done": True}
+
+        async def web_search_handler(query: str):
+            searches.append(query)
+            return [{
+                "url": "https://www.facebook.com/jane.example",
+                "title": "Jane Example | Facebook",
+                "snippet": "Works at Acme",
+            }]
+
+        async def pick_tool_model_handler():
+            return None
+
+        async def vision_candidates_handler():
+            return ["vision-model"]
+
+        async def resolve_text_model_handler(doc, category: str):
+            return "text-model"
+
+        async def model_info_handler(name: str):
+            return {"name": name}
+
+        async def run_ocr_handler(doc, model: str):
+            return doc.text
+
+        hooks = _agent.AgentHooks(
+            get_doc=lambda doc_id: doc if doc_id == "d1" else None,
+            laya_intent=lambda msg, files: None,
+            laya_role=lambda msg, file: None,
+            laya_doc_kind=lambda text: None,
+            laya_info=lambda: {"available": False},
+            laya_web=lambda msg: None,
+            resolve_model=lambda cat: "default",
+            resolve_text_model=resolve_text_model_handler,
+            pick_vision_model=lambda: "vision-model",
+            vision_candidates=vision_candidates_handler,
+            model_info=model_info_handler,
+            run_ocr=run_ocr_handler,
+            stream_llm=stream_llm_handler,
+            vision_call=lambda m, p, r, s: "Vision result",
+            page_image_paths=lambda d, p, dpi: [],
+            mark_vision_failed=lambda m, e: None,
+            web_search=web_search_handler,
+            fetch_page=lambda u: "Page content",
+            pick_tool_model=pick_tool_model_handler,
+            chat_tools=None,
+            now_ms=lambda: 1000000000,
+        )
+        req = {
+            "message": "who is this document about and check facebook if this person exists",
+            "attachments": [{"doc_id": "d1"}],
+            "history": [],
+        }
+
+        async def run_test():
+            return [ev async for ev in _agent.run_agent(req, hooks)]
+
+        events = asyncio.run(run_test())
+
+        laya = [e["tile"] for e in events if e.get("tile", {}).get("id") == "laya"][-1]
+        decisions = {d["id"]: d for d in laya["decisions"]}
+        assert decisions["intent"]["value"] == "identify_person"
+        assert decisions["web_lookup"]["value"] == "facebook"
+        assert "DuckDuckGo" in (decisions["web_lookup"].get("note") or "")
+
+        assert searches and all("facebook" in q.lower() for q in searches)
+        tile = [e["tile"] for e in events if e.get("tile", {}).get("id") == "web-search"][-1]
+        assert tile["title"] == "Web lookup · Facebook"
+        assert any(i.get("platform") == "facebook" for i in tile["items"] if i["kind"] == "result")
+        content = "".join(e.get("content", "") for e in events)
+        assert "**Facebook:** Likely match found" in content
 
 
 class TestNameMatching:

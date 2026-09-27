@@ -55,7 +55,11 @@ INTENTS = OrderedDict([
 
 # Singleton state
 _router_instance: Any = None
-_router_lock = threading.Lock()
+# Re-entrant lock held around lazy load, every router.predict(...) call and
+# unload — the underlying torch model is not safe to call concurrently from
+# several asyncio.to_thread workers, nor to unload mid-predict.
+_router_lock = threading.RLock()
+_available_cached = False  # sticky once True (avoid scan_cache_dir() per run)
 _last_access_time = time.time()
 _idle_timer: threading.Timer | None = None
 _status_logged_once = False
@@ -94,7 +98,13 @@ def is_available() -> bool:
     Returns False if:
     - laya package is not installed
     - English model not downloaded to cache
+
+    The positive result is cached for the process lifetime: scan_cache_dir()
+    walks the whole HF cache and is too slow to repeat on every agent run.
     """
+    global _available_cached
+    if _available_cached:
+        return True
     try:
         import laya  # noqa: F401
     except ImportError:
@@ -112,7 +122,10 @@ def is_available() -> bool:
             if repo.repo_id == "convaiinnovations/laya":
                 # Repo is cached; assume weights are available
                 # (snapshot_download with allow_patterns ensured English-only)
-                return len(repo.revisions) > 0
+                if len(repo.revisions) > 0:
+                    _available_cached = True
+                    return True
+                return False
 
         return False
     except Exception:
@@ -161,12 +174,19 @@ def _unload_router() -> None:
     """Unload router from memory and free resources."""
     global _router_instance
 
+    with _router_lock:
+        _unload_router_locked()
+
+
+def _unload_router_locked() -> None:
+    """Body of _unload_router; caller must hold _router_lock."""
+    global _router_instance
+
     if _router_instance is None:
         return
 
     try:
         log.debug("Unloading Laya router (idle timeout)…")
-        del _router_instance
         _router_instance = None
 
         # Force garbage collection and free GPU/MPS cache if available
@@ -209,6 +229,12 @@ def _get_or_create_router() -> Any | None:
     Returns None if laya is not installed or weights are not cached.
     Never raises; logs errors once.
     """
+    with _router_lock:
+        return _get_or_create_router_locked()
+
+
+def _get_or_create_router_locked() -> Any | None:
+    """Body of _get_or_create_router; caller must hold _router_lock."""
     global _router_instance, _status_logged_once
 
     if _router_instance is not None:
@@ -295,13 +321,6 @@ def judge_choice(
         if not text_sample:
             return None
 
-        # Get or create router
-        with _router_lock:
-            router = _get_or_create_router()
-
-        if router is None:
-            return None
-
         # Define the question
         question = {
             question_name: {
@@ -311,8 +330,13 @@ def judge_choice(
             }
         }
 
-        # Predict
-        result = router.predict(state=text_sample, questions=question)
+        # Get or create router and predict under the same lock so an idle
+        # unload (or a concurrent predict) can never interleave.
+        with _router_lock:
+            router = _get_or_create_router()
+            if router is None:
+                return None
+            result = router.predict(state=text_sample, questions=question)
 
         # Extract and reshape
         ans = result.get("answers", {})
@@ -372,13 +396,6 @@ def decide(sample_text: str) -> dict[str, Any] | None:
         if not text:
             return None
 
-        # Get or create router
-        with _router_lock:
-            router = _get_or_create_router()
-
-        if router is None:
-            return None
-
         # Define questions
         questions = {
             "kind": {
@@ -407,8 +424,12 @@ def decide(sample_text: str) -> dict[str, Any] | None:
             },
         }
 
-        # Predict
-        result = router.predict(state=text, questions=questions)
+        # Get or create router and predict under the lock (see judge_choice)
+        with _router_lock:
+            router = _get_or_create_router()
+            if router is None:
+                return None
+            result = router.predict(state=text, questions=questions)
 
         # Extract and reshape
         ans = result.get("answers", {})
@@ -693,7 +714,7 @@ def decide_web_lookup(message: str) -> dict | None:
 
         # Define the question
         criteria = {
-            "yes": "The user asks to search the internet, LinkedIn or online sources to verify or look up a person or fact",
+            "yes": "The user asks to search LinkedIn, Facebook, Instagram, X/Twitter or the web to verify or look up a person or fact",
             "no": "The user does not ask for any online search or verification",
         }
 
@@ -701,7 +722,7 @@ def decide_web_lookup(message: str) -> dict | None:
             text=msg_truncated,
             question_name="web_lookup",
             criteria=criteria,
-            instructions="Does the user ask to search the internet, LinkedIn or online sources to verify or look up a person or fact?",
+            instructions="Does the user ask to search LinkedIn, Facebook, Instagram, X/Twitter or the web to verify or look up a person or fact?",
         )
 
         if result is None:

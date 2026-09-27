@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import logging
 import sqlite3
 import time
@@ -64,7 +65,7 @@ CREATE TABLE IF NOT EXISTS kg_mentions (
   run_id TEXT,
   conversation_id TEXT,
   created_at REAL NOT NULL,
-  UNIQUE(entity_id, doc_id, run_id)
+  UNIQUE(entity_id, doc_id)
 );
 
 CREATE INDEX IF NOT EXISTS kg_rel_src ON kg_relations(src_id);
@@ -87,6 +88,21 @@ def _normalize_text(text: str) -> str:
     return text
 
 
+# Entity types whose names often carry stray trailing punctuation ("Acme B.V"
+# vs "Acme B.V.", "Solution Architect;") — keyed without it.
+_PUNCT_KEYED_TYPES = ("organization", "role")
+_TRAILING_PUNCT = ".,;: \t"
+
+
+def _norm_key(type_: str, name: str) -> str:
+    """norm_name for an entity: _normalize_text, plus — for organisations and
+    roles — trailing punctuation/whitespace (.,;:) stripped."""
+    norm = _normalize_text(name)
+    if type_ in _PUNCT_KEYED_TYPES:
+        norm = norm.rstrip(_TRAILING_PUNCT) or norm
+    return norm
+
+
 def _connect() -> sqlite3.Connection:
     """Open connection to the shared DB."""
     conn = sqlite3.connect(str(DB_PATH), isolation_level=None)  # autocommit
@@ -96,10 +112,31 @@ def _connect() -> sqlite3.Connection:
 
 
 def _init_sync() -> None:
-    """Initialize KG tables (sync)."""
+    """Initialize KG tables (sync) and migrate mentions to one row per (entity, doc)."""
     conn = _connect()
     try:
         conn.executescript(_SCHEMA)
+        # Migration: older DBs keyed mentions per (entity_id, doc_id, run_id), so
+        # every run added a row. Keep the newest row per (entity_id, doc_id) and
+        # enforce uniqueness from now on.
+        try:
+            conn.execute(
+                "DELETE FROM kg_mentions WHERE rowid NOT IN ("
+                "  SELECT MAX(rowid) FROM kg_mentions GROUP BY entity_id, doc_id)"
+            )
+            conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS kg_ment_ent_doc ON kg_mentions(entity_id, doc_id)"
+            )
+        except sqlite3.DatabaseError as exc:
+            log.warning("kg_mentions dedupe migration failed: %s", exc)
+        try:
+            _merge_punct_duplicates(conn)
+        except sqlite3.DatabaseError as exc:
+            log.warning("kg org/role dedupe migration failed: %s", exc)
+        try:
+            _migrate_profiles(conn)
+        except sqlite3.DatabaseError as exc:
+            log.warning("kg profile migration failed: %s", exc)
         log.info("kg_store initialised at %s", DB_PATH)
     finally:
         conn.close()
@@ -114,7 +151,17 @@ async def init_db() -> None:
 
 
 def _upsert_entity_sync(type_: str, name: str, props: Optional[dict] = None, entity_id: Optional[str] = None) -> str:
+    """Upsert an entity. Returns the entity ID (see _upsert_entity_ex_sync)."""
+    return _upsert_entity_ex_sync(type_, name, props, entity_id)[0]
+
+
+def _upsert_entity_ex_sync(
+    type_: str, name: str, props: Optional[dict] = None, entity_id: Optional[str] = None
+) -> tuple[str, bool]:
     """
+    Upsert an entity. Returns (entity_id, created) — created is True only when
+    a new row was inserted.
+
     Upsert an entity. Returns the entity ID.
 
     Merges props JSON; keeps first name spelling unless new one has accents and old doesn't.
@@ -122,7 +169,7 @@ def _upsert_entity_sync(type_: str, name: str, props: Optional[dict] = None, ent
     For document entities, pass entity_id=f"document:{doc_id}" to fix the ID.
     """
     now = time.time()
-    norm_name = _normalize_text(name)
+    norm_name = _norm_key(type_, name)
     if entity_id is None:
         entity_id = f"{type_}:{norm_name}"
     props = props or {}
@@ -148,15 +195,24 @@ def _upsert_entity_sync(type_: str, name: str, props: Optional[dict] = None, ent
                 "UPDATE kg_entities SET name=?, props=?, updated_at=? WHERE id=?",
                 (final_name, json.dumps(merged_props), now, row["id"]),
             )
-            return row["id"]
-        else:
-            # Create new entity
+            return row["id"], False
+        # Fixed ids (e.g. document:<doc_id>) may already exist under another norm_name
+        cur = conn.execute("SELECT id, props FROM kg_entities WHERE id=?", (entity_id,))
+        row = cur.fetchone()
+        if row:
+            merged_props = {**json.loads(row["props"] or "{}"), **props}
             conn.execute(
-                "INSERT INTO kg_entities (id, type, name, norm_name, props, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (entity_id, type_, name, norm_name, json.dumps(props), now, now),
+                "UPDATE kg_entities SET props=?, updated_at=? WHERE id=?",
+                (json.dumps(merged_props), now, row["id"]),
             )
-            return entity_id
+            return row["id"], False
+        # Create new entity
+        conn.execute(
+            "INSERT INTO kg_entities (id, type, name, norm_name, props, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (entity_id, type_, name, norm_name, json.dumps(props), now, now),
+        )
+        return entity_id, True
     finally:
         conn.close()
 
@@ -176,6 +232,28 @@ def _add_relation_sync(
     Upsert a relation. Keeps max confidence, updates props.
     Returns the relation ID.
     """
+    return _add_relation_ex_sync(
+        src_id, dst_id, type_, confidence=confidence, source=source,
+        run_id=run_id, conversation_id=conversation_id, props=props,
+    )[0]
+
+
+def _add_relation_ex_sync(
+    src_id: str,
+    dst_id: str,
+    type_: str,
+    *,
+    confidence: Optional[float] = None,
+    source: str,
+    run_id: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+    props: Optional[dict] = None,
+) -> tuple[str, bool]:
+    """Upsert a relation; returns (relation_id, created).
+
+    On update the relation is re-attributed to the latest run/conversation that
+    produced it, so deleting an older conversation doesn't remove a relation a
+    newer conversation still relies on."""
     now = time.time()
     rel_id = f"{src_id}→{dst_id}→{type_}"
     props = props or {}
@@ -197,10 +275,11 @@ def _add_relation_sync(
             merged_props = {**old_props, **props}
 
             conn.execute(
-                "UPDATE kg_relations SET confidence=?, props=?, created_at=? WHERE id=?",
-                (final_conf, json.dumps(merged_props), now, row["id"]),
+                "UPDATE kg_relations SET confidence=?, props=?, created_at=?, "
+                "run_id=COALESCE(?, run_id), conversation_id=COALESCE(?, conversation_id) WHERE id=?",
+                (final_conf, json.dumps(merged_props), now, run_id, conversation_id, row["id"]),
             )
-            return row["id"]
+            return row["id"], False
         else:
             # Create new relation
             conn.execute(
@@ -208,7 +287,7 @@ def _add_relation_sync(
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (rel_id, src_id, dst_id, type_, confidence, source, json.dumps(props), run_id, conversation_id, now),
             )
-            return rel_id
+            return rel_id, True
     finally:
         conn.close()
 
@@ -223,24 +302,48 @@ def _add_mention_sync(
     conversation_id: Optional[str] = None,
 ) -> str:
     """Add/upsert a mention. Returns the mention ID."""
+    return _add_mention_ex_sync(
+        entity_id, doc_id, chunk_id=chunk_id, snippet=snippet,
+        run_id=run_id, conversation_id=conversation_id,
+    )[0]
+
+
+def _add_mention_ex_sync(
+    entity_id: str,
+    doc_id: str,
+    *,
+    chunk_id: Optional[int] = None,
+    snippet: Optional[str] = None,
+    run_id: Optional[str] = None,
+    conversation_id: Optional[str] = None,
+) -> tuple[str, bool]:
+    """Upsert the single mention row for (entity_id, doc_id); returns (id, created).
+
+    Repeated runs update run_id / conversation_id / snippet on the existing row
+    instead of adding one row per run."""
     now = time.time()
-    mention_id = f"{entity_id}→{doc_id}→{run_id or 'none'}"
+    mention_id = f"{entity_id}→{doc_id}"
 
     conn = _connect()
     try:
         cur = conn.execute(
-            "SELECT id FROM kg_mentions WHERE entity_id=? AND doc_id=? AND run_id=?",
-            (entity_id, doc_id, run_id),
+            "SELECT id, chunk_id, snippet FROM kg_mentions WHERE entity_id=? AND doc_id=?",
+            (entity_id, doc_id),
         )
         row = cur.fetchone()
 
         if row:
-            # Update existing mention
+            # Update existing mention (keep the old grounding if the new run has none)
             conn.execute(
-                "UPDATE kg_mentions SET chunk_id=?, snippet=? WHERE id=?",
-                (chunk_id, snippet, row["id"]),
+                "UPDATE kg_mentions SET chunk_id=?, snippet=?, "
+                "run_id=COALESCE(?, run_id), conversation_id=COALESCE(?, conversation_id) WHERE id=?",
+                (
+                    chunk_id if chunk_id is not None else row["chunk_id"],
+                    snippet if snippet else row["snippet"],
+                    run_id, conversation_id, row["id"],
+                ),
             )
-            return row["id"]
+            return row["id"], False
         else:
             # Create new mention
             conn.execute(
@@ -248,7 +351,7 @@ def _add_mention_sync(
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (mention_id, entity_id, doc_id, chunk_id, snippet, run_id, conversation_id, now),
             )
-            return mention_id
+            return mention_id, True
     finally:
         conn.close()
 
@@ -389,6 +492,10 @@ def _get_graph_sync(scope: str = "all", conversation_id: Optional[str] = None) -
             """
             cur = conn.execute(query, list(entity_ids_set) + list(entity_ids_set))
             for row in cur.fetchall():
+                # Both endpoints must be in the returned entity set — the UI
+                # can't draw an edge to a node it doesn't have.
+                if row["src_id"] not in entity_ids_set or row["dst_id"] not in entity_ids_set:
+                    continue
                 relations.append({
                     "id": row["id"],
                     "src": row["src_id"],
@@ -695,19 +802,59 @@ def _neighborhood_sync(entity_id: str, hops: int = 2, limit: int = 60) -> dict:
         conn.close()
 
 
+def _gc_orphans(conn: sqlite3.Connection) -> int:
+    """
+    Garbage-collect orphaned knowledge.
+
+    An entity is *anchored* when it is a document, has at least one mention, or
+    is connected (through relations, any number of hops) to an anchored entity.
+    Every non-anchored entity is deleted, as is every relation whose src or dst
+    no longer exists. Returns the number of entities deleted.
+    """
+    # Relations with a missing endpoint first
+    conn.execute(
+        "DELETE FROM kg_relations WHERE src_id NOT IN (SELECT id FROM kg_entities) "
+        "OR dst_id NOT IN (SELECT id FROM kg_entities)"
+    )
+    all_ids = {r["id"] for r in conn.execute("SELECT id FROM kg_entities").fetchall()}
+    anchored = {
+        r["id"] for r in conn.execute("SELECT id FROM kg_entities WHERE type='document'").fetchall()
+    }
+    anchored |= {
+        r["entity_id"] for r in conn.execute("SELECT DISTINCT entity_id FROM kg_mentions").fetchall()
+    } & all_ids
+    adjacency: dict[str, set[str]] = {}
+    for r in conn.execute("SELECT src_id, dst_id FROM kg_relations").fetchall():
+        adjacency.setdefault(r["src_id"], set()).add(r["dst_id"])
+        adjacency.setdefault(r["dst_id"], set()).add(r["src_id"])
+    frontier = list(anchored)
+    while frontier:
+        nxt = []
+        for eid in frontier:
+            for nb in adjacency.get(eid, ()):
+                if nb not in anchored:
+                    anchored.add(nb)
+                    nxt.append(nb)
+        frontier = nxt
+    orphans = sorted(all_ids - anchored)
+    for i in range(0, len(orphans), 500):
+        batch = orphans[i:i + 500]
+        ph = ",".join("?" * len(batch))
+        conn.execute(f"DELETE FROM kg_relations WHERE src_id IN ({ph}) OR dst_id IN ({ph})", batch + batch)
+        conn.execute(f"DELETE FROM kg_mentions WHERE entity_id IN ({ph})", batch)
+        conn.execute(f"DELETE FROM kg_entities WHERE id IN ({ph})", batch)
+    return len(orphans)
+
+
 def _delete_document_sync(doc_id: str) -> int:
-    """Delete document entity, its mentions, and related relations. Returns count of deleted entities."""
+    """Delete document entity, its mentions and relations, then GC orphans.
+    Returns the number of deleted entities (document + orphans)."""
     conn = _connect()
     try:
-        # Get the document entity
         doc_entity_id = f"document:{doc_id}"
-
-        # Get all entities mentioned in this document
-        cur = conn.execute(
-            "SELECT DISTINCT entity_id FROM kg_mentions WHERE doc_id=?",
-            (doc_id,),
-        )
-        entity_ids = [row["entity_id"] for row in cur.fetchall()]
+        existed = conn.execute(
+            "SELECT 1 FROM kg_entities WHERE id=?", (doc_entity_id,)
+        ).fetchone() is not None
 
         # Delete mentions in this document
         conn.execute("DELETE FROM kg_mentions WHERE doc_id=?", (doc_id,))
@@ -718,7 +865,22 @@ def _delete_document_sync(doc_id: str) -> int:
         # Delete the document entity
         conn.execute("DELETE FROM kg_entities WHERE id=?", (doc_entity_id,))
 
-        return len(entity_ids) + 1
+        return (1 if existed else 0) + _gc_orphans(conn)
+    finally:
+        conn.close()
+
+
+def _delete_conversation_sync(conversation_id: str) -> int:
+    """Remove the mentions and relations a conversation produced, then GC
+    orphans. Document entities are kept (the documents still exist).
+    Returns the number of entities garbage-collected."""
+    if not conversation_id:
+        return 0
+    conn = _connect()
+    try:
+        conn.execute("DELETE FROM kg_mentions WHERE conversation_id=?", (conversation_id,))
+        conn.execute("DELETE FROM kg_relations WHERE conversation_id=?", (conversation_id,))
+        return _gc_orphans(conn)
     finally:
         conn.close()
 
@@ -845,6 +1007,11 @@ async def delete_document(doc_id: str) -> int:
     return await asyncio.to_thread(_delete_document_sync, doc_id)
 
 
+async def delete_conversation(conversation_id: str) -> int:
+    """Async wrapper: forget what a (document) conversation taught the store."""
+    return await asyncio.to_thread(_delete_conversation_sync, conversation_id)
+
+
 async def reset() -> None:
     """Async wrapper."""
     return await asyncio.to_thread(_reset_sync)
@@ -858,6 +1025,263 @@ async def stats() -> dict:
 # ── Ingest handler: populate graph after doc agent runs ──
 
 
+_EXT_KIND = {
+    "pdf": "pdf",
+    "doc": "docx", "docx": "docx", "odt": "docx", "rtf": "docx",
+    "xls": "xlsx", "xlsx": "xlsx", "csv": "xlsx", "ods": "xlsx", "tsv": "xlsx",
+    "eml": "eml", "msg": "eml",
+    "txt": "txt", "md": "txt", "html": "txt", "htm": "txt", "json": "txt", "xml": "txt",
+    "png": "image", "jpg": "image", "jpeg": "image", "webp": "image", "gif": "image",
+    "bmp": "image", "tif": "image", "tiff": "image", "heic": "image",
+}
+
+
+def _doc_kind(filename: str, mime: str) -> str:
+    """Document kind from the filename extension (pdf/docx/xlsx/eml/txt/image),
+    falling back to the MIME type."""
+    fname = (filename or "").lower()
+    if "." in fname:
+        kind = _EXT_KIND.get(fname.rsplit(".", 1)[1])
+        if kind:
+            return kind
+    m = (mime or "").lower()
+    if "pdf" in m:
+        return "pdf"
+    if m.startswith("image/"):
+        return "image"
+    if "sheet" in m or "csv" in m:
+        return "xlsx"
+    if "word" in m:
+        return "docx"
+    if m == "message/rfc822":
+        return "eml"
+    if m.startswith("text/"):
+        return "txt"
+    return "document"
+
+
+def _canonical_url(url: str) -> str:
+    """
+    Canonical key for a profile URL: lower-case host without "www."/"m."/country
+    subdomains for known social platforms (nl.linkedin.com → linkedin.com),
+    no scheme, fragment, trailing slash or query (except Facebook's
+    profile.php?id=…, where the query IS the identity).
+    """
+    from urllib.parse import urlparse
+    u = (url or "").strip()
+    try:
+        parsed = urlparse(u)
+    except Exception:
+        return u.lower().rstrip("/")
+    host = (parsed.hostname or "").lower()
+    try:
+        from doc_web import PLATFORMS as _PLATFORMS
+        for p in _PLATFORMS.values():
+            for domain in p["domains"]:
+                if host == domain or host.endswith("." + domain):
+                    host = domain
+                    break
+    except Exception:
+        pass
+    if host.startswith("www."):
+        host = host[4:]
+    path = (parsed.path or "").rstrip("/")
+    key = f"{host}{path}".lower()
+    if path.lower().endswith("/profile.php") and parsed.query:
+        m = re.search(r"(?:^|&)id=(\d+)", parsed.query)
+        if m:
+            key += f"?id={m.group(1)}"
+    return key
+
+
+def _upsert_profile_sync(url: str, title: str, props: dict) -> tuple[str, bool]:
+    """Upsert a profile entity keyed on its canonical URL. Returns (id, created)."""
+    now = time.time()
+    canon = _canonical_url(url)
+    entity_id = f"profile:{canon}"
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT id, props FROM kg_entities WHERE id=? OR (type='profile' AND norm_name=?)",
+            (entity_id, canon),
+        ).fetchone()
+        if row:
+            merged = {**json.loads(row["props"] or "{}"), **props}
+            conn.execute(
+                "UPDATE kg_entities SET props=?, updated_at=? WHERE id=?",
+                (json.dumps(merged), now, row["id"]),
+            )
+            return row["id"], False
+        conn.execute(
+            "INSERT INTO kg_entities (id, type, name, norm_name, props, created_at, updated_at) "
+            "VALUES (?, 'profile', ?, ?, ?, ?, ?)",
+            (entity_id, title or url, canon, json.dumps(props), now, now),
+        )
+        return entity_id, True
+    finally:
+        conn.close()
+
+
+def _drop_candidate_if_likely_sync(src_id: str, dst_id: str) -> bool:
+    """Keep ONE relation per (person, profile): when likely_profile exists the
+    candidate_profile for the same pair is removed. Returns True if likely exists."""
+    conn = _connect()
+    try:
+        likely = conn.execute(
+            "SELECT 1 FROM kg_relations WHERE src_id=? AND dst_id=? AND type='likely_profile'",
+            (src_id, dst_id),
+        ).fetchone() is not None
+        if likely:
+            conn.execute(
+                "DELETE FROM kg_relations WHERE src_id=? AND dst_id=? AND type='candidate_profile'",
+                (src_id, dst_id),
+            )
+        return likely
+    finally:
+        conn.close()
+
+
+def _delete_entities(conn: sqlite3.Connection, ids: list[str]) -> None:
+    """Delete entities together with their relations and mentions."""
+    for i in range(0, len(ids), 500):
+        batch = ids[i:i + 500]
+        ph = ",".join("?" * len(batch))
+        conn.execute(f"DELETE FROM kg_relations WHERE src_id IN ({ph}) OR dst_id IN ({ph})", batch + batch)
+        conn.execute(f"DELETE FROM kg_mentions WHERE entity_id IN ({ph})", batch)
+        conn.execute(f"DELETE FROM kg_entities WHERE id IN ({ph})", batch)
+
+
+def _purge_junk_entities(conn: sqlite3.Connection) -> None:
+    """
+    Remove knowledge that earlier versions stored by mistake:
+    - answer-derived generic roles ("the individual whose CV is presented",
+      "CV holder") and roles that are sentence fragments ("Temp Person works");
+    - organisations that are sentence fragments ("Temp Corp as Temp Engineer.");
+    - organisations stored as persons ("Acme B.V"): re-created as an
+      organisation mentioned in the same documents, the person row removed.
+    """
+    try:
+        import doc_web as _dw
+    except Exception:  # pragma: no cover - doc_web always importable in-tree
+        return
+    junk: list[str] = []
+    for row in conn.execute("SELECT id, name FROM kg_entities WHERE type='role'").fetchall():
+        name = row["name"] or ""
+        if _dw._is_generic_role(name) or re.search(r"\bworks?\b$", name.strip(), re.IGNORECASE):
+            junk.append(row["id"])
+    for row in conn.execute("SELECT id, name FROM kg_entities WHERE type='organization'").fetchall():
+        if _dw._is_bad_org(row["name"] or ""):
+            junk.append(row["id"])
+    now = time.time()
+    for row in conn.execute("SELECT id, name FROM kg_entities WHERE type='person'").fetchall():
+        name = row["name"] or ""
+        if not _dw.looks_like_organization(name):
+            continue
+        norm = _norm_key("organization", name)
+        org = conn.execute(
+            "SELECT id FROM kg_entities WHERE type='organization' AND norm_name IN (?, ?)",
+            (norm, _normalize_text(name)),
+        ).fetchone()
+        org_id = org["id"] if org else f"organization:{norm}"
+        if not org:
+            conn.execute(
+                "INSERT OR IGNORE INTO kg_entities (id, type, name, norm_name, props, created_at, updated_at) "
+                "VALUES (?, 'organization', ?, ?, '{}', ?, ?)",
+                (org_id, name, norm, now, now),
+            )
+        docs = conn.execute(
+            "SELECT dst_id, run_id, conversation_id FROM kg_relations "
+            "WHERE src_id=? AND type='mentioned_in'", (row["id"],),
+        ).fetchall()
+        for d in docs:
+            conn.execute(
+                "INSERT OR IGNORE INTO kg_relations (id, src_id, dst_id, type, confidence, source, props, "
+                "run_id, conversation_id, created_at) VALUES (?, ?, ?, 'mentioned_in', 0.8, 'migration', '{}', ?, ?, ?)",
+                (f"{org_id}→{d['dst_id']}→mentioned_in", org_id, d["dst_id"], d["run_id"], d["conversation_id"], now),
+            )
+        junk.append(row["id"])
+    if junk:
+        log.info("kg migration: removing %d junk entities", len(junk))
+        _delete_entities(conn, junk)
+
+
+def _merge_punct_duplicates(conn: sqlite3.Connection) -> int:
+    """Re-key organisation/role entities on _norm_key and merge rows that differ
+    only by trailing punctuation ("acme b.v" / "acme b.v."): the oldest row
+    survives, relations and mentions of the others are re-pointed to it
+    (skipping edges it already has), and the duplicates are deleted.
+    Returns the number of duplicates removed."""
+    removed = 0
+    for type_ in _PUNCT_KEYED_TYPES:
+        rows = conn.execute(
+            "SELECT id, name, norm_name FROM kg_entities WHERE type=? ORDER BY created_at, rowid", (type_,)
+        ).fetchall()
+        groups: dict[str, list] = {}
+        for r in rows:
+            groups.setdefault(_norm_key(type_, r["name"] or r["norm_name"]), []).append(r)
+        for key, members in groups.items():
+            survivor = members[0]["id"]
+            for dup in members[1:]:
+                old_id = dup["id"]
+                conn.execute("UPDATE OR IGNORE kg_relations SET src_id=? WHERE src_id=?", (survivor, old_id))
+                conn.execute("UPDATE OR IGNORE kg_relations SET dst_id=? WHERE dst_id=?", (survivor, old_id))
+                conn.execute("DELETE FROM kg_relations WHERE src_id=? OR dst_id=?", (old_id, old_id))
+                conn.execute("UPDATE OR IGNORE kg_mentions SET entity_id=? WHERE entity_id=?", (survivor, old_id))
+                conn.execute("DELETE FROM kg_mentions WHERE entity_id=?", (old_id,))
+                conn.execute("DELETE FROM kg_entities WHERE id=?", (old_id,))
+                removed += 1
+            if members[0]["norm_name"] != key:
+                conn.execute("UPDATE OR IGNORE kg_entities SET norm_name=? WHERE id=?", (key, survivor))
+    if removed:
+        log.info("kg migration: merged %d punctuation-duplicate organisations/roles", removed)
+    return removed
+
+
+def _migrate_profiles(conn: sqlite3.Connection) -> None:
+    """Re-key legacy title-keyed profile entities on their canonical URL (merging
+    duplicates), delete profiles without an http(s) URL (legacy DuckDuckGo
+    "ref://…" links) with their relations, drop candidate_profile relations
+    shadowed by likely_profile, and purge junk roles/organisations."""
+    rows = conn.execute("SELECT id, props FROM kg_entities WHERE type='profile'").fetchall()
+    non_http: list[str] = []
+    for row in rows:
+        try:
+            props = json.loads(row["props"] or "{}")
+        except Exception:
+            props = {}
+        url = props.get("url") or ""
+        if not url.lower().startswith(("http://", "https://")):
+            non_http.append(row["id"])
+            continue
+        canon = _canonical_url(url)
+        new_id = f"profile:{canon}"
+        old_id = row["id"]
+        if old_id == new_id:
+            continue
+        target = conn.execute("SELECT id FROM kg_entities WHERE id=?", (new_id,)).fetchone()
+        if not target:
+            conn.execute(
+                "UPDATE kg_entities SET id=?, norm_name=? WHERE id=?", (new_id, canon, old_id)
+            )
+        # Re-point relations (skip ones that would duplicate an existing edge)
+        conn.execute("UPDATE OR IGNORE kg_relations SET dst_id=? WHERE dst_id=?", (new_id, old_id))
+        conn.execute("UPDATE OR IGNORE kg_relations SET src_id=? WHERE src_id=?", (new_id, old_id))
+        conn.execute("DELETE FROM kg_relations WHERE src_id=? OR dst_id=?", (old_id, old_id))
+        if target:
+            conn.execute("DELETE FROM kg_entities WHERE id=?", (old_id,))
+    if non_http:
+        _delete_entities(conn, non_http)
+    conn.execute(
+        "DELETE FROM kg_relations WHERE type='candidate_profile' AND EXISTS ("
+        "  SELECT 1 FROM kg_relations r2 WHERE r2.type='likely_profile' "
+        "  AND r2.src_id=kg_relations.src_id AND r2.dst_id=kg_relations.dst_id)"
+    )
+    try:
+        _purge_junk_entities(conn)
+    except Exception as exc:  # never block startup on hygiene
+        log.warning("kg junk purge failed: %s", exc)
+
+
 async def ingest_run(
     *,
     conversation_id: str,
@@ -868,182 +1292,260 @@ async def ingest_run(
     person: Optional[dict] = None,  # {name, role, org}
     web_candidates: Optional[list] = None,  # [{url, title, snippet, host}]
     verdict: Optional[str] = None,  # Web lookup verdict text
+    persons: Optional[list] = None,  # [{name, role, org, doc_id?}] — several people (identify_person)
 ) -> dict:
     """
     Populate the knowledge graph after a document agent run.
 
-    Returns {"entities": N, "relations": N, "mentions": N, "entity_list": [...]}.
+    `persons` (optional) lists several people; an entry with a `doc_id` is tied
+    to that document only, otherwise to every subject document. When omitted,
+    `person` is used for all subject documents.
+
+    Returns {"entities": N, "relations": N, "mentions": N, "entity_list": [...]}
+    where the counts are NEW rows only (re-running the same question adds 0).
     """
-    from doc_web import extract_person as _extract_person
-    from doc_web import extract_headline as _extract_headline
+    from doc_web import name_matches as _name_matches
+    from doc_web import looks_like_organization as _looks_like_org
+    from doc_web import _is_generic_role as _generic_role, _is_bad_org as _bad_org
 
     counts = {"entities": 0, "relations": 0, "mentions": 0, "entity_list": []}
     if not subject_docs:
         return counts
 
+    listed: set = set()
+
+    async def _entity(type_: str, name: str, props: Optional[dict] = None, entity_id: Optional[str] = None) -> str:
+        eid, created = await asyncio.to_thread(_upsert_entity_ex_sync, type_, name, props, entity_id)
+        if created:
+            counts["entities"] += 1
+        if (type_, eid) not in listed:
+            listed.add((type_, eid))
+            counts["entity_list"].append({"name": name, "type": type_})
+        return eid
+
+    async def _relation(src: str, dst: str, type_: str, confidence: float, source: str) -> None:
+        _, created = await asyncio.to_thread(
+            _add_relation_ex_sync, src, dst, type_,
+            confidence=confidence, source=source, run_id=run_id, conversation_id=conversation_id,
+        )
+        if created:
+            counts["relations"] += 1
+
+    async def _mention(entity_id: str, doc_id: str, chunk_id, snippet) -> None:
+        _, created = await asyncio.to_thread(
+            _add_mention_ex_sync, entity_id, doc_id,
+            chunk_id=chunk_id, snippet=snippet, run_id=run_id, conversation_id=conversation_id,
+        )
+        if created:
+            counts["mentions"] += 1
+
+    people: list[dict] = []
+    for p in (persons or ([person] if person else [])):
+        if isinstance(p, dict) and (p.get("name") or "").strip():
+            people.append(p)
+
     try:
-        # For each subject document: create document entity
         for doc in subject_docs:
             doc_id = getattr(doc, "id", "unknown")
             filename = getattr(doc, "filename", doc_id)
-            kind = getattr(doc, "mime", "").split("/")[0] or "document"
+            kind = _doc_kind(filename, getattr(doc, "mime", "") or "")
 
             # Use filename as the entity name, with explicit entity_id = f"document:{doc_id}"
-            doc_entity_id = await upsert_entity(
+            doc_entity_id = await _entity(
                 "document",
                 filename,
                 {"doc_id": doc_id, "filename": filename, "kind": kind},
-                entity_id=f"document:{doc_id}"
+                entity_id=f"document:{doc_id}",
             )
-            counts["entities"] += 1
-            counts["entity_list"].append({"name": filename, "type": "document"})
 
-            # If person dict provided: create person entity and relations
-            if person and person.get("name"):
-                person_entity_id = await upsert_entity("person", person["name"])
-                counts["entities"] += 1
-                counts["entity_list"].append({"name": person["name"], "type": "person"})
+            for pers in people:
+                if pers.get("doc_id") and pers["doc_id"] != doc_id:
+                    continue
+                pname = pers["name"].strip()
+                if _looks_like_org(pname):
+                    # "Acme B.V." is an organisation named in the document, not a person
+                    org_entity_id = await _entity("organization", pname.strip(" .*"))
+                    await _relation(org_entity_id, doc_entity_id, "mentioned_in", 0.8, "doc_agent")
+                    continue
+                person_entity_id = await _entity("person", pname)
 
                 # Mention in document
-                doc_text = getattr(doc, "text", "")
-                chunk_info = await find_chunk(doc_id, person["name"])
+                doc_text = getattr(doc, "text", "") or ""
+                chunk_info = await find_chunk(doc_id, pname)
                 chunk_id, snippet = chunk_info if chunk_info else (None, None)
 
                 # Fallback snippet if not found in chunks
-                if not snippet and person["name"] in doc_text:
-                    idx = doc_text.find(person["name"])
+                if not snippet and pname in doc_text:
+                    idx = doc_text.find(pname)
                     start = max(0, idx - 120)
-                    end = min(len(doc_text), idx + len(person["name"]) + 120)
+                    end = min(len(doc_text), idx + len(pname) + 120)
                     snippet = doc_text[start:end].strip()
 
-                await add_mention(
-                    person_entity_id,
-                    doc_id,
-                    chunk_id=chunk_id,
-                    snippet=snippet,
-                    run_id=run_id,
-                    conversation_id=conversation_id,
-                )
-                counts["mentions"] += 1
+                await _mention(person_entity_id, doc_id, chunk_id, snippet)
+                await _relation(person_entity_id, doc_entity_id, "mentioned_in", 0.9, "doc_agent")
 
-                # Mention person in document
-                await add_relation(
-                    person_entity_id,
-                    doc_entity_id,
-                    "mentioned_in",
-                    confidence=0.9,
-                    source="doc_agent",
-                    run_id=run_id,
-                    conversation_id=conversation_id,
-                )
-                counts["relations"] += 1
+                if pers.get("role") and not _generic_role(pers["role"]):
+                    role_entity_id = await _entity("role", pers["role"])
+                    await _relation(person_entity_id, role_entity_id, "has_role", 0.7, "doc_agent")
 
-                # Role entity + has_role relation
-                if person.get("role"):
-                    role_entity_id = await upsert_entity("role", person["role"])
-                    counts["entities"] += 1
-                    counts["entity_list"].append({"name": person["role"], "type": "role"})
+                if pers.get("org") and not _bad_org(pers["org"]):
+                    org_entity_id = await _entity("organization", pers["org"])
+                    await _relation(person_entity_id, org_entity_id, "works_at", 0.7, "doc_agent")
+                    await _relation(org_entity_id, doc_entity_id, "mentioned_in", 0.8, "doc_agent")
 
-                    await add_relation(
-                        person_entity_id,
-                        role_entity_id,
-                        "has_role",
-                        confidence=0.7,
-                        source="doc_agent",
-                        run_id=run_id,
-                        conversation_id=conversation_id,
-                    )
-                    counts["relations"] += 1
-
-                # Organization entity + works_at relation
-                if person.get("org"):
-                    org_entity_id = await upsert_entity("organization", person["org"])
-                    counts["entities"] += 1
-                    counts["entity_list"].append({"name": person["org"], "type": "organization"})
-
-                    await add_relation(
-                        person_entity_id,
-                        org_entity_id,
-                        "works_at",
-                        confidence=0.7,
-                        source="doc_agent",
-                        run_id=run_id,
-                        conversation_id=conversation_id,
-                    )
-                    counts["relations"] += 1
-
-                    # Org mentioned in document
-                    await add_relation(
-                        org_entity_id,
-                        doc_entity_id,
-                        "mentioned_in",
-                        confidence=0.8,
-                        source="doc_agent",
-                        run_id=run_id,
-                        conversation_id=conversation_id,
-                    )
-                    counts["relations"] += 1
-
-            # Web lookup: profile entities and relations
+            # Web lookup: profile entities and relations (for the looked-up person)
             if web_candidates and person and person.get("name"):
                 person_entity_id = f"person:{_normalize_text(person['name'])}"
-                seen_candidate_titles = set()  # Track candidate titles to dedupe
+                likely_urls = _likely_profile_urls(verdict or "")
+                likely_canon = {_canonical_url(u) for u in likely_urls}
+                seen_keys: set = set()
 
                 for candidate in web_candidates:
-                    url = candidate.get("url", "")
-                    if not url:
+                    url = (candidate.get("url") or "").strip()
+                    # Only real web links (skip e.g. DuckDuckGo "ref://…" short links)
+                    if not url.lower().startswith(("http://", "https://")):
                         continue
 
-                    # Skip LinkedIn directory pages and search pages
+                    # Skip directory pages and search pages
                     if "/pub/dir/" in url or "/search/" in url:
                         continue
 
-                    title = candidate.get("title", url)
-                    host = candidate.get("host") or url.split("/")[2] if "/" in url else ""
-
-                    # Skip if we've already added a candidate with this title (for this person in this run)
-                    title_normalized = _normalize_text(title)
-                    if title_normalized in seen_candidate_titles:
+                    # Skip non-profile pages on social networks (posts, directories…)
+                    platform = candidate.get("platform") or _platform_of(url)
+                    if _platform_of(url) and not _is_profile_url(url):
                         continue
-                    seen_candidate_titles.add(title_normalized)
 
-                    profile_entity_id = await upsert_entity("profile", title, {
-                        "url": url,
-                        "snippet": candidate.get("snippet", ""),
-                        "host": host,
-                    })
-                    counts["entities"] += 1
+                    title = candidate.get("title") or url
+                    # The candidate must actually name the person
+                    if not _name_matches(person["name"], title):
+                        continue
 
-                    # candidate_profile relation
-                    await add_relation(
-                        person_entity_id,
-                        profile_entity_id,
-                        "candidate_profile",
-                        confidence=0.5,
-                        source="web_lookup",
-                        run_id=run_id,
-                        conversation_id=conversation_id,
+                    canon = _canonical_url(url)
+                    if canon in seen_keys:
+                        continue
+                    seen_keys.add(canon)
+
+                    host = candidate.get("host") or _hostname(url)
+                    profile_entity_id, created = await asyncio.to_thread(
+                        _upsert_profile_sync, url, title, {
+                            "url": url,
+                            "snippet": candidate.get("snippet", ""),
+                            "host": host,
+                            "platform": platform or "web",
+                        },
                     )
-                    counts["relations"] += 1
+                    if created:
+                        counts["entities"] += 1
 
-                    # Check if this is the likely match (first URL cited in verdict)
-                    if verdict and "**Likely match found**" in verdict:
-                        # Extract first URL from verdict
-                        import re
-                        url_matches = re.findall(r"\[.*?\]\((https?://[^\)]+)\)", verdict)
-                        if url_matches and url_matches[0] == url:
-                            await add_relation(
-                                person_entity_id,
-                                profile_entity_id,
-                                "likely_profile",
-                                confidence=0.8,
-                                source="web_lookup",
-                                run_id=run_id,
-                                conversation_id=conversation_id,
-                            )
-                            counts["relations"] += 1
+                    # Likely match: first URL cited on its platform's "Likely match found"
+                    # verdict line (or, for the legacy single verdict, the first cited URL).
+                    # ONE relation per (person, profile): likely replaces candidate.
+                    if _url_key(url) in likely_urls or canon in likely_canon:
+                        await _relation(person_entity_id, profile_entity_id, "likely_profile", 0.8, "web_lookup")
+                        await asyncio.to_thread(_drop_candidate_if_likely_sync, person_entity_id, profile_entity_id)
+                    else:
+                        has_likely = await asyncio.to_thread(
+                            _drop_candidate_if_likely_sync, person_entity_id, profile_entity_id
+                        )
+                        if not has_likely:
+                            await _relation(person_entity_id, profile_entity_id, "candidate_profile", 0.5, "web_lookup")
 
         return counts
     except Exception as e:
         log.warning("kg ingest failed: %s", e)
         return counts
+
+
+def _hostname(url: str) -> str:
+    from urllib.parse import urlparse
+    try:
+        host = (urlparse(url).hostname or "").lower()
+    except Exception:
+        return ""
+    return host[4:] if host.startswith("www.") else host
+
+
+# ── Web verdict parsing (per-platform verdicts) ─────────────────────────────
+
+_VERDICT_LINE_RE = re.compile(
+    r"^\s*(?:[-*]\s*)?\*\*\s*(LinkedIn|Facebook|Instagram|X|Twitter|X/Twitter|Web|Overall)\s*:?\s*\*\*\s*:?\s*(.*)$",
+    re.IGNORECASE,
+)
+_CITED_URL_RE = re.compile(r"\[[^\]]*\]\((https?://[^\)\s]+)\)")
+_PLATFORM_BY_LABEL = {
+    "linkedin": "linkedin", "facebook": "facebook", "instagram": "instagram",
+    "x": "x", "twitter": "x", "x/twitter": "x", "web": "web", "overall": "overall",
+}
+
+
+def _platform_of(url: str):
+    from doc_web import platform_of
+    return platform_of(url)
+
+
+def _is_profile_url(url: str) -> bool:
+    from doc_web import is_profile_url
+    return is_profile_url(url)
+
+
+def _url_key(url: str) -> str:
+    """Comparable form of a URL (no trailing slash, lower-case)."""
+    return (url or "").strip().rstrip("/").lower()
+
+
+def _likely_profile_urls(verdict: str) -> set:
+    """
+    URLs the verdict marks as likely matches.
+
+    Per-platform format — lines like
+        **Facebook:** Likely match found — [Jane](https://www.facebook.com/jane.example)
+    A platform whose line starts with "Likely match found" contributes the first
+    URL of that platform cited in its section (the line up to the next verdict
+    line); if the section cites none, the first URL of that platform anywhere in
+    the verdict.
+
+    Legacy single-verdict format ("**Likely match found** …"): the first cited URL.
+    """
+    if not verdict:
+        return set()
+    lines = verdict.splitlines()
+    sections = []  # (platform, status_text, section_text)
+    current = None
+    for line in lines:
+        m = _VERDICT_LINE_RE.match(line)
+        if m:
+            if current:
+                sections.append(current)
+            label = m.group(1).lower()
+            current = [_PLATFORM_BY_LABEL.get(label, label), m.group(2).strip(), line]
+        elif current:
+            current[2] += "\n" + line
+    if current:
+        sections.append(current)
+
+    platform_sections = [s for s in sections if s[0] != "overall"]
+    if platform_sections:
+        all_urls = _CITED_URL_RE.findall(verdict)
+        likely = set()
+        for platform, status, text in platform_sections:
+            status_clean = status.lstrip("*_ ").lower()
+            if not status_clean.startswith("likely match found"):
+                continue
+
+            def _belongs(u: str) -> bool:
+                pid = _platform_of(u)
+                return (pid is None) if platform == "web" else (pid == platform)
+
+            section_urls = [u for u in _CITED_URL_RE.findall(text) if _belongs(u)]
+            if not section_urls:
+                section_urls = [u for u in all_urls if _belongs(u)]
+            if section_urls:
+                likely.add(_url_key(section_urls[0]))
+        return likely
+
+    # Legacy single verdict
+    if "**Likely match found**" in verdict:
+        urls = _CITED_URL_RE.findall(verdict)
+        if urls:
+            return {_url_key(urls[0])}
+    return set()

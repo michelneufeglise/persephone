@@ -9,8 +9,10 @@ Operations that need vision call the user-configured vision/OCR model in Ollama.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import io
+import itertools
 import json
 import logging
 import mimetypes
@@ -18,6 +20,7 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -135,36 +138,133 @@ class Document:
 REGISTRY: dict[str, Document] = {}
 REGISTRY_FILE = STORAGE_DIR / "_registry.json"
 
+# Serialises registry writes (they may run on worker threads via asyncio.to_thread).
+_REGISTRY_LOCK = threading.Lock()
+# Monotonic snapshot counter: a slower writer never clobbers a newer snapshot.
+_REGISTRY_SEQ = itertools.count(1)
+_REGISTRY_LAST_WRITTEN = 0
+# True when the on-disk main file is known to be a good registry (loaded OK or
+# written by us). Only then is it rotated into the .bak slot.
+_REGISTRY_MAIN_GOOD = False
+
+
+def _registry_bak_file() -> Path:
+    return REGISTRY_FILE.with_name(REGISTRY_FILE.name + ".bak")
+
+
+def _registry_snapshot() -> tuple[int, dict]:
+    """Copy the registry into plain containers (cheap: strings are shared).
+
+    Taken on the caller's thread so a background writer never iterates the
+    live REGISTRY while the event loop mutates it.
+    """
+    seq = next(_REGISTRY_SEQ)
+    snap: dict[str, dict] = {}
+    for did, doc in list(REGISTRY.items()):
+        snap[did] = {
+            "id":          doc.id,
+            "filename":    doc.filename,
+            "mime":        doc.mime,
+            "size":        doc.size,
+            "uploaded_at": doc.uploaded_at,
+            "pages":       doc.pages,
+            "text":        doc.text,
+            "page_texts":  list(doc.page_texts),
+            "page_images": list(doc.page_images),
+            "meta":        dict(doc.meta),
+        }
+    return seq, snap
+
+
+def _write_registry(seq: int, snap: dict) -> None:
+    """Atomically persist a registry snapshot.
+
+    temp file in the same dir → fsync → rotate the previous good file to .bak
+    → os.replace(temp, main). A crash at any point leaves either the old main
+    file, or the .bak (previous good) plus the complete temp file.
+    """
+    global _REGISTRY_LAST_WRITTEN, _REGISTRY_MAIN_GOOD
+    with _REGISTRY_LOCK:
+        if seq < _REGISTRY_LAST_WRITTEN:
+            return  # a newer snapshot is already on disk
+        payload = json.dumps(snap)
+        target = REGISTRY_FILE
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp_name = tempfile.mkstemp(prefix=".registry-", suffix=".tmp", dir=str(target.parent))
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            if _REGISTRY_MAIN_GOOD and target.exists():
+                try:
+                    os.replace(target, _registry_bak_file())
+                except OSError as exc:
+                    log.warning("Could not rotate registry backup: %s", exc)
+            os.replace(tmp_name, target)
+        except BaseException:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
+        _REGISTRY_LAST_WRITTEN = seq
+        _REGISTRY_MAIN_GOOD = True
+
 
 def _save_registry() -> None:
-    serializable = {
-        did: {
-            **doc.to_dict(include_text=True),
-            "page_images": doc.page_images,
-            "uploaded_at": doc.uploaded_at,
-        }
-        for did, doc in REGISTRY.items()
-    }
-    REGISTRY_FILE.write_text(json.dumps(serializable))
+    """Persist the registry synchronously (atomic). From async code on the
+    event loop prefer ``await save_registry_async()``."""
+    seq, snap = _registry_snapshot()
+    _write_registry(seq, snap)
+
+
+async def save_registry_async() -> None:
+    """Snapshot on the loop, then serialise + write on a worker thread."""
+    seq, snap = _registry_snapshot()
+    await asyncio.to_thread(_write_registry, seq, snap)
+
+
+def _doc_from_dict(d: dict) -> Document:
+    return Document(
+        id=d["id"], filename=d["filename"], mime=d["mime"], size=d["size"],
+        uploaded_at=d["uploaded_at"] if isinstance(d["uploaded_at"], float) else d["uploaded_at"] / 1000,
+        pages=d.get("pages", 0),
+        text=d.get("text", ""),
+        page_texts=d.get("page_texts", []),
+        page_images=d.get("page_images", []),
+        meta=d.get("meta", {}),
+    )
+
+
+def _read_registry_file(path: Path) -> dict[str, Document]:
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise ValueError("registry root is not an object")
+    return {did: _doc_from_dict(d) for did, d in data.items()}
 
 
 def _load_registry() -> None:
-    if not REGISTRY_FILE.exists():
-        return
-    try:
-        data = json.loads(REGISTRY_FILE.read_text())
-        for did, d in data.items():
-            REGISTRY[did] = Document(
-                id=d["id"], filename=d["filename"], mime=d["mime"], size=d["size"],
-                uploaded_at=d["uploaded_at"] if isinstance(d["uploaded_at"], float) else d["uploaded_at"] / 1000,
-                pages=d.get("pages", 0),
-                text=d.get("text", ""),
-                page_texts=d.get("page_texts", []),
-                page_images=d.get("page_images", []),
-                meta=d.get("meta", {}),
-            )
-    except Exception as exc:
-        log.warning("Failed to load registry: %s", exc)
+    """Load the registry; fall back to the .bak copy if the main file is
+    missing or corrupt."""
+    global _REGISTRY_MAIN_GOOD
+    main, bak = REGISTRY_FILE, _registry_bak_file()
+    _REGISTRY_MAIN_GOOD = False
+    if main.exists():
+        try:
+            docs = _read_registry_file(main)
+            REGISTRY.update(docs)
+            _REGISTRY_MAIN_GOOD = True
+            return
+        except Exception as exc:
+            log.error("Registry %s is corrupt (%s) — trying backup %s", main, exc, bak)
+    if bak.exists():
+        try:
+            docs = _read_registry_file(bak)
+            REGISTRY.update(docs)
+            log.warning("Recovered %d document(s) from registry backup %s", len(docs), bak)
+        except Exception as exc:
+            log.error("Registry backup %s is also unreadable: %s", bak, exc)
 
 
 _load_registry()
@@ -189,6 +289,17 @@ def delete_document(doc_id: str) -> bool:
     if doc_dir.exists():
         shutil.rmtree(doc_dir, ignore_errors=True)
     _save_registry()
+    return True
+
+
+async def delete_document_async(doc_id: str) -> bool:
+    """Event-loop friendly delete: registry pop on the loop, disk I/O on a thread."""
+    doc = REGISTRY.pop(doc_id, None)
+    if not doc:
+        return False
+    doc_dir = STORAGE_DIR / doc_id
+    await asyncio.to_thread(shutil.rmtree, doc_dir, True)
+    await save_registry_async()
     return True
 
 
@@ -695,17 +806,22 @@ def reextract_empty_documents() -> int:
 
 async def ingest_file(filename: str, data: bytes) -> Document:
     """Persist a file, extract its text/images, register it."""
+    filename = _safe_upload_name(filename)
     doc_id = uuid.uuid4().hex[:12]
     doc_dir = STORAGE_DIR / doc_id
     doc_dir.mkdir(parents=True, exist_ok=True)
 
     raw_path = doc_dir / filename
-    raw_path.write_bytes(data)
+    await asyncio.to_thread(raw_path.write_bytes, data)
 
     mime = _detect_mime(filename)
 
     try:
-        page_texts, page_images, meta = _extract_file(raw_path, filename, mime, doc_dir)
+        # PDF page rendering / docx / xlsx parsing is CPU-bound: keep it off the
+        # event loop so other SSE streams keep flowing during a big ingest.
+        page_texts, page_images, meta = await asyncio.to_thread(
+            _extract_file, raw_path, filename, mime, doc_dir,
+        )
     except Exception as exc:
         log.exception("ingest failed: %s", exc)
         page_texts = [f"[ingest error: {exc}]"]
@@ -724,8 +840,17 @@ async def ingest_file(filename: str, data: bytes) -> Document:
         meta=meta,
     )
     REGISTRY[doc_id] = doc
-    _save_registry()
+    await save_registry_async()
     return doc
+
+
+def _safe_upload_name(filename: str | None) -> str:
+    """Strip any directory components / traversal from a client-supplied name."""
+    raw = (filename or "").replace("\\", "/")
+    name = Path(raw).name.strip()
+    if name in ("", ".", ".."):
+        return "upload"
+    return name
 
 
 async def ingest_text(text: str, title: str | None = None, kind: str = "text") -> Document:
@@ -772,11 +897,25 @@ async def ingest_text(text: str, title: str | None = None, kind: str = "text") -
         meta={},
     )
     REGISTRY[doc_id] = doc
-    _save_registry()
+    await save_registry_async()
     return doc
 
 
 # ── Vision-LLM helpers ────────────────────────────────────────────────────────
+NUM_CTX_MIN = 8192
+NUM_CTX_MAX = 32768
+# Rough per-image token budget for vision models (a ~1000x1300 page render).
+_TOKENS_PER_IMAGE = 1600
+
+
+def _num_ctx_for(prompt: str, num_predict: int, *, extra_tokens: int = 0) -> int:
+    """Context window big enough for prompt + generation, as a power of two
+    clamped to [8192, 32768]. Without this Ollama's small default window
+    silently truncates long document prompts from the *start*."""
+    est = len(prompt or "") // 3 + int(num_predict) + 256 + int(extra_tokens)
+    return min(NUM_CTX_MAX, max(NUM_CTX_MIN, 1 << (max(est, 1) - 1).bit_length()))
+
+
 async def _ollama_vision_call(
     model: str, prompt: str, image_paths: list[str],
     *, num_predict: int = 2048,
@@ -824,6 +963,8 @@ async def _ollama_vision_call(
         "options": {
             "temperature": 0.2,
             "num_predict": num_predict,
+            "num_ctx":     _num_ctx_for(prompt, num_predict,
+                                        extra_tokens=_TOKENS_PER_IMAGE * len(images_b64)),
             "num_thread":  _hw.recommended_num_thread(),
         },
     }
@@ -872,7 +1013,12 @@ async def _ollama_text_call(
                 f"{OLLAMA_BASE}/api/generate",
                 json={
                     "model": model, "prompt": prompt, "stream": False,
-                    "options": {"temperature": 0.3, "num_predict": num_predict, "num_thread": _hw.recommended_num_thread()},
+                    "options": {
+                        "temperature": 0.3,
+                        "num_predict": num_predict,
+                        "num_ctx":     _num_ctx_for(prompt, num_predict),
+                        "num_thread":  _hw.recommended_num_thread(),
+                    },
                 },
             )
             if r.status_code >= 400:
@@ -922,6 +1068,7 @@ async def stream_text(model: str, prompt: str, *, think: bool = False, num_predi
         "options":  {
             "temperature": 0.3,
             "num_predict": num_predict,
+            "num_ctx":     _num_ctx_for(prompt, num_predict),
             "num_thread":  _hw.recommended_num_thread(),
         },
     }
@@ -938,6 +1085,10 @@ async def stream_text(model: str, prompt: str, *, think: bool = False, num_predi
                         obj = json.loads(line)
                     except Exception:
                         continue
+                    if isinstance(obj, dict) and obj.get("error"):
+                        # Ollama reports mid-stream failures (e.g. GPU out of
+                        # memory) as {"error": "..."} lines — never skip them.
+                        raise RuntimeError(f"Model '{model}' failed: {str(obj.get('error'))[:300]}")
                     msg = obj.get("message") or {}
                     th = msg.get("thinking")
                     if th:
@@ -960,28 +1111,72 @@ async def stream_text(model: str, prompt: str, *, think: bool = False, num_predi
 
 
 # ── IDP operations ────────────────────────────────────────────────────────────
+OCR_MAX_PAGES = 50
+OCR_PAGE_NUM_PREDICT = 2048
+OCR_TRUNCATION_NOTE = f"[OCR stopped after {OCR_MAX_PAGES} pages]"
+_OCR_PROMPT = (
+    "Perform OCR on the provided image. Extract every readable text element exactly as written, "
+    "preserving line breaks and reading order. Output ONLY the extracted text — no commentary."
+)
+
+
 async def run_ocr(doc: Document, model: str, page_range: tuple[int, int] | None = None) -> str:
-    """Run OCR on all (or a slice of) the document's page images."""
+    """Run OCR on all (or a slice of) the document's page images.
+
+    One vision call per page (so long scans are neither truncated by
+    num_predict nor capped at 16 images); each result fills
+    ``doc.page_texts[i]`` and ``doc.text`` is rebuilt from the pages. At most
+    OCR_MAX_PAGES pages are processed per call. Returns the joined OCR text.
+    """
     if not doc.page_images:
         return doc.text or "(no images available for OCR)"
 
-    images = doc.page_images
+    n_images = len(doc.page_images)
+    indices = list(range(n_images))
     if page_range:
         s, e = page_range
-        images = images[max(0, s - 1) : e]
+        indices = indices[max(0, s - 1) : e]
+    if not indices:
+        raise RuntimeError("No pages in the requested range to OCR")
 
-    prompt = (
-        "Perform OCR on the provided image(s). Extract every readable text element exactly as written, "
-        "preserving line breaks and reading order. Output ONLY the extracted text — no commentary."
-    )
-    text = await _ollama_vision_call(model, prompt, images, num_predict=4096)
-    # cache result
+    truncated = len(indices) > OCR_MAX_PAGES
+    indices = indices[:OCR_MAX_PAGES]
+
+    page_texts = list(doc.page_texts)
+    if len(page_texts) < n_images:
+        page_texts.extend([""] * (n_images - len(page_texts)))
+
+    ocr_parts: list[str] = []
+    for pos, i in enumerate(indices):
+        try:
+            text = await _ollama_vision_call(
+                model, _OCR_PROMPT, [doc.page_images[i]], num_predict=OCR_PAGE_NUM_PREDICT,
+            )
+        except RuntimeError as exc:
+            if pos == 0:
+                raise          # config problem (no/missing model, Ollama down) — surface it
+            log.warning("OCR failed for %s page %d: %s", doc.id, i + 1, exc)
+            ocr_parts.append(f"[OCR failed for page {i + 1}]")
+            continue
+        text = (text or "").strip()
+        ocr_parts.append(text)
+        # Keep native text when the OCR pass produced less (digital PDFs).
+        if text and len(text) > len((page_texts[i] or "").strip()):
+            page_texts[i] = text
+
+    doc.page_texts = page_texts
+    doc.pages = max(doc.pages, len(page_texts))
+    doc.text = "\n\n".join(page_texts).strip()
     doc.meta["last_ocr_at"] = int(time.time() * 1000)
     doc.meta["ocr_model"]   = model
-    if not doc.text:
-        doc.text = text
-    _save_registry()
-    return text
+    doc.meta["ocr_pages"]   = len(indices)
+    doc.meta["ocr_truncated"] = truncated
+    await save_registry_async()
+
+    joined = "\n\n".join(p for p in ocr_parts if p)
+    if truncated:
+        joined = f"{joined}\n\n{OCR_TRUNCATION_NOTE}".strip()
+    return joined
 
 
 async def summarize(doc: Document, model: str, style: str = "brief") -> str:
@@ -1086,8 +1281,17 @@ def build_prompt(op: str, doc: "Document", options: dict) -> str:
 
 def needs_ocr(doc: "Document") -> bool:
     """True when a document has page images but essentially no extracted text
-    (image-only PDF / scan) — i.e. OCR is required before it can be queried."""
-    return bool(doc.page_images) and len((doc.text or "").strip()) < 40
+    (image-only PDF / scan) — i.e. OCR is required before it can be queried.
+
+    Scales with page count so a multi-page scan carrying only a stamp or page
+    number per page still counts as needing OCR. A document that has already
+    been through run_ocr is not re-queued (blank scans would otherwise be
+    re-OCR'd on every query)."""
+    if not doc.page_images:
+        return False
+    if (doc.meta or {}).get("last_ocr_at"):
+        return False
+    return len((doc.text or "").strip()) < 40 * max(1, doc.pages or 0)
 
 
 def build_multi_prompt(question: str, contexts: list[tuple[str, str]]) -> str:

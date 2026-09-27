@@ -337,7 +337,9 @@ class TestVisionCall:
                 assert call_args[1] == "Compare these"
                 # Third arg is list with composite path
                 assert len(call_args[2]) == 1
-                assert "composite.png" in call_args[2][0]
+                composite_name = Path(call_args[2][0]).name
+                assert composite_name.startswith("composite_")
+                assert composite_name.endswith(".png")
 
                 assert result == "Single-image response"
 
@@ -347,9 +349,7 @@ class TestVisionCall:
         tmp_dir = Path("/tmp/test")
         tmp_dir.mkdir(exist_ok=True)
 
-        # Create a fake composite file that would be created
-        composite_path = tmp_dir / "composite.png"
-        composite_path.write_text("fake image data")
+        written: list[str] = []
 
         deps = MagicMock()
         deps.tmp_dir = MagicMock(return_value=tmp_dir)
@@ -360,6 +360,7 @@ class TestVisionCall:
                 # Make compose_comparison write the file
                 def fake_compose(ref, subj, out):
                     Path(out).write_text("composite")
+                    written.append(out)
                 mock_compose.side_effect = fake_compose
 
                 hooks = await build_hooks(deps)
@@ -373,8 +374,10 @@ class TestVisionCall:
                         ["/subj.png"],
                     )
 
-                # Composite should be cleaned up
-                assert not composite_path.exists()
+                # Composite (unique per call) should be cleaned up
+                assert len(written) == 1
+                assert Path(written[0]).name.startswith("composite_")
+                assert not Path(written[0]).exists()
 
 
 # ────────────────────────────────────────────────────────────────────────────
