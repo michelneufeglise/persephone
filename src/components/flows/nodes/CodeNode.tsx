@@ -33,7 +33,7 @@ export function CodeNode({ id, data, selected }: CodeNodeProps) {
             value={data.config.code}
             onChange={e => handleChange({ code: e.target.value })}
             placeholder="// 'input' is in scope&#10;// must return a value&#10;return input.toUpperCase();"
-            className="w-full px-2 py-2 rounded-lg bg-[var(--bg-secondary)] text-xs text-[var(--text-primary)] border border-[var(--border)] font-mono resize-none h-32 focus:outline-none focus:ring-1 focus:ring-[var(--accent)] transition-all leading-relaxed"
+            className="glass-input w-full px-2 py-2 text-xs font-mono resize-none h-32 leading-relaxed"
           />
         </div>
 

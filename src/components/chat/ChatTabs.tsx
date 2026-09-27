@@ -117,7 +117,7 @@ export function ChatTabs() {
 
   if (tabs.length === 0) {
     return (
-      <div className="flex items-center px-3 py-2 border-b border-[var(--border)] bg-[var(--bg-glass-strong)]">
+      <div className="flex items-center px-3 py-2 border-b border-[var(--glass-stroke)]">
         <button
           onClick={() => createNewConversation()}
           className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium text-[var(--accent)] hover:bg-[var(--accent-dim)]/40 transition-colors"
@@ -129,7 +129,7 @@ export function ChatTabs() {
   }
 
   return (
-    <div className="flex items-center gap-0.5 px-2 pt-2 border-b border-[var(--border)] bg-[var(--bg-glass-strong)] overflow-hidden">
+    <div className="flex items-center gap-0.5 px-2 pt-2 border-b border-[var(--glass-stroke)] overflow-hidden">
       {/* Scrollable tab row — hides overflow so a long list doesn't wrap. */}
       <div
         ref={stripRef}
@@ -211,8 +211,8 @@ const TabButton = forwardRef<HTMLButtonElement, TabButtonProps>(function TabButt
       className={`group relative flex-shrink-0 flex items-center gap-1.5 min-w-[120px] max-w-[220px]
         px-3 py-1.5 rounded-t-lg text-xs font-medium transition-colors border-t border-l border-r ${
         active
-          ? 'text-[var(--text-primary)] bg-[var(--bg-primary)] border-[var(--border)] shadow-[0_-1px_0_var(--accent)]'
-          : 'text-[var(--text-muted)] bg-[var(--bg-secondary)]/60 border-transparent hover:text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]'
+          ? 'text-[var(--text-primary)] bg-[var(--glass-fill-hover)] border-[var(--glass-stroke)] shadow-[0_-1px_0_var(--accent)]'
+          : 'text-[var(--text-muted)] border-transparent hover:text-[var(--text-secondary)] hover:bg-[var(--glass-fill-hover)]'
       }`}
       title={label}
     >
@@ -227,7 +227,7 @@ const TabButton = forwardRef<HTMLButtonElement, TabButtonProps>(function TabButt
           aria-label="Close tab"
           className={`flex-shrink-0 w-4 h-4 rounded-sm flex items-center justify-center transition-opacity ${
             hover || active ? 'opacity-100' : 'opacity-0'
-          } hover:bg-[var(--bg-tertiary)] hover:text-red-300 text-[var(--text-muted)]`}
+          } hover:bg-[var(--glass-fill-hover)] hover:text-red-300 text-[var(--text-muted)]`}
         >
           <X className="w-2.5 h-2.5" />
         </span>

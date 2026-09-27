@@ -90,7 +90,7 @@ export function RightPanel() {
       style={{ minWidth: 320 }}
     >
       {/* Header with tab switcher */}
-      <div className="flex items-center gap-1 px-2.5 py-2 border-b border-[var(--border)] bg-[var(--bg-glass-strong)]">
+      <div className="flex items-center gap-1 px-2.5 py-2 border-b border-[var(--glass-stroke)]">
         <TabButton
           icon={<Volume2 className="w-3.5 h-3.5" />}
           label="Voice"
@@ -107,7 +107,7 @@ export function RightPanel() {
         <div className="flex-1" />
         <button
           onClick={() => setVoicePanelOpen(false)}
-          className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)] transition-colors"
+          className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--glass-fill-hover)] transition-colors"
           title="Collapse"
         >
           <ChevronRight className="w-4 h-4" />
@@ -137,8 +137,8 @@ function TabButton({
       onClick={onClick}
       className={`relative flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition-colors ${
         active
-          ? 'text-[var(--text-primary)] bg-[var(--bg-tertiary)]'
-          : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-secondary)]'
+          ? 'text-[var(--text-primary)] bg-[var(--glass-fill-hover)]'
+          : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--glass-fill-hover)]'
       }`}
     >
       <span className={active ? 'text-[var(--accent)]' : ''}>{icon}</span>

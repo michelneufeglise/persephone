@@ -97,7 +97,7 @@ export function VoicePanel() {
         </span>
         <button
           onClick={() => setShowConfig(v => !v)}
-          className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+          className="p-1.5 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--glass-fill-hover)] transition-colors"
         >
           <Settings2 className="w-3.5 h-3.5" />
         </button>
@@ -140,7 +140,7 @@ export function VoicePanel() {
                       className={`p-2.5 rounded-lg text-left border transition-all duration-200 ${
                         tts.voice === v.id
                           ? 'border-[var(--accent)] bg-[var(--accent-dim)] shadow-sm shadow-[var(--accent-glow)]'
-                          : 'border-[var(--border)] bg-[var(--bg-tertiary)] hover:border-[var(--border-bright)]'
+                          : 'border-[var(--border)] glass-card hover:border-[var(--border-bright)]'
                       }`}
                     >
                       <div className="flex items-center gap-1.5">

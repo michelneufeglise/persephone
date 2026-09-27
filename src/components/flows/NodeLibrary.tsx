@@ -51,7 +51,7 @@ export function NodeLibrary({ onDragStart, onAddNode }: NodeLibraryProps) {
             animate={{ opacity: 1, x: 0 }}
             exit={{ opacity: 0, x: 10 }}
             onClick={() => setIsOpen(true)}
-            className="absolute right-4 top-1/2 -translate-y-1/2 z-20 p-2 rounded-lg bg-[var(--bg-glass)] border border-[var(--border-glass)] hover:bg-[var(--accent-dim)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors group"
+            className="glass-strong absolute right-4 top-1/2 -translate-y-1/2 z-20 p-2 rounded-lg text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors group hover:bg-[var(--glass-fill-hover)]"
             title="Open library"
           >
             <Library className="w-5 h-5" />
@@ -71,14 +71,14 @@ export function NodeLibrary({ onDragStart, onAddNode }: NodeLibraryProps) {
             className="absolute right-0 top-0 bottom-0 w-72 glass rounded-l-2xl flex flex-col shadow-deep z-20 overflow-hidden"
           >
             {/* Header */}
-            <div className="px-4 py-3 border-b border-[var(--border)] bg-[var(--bg-glass-strong)] flex items-center justify-between gap-2 flex-shrink-0">
+            <div className="px-4 py-3 border-b border-[var(--glass-stroke)] flex items-center justify-between gap-2 flex-shrink-0">
               <div className="flex items-center gap-2 flex-1 min-w-0">
                 <Library className="w-4 h-4 text-[var(--accent)] flex-shrink-0" />
                 <h3 className="text-xs font-semibold text-[var(--text-primary)]">Node Library</h3>
               </div>
               <button
                 onClick={() => setIsOpen(false)}
-                className="p-1 rounded hover:bg-[var(--accent-dim)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors flex-shrink-0"
+                className="p-1 rounded hover:bg-[var(--glass-fill-hover)] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors flex-shrink-0"
                 title="Collapse library"
               >
                 <ChevronRight className="w-4 h-4" />
@@ -86,7 +86,7 @@ export function NodeLibrary({ onDragStart, onAddNode }: NodeLibraryProps) {
             </div>
 
             {/* Search input */}
-            <div className="px-4 py-3 border-b border-[var(--border)] flex-shrink-0">
+            <div className="px-4 py-3 border-b border-[var(--glass-stroke)] flex-shrink-0">
               <div className="relative">
                 <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)] pointer-events-none" />
                 <input
@@ -94,7 +94,7 @@ export function NodeLibrary({ onDragStart, onAddNode }: NodeLibraryProps) {
                   placeholder="Search nodes…"
                   value={searchQuery}
                   onChange={e => setSearchQuery(e.target.value)}
-                  className="w-full pl-8 pr-3 py-1.5 rounded-lg bg-[var(--bg-secondary)] text-xs text-[var(--text-primary)] border border-[var(--border)] placeholder:text-[var(--text-muted)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)] transition-all"
+                  className="glass-input w-full pl-8 pr-3 py-1.5 text-xs"
                 />
               </div>
             </div>
@@ -118,7 +118,7 @@ export function NodeLibrary({ onDragStart, onAddNode }: NodeLibraryProps) {
                           draggable
                           onDragStart={handleDragStart(type)}
                           onClick={() => onAddNode(type)}
-                          className="group p-3 rounded-lg bg-[var(--bg-secondary)] border border-[var(--border)] hover:border-[var(--border-bright)] cursor-move transition-all hover:shadow-lg hover:translate-y-[-4px] hover:translate-x-[4px] active:scale-95"
+                          className="glass-card glass-card-hover group p-3 rounded-lg cursor-move transition-all hover:shadow-lg hover:translate-y-[-4px] hover:translate-x-[4px] active:scale-95"
                           style={{
                             borderLeft: `2px solid ${meta.color}`,
                           }}
@@ -163,7 +163,7 @@ export function NodeLibrary({ onDragStart, onAddNode }: NodeLibraryProps) {
             </div>
 
             {/* Footer hint */}
-            <div className="px-4 py-2 border-t border-[var(--border)] text-xs text-[var(--text-muted)] text-center flex-shrink-0 bg-[var(--bg-glass-strong)]">
+            <div className="px-4 py-2 border-t border-[var(--glass-stroke)] text-xs text-[var(--text-muted)] text-center flex-shrink-0">
               Drag or click to add
             </div>
           </motion.div>

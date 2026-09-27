@@ -40,7 +40,7 @@ export function ToolNode({ id, data, selected }: ToolNodeProps) {
           <select
             value={data.config.tool}
             onChange={e => handleChange({ tool: e.target.value })}
-            className="w-full px-2 py-1.5 rounded-lg bg-[var(--bg-secondary)] text-xs text-[var(--text-primary)] border border-[var(--border)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)] transition-all"
+            className="glass-input w-full px-2 py-1.5 text-xs"
           >
             <option value="">Select tool…</option>
             {tools.map(t => (
@@ -53,7 +53,7 @@ export function ToolNode({ id, data, selected }: ToolNodeProps) {
 
         {/* Tool description */}
         {selectedTool && (
-          <div className="text-xs text-[var(--text-muted)] bg-[var(--bg-secondary)] p-2 rounded-lg border border-[var(--border)]">
+          <div className="text-xs text-[var(--text-muted)] glass-card p-2">
             {selectedTool.description}
           </div>
         )}

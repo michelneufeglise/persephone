@@ -124,7 +124,7 @@ export function AuxiliarySection() {
         <button
           onClick={() => refresh(true)}
           disabled={refreshing}
-          className="p-2 rounded-lg border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors disabled:opacity-50"
+          className="p-2 rounded-lg glass-card text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors disabled:opacity-50"
           title="Refresh installed Ollama models + resolved defaults"
         >
           {refreshing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
@@ -146,7 +146,7 @@ export function AuxiliarySection() {
           return (
             <Panel key={cat.key} className="p-3">
               <div className="flex items-start gap-3">
-                <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 bg-[var(--accent-dim)]/40 border border-[var(--border)]">
+                <div className="w-10 h-10 rounded-xl flex items-center justify-center flex-shrink-0 glass-card">
                   <Icon className="w-4 h-4 text-[var(--accent)]" />
                 </div>
                 <div className="flex-1 min-w-0 space-y-2">

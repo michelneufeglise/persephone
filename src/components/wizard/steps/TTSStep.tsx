@@ -93,7 +93,7 @@ export function TTSStep({ voice, speed, onVoiceChange, onSpeedChange }: TTSStepP
       </div>
 
       {/* Speed control */}
-      <div className="p-4 rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)]">
+      <div className="p-4 rounded-xl glass-card">
         <Slider
           label="Speech Speed"
           value={speed}
@@ -114,10 +114,10 @@ export function TTSStep({ voice, speed, onVoiceChange, onSpeedChange }: TTSStepP
             initial={{ opacity: 0, y: 4 }}
             animate={{ opacity: 1, y: 0 }}
             onClick={() => onVoiceChange(v.id)}
-            className={`relative flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition-all ${
+            className={`relative flex items-center gap-3 p-3 rounded-xl cursor-pointer transition-all glass-card ${
               voice === v.id
-                ? 'border-[var(--accent)] bg-[var(--accent-dim)] shadow-md shadow-[var(--accent-glow)]'
-                : 'border-[var(--border)] bg-[var(--bg-tertiary)] hover:border-[var(--border-bright)]'
+                ? 'glass-card-active shadow-md shadow-[var(--accent-glow)]'
+                : 'glass-card-hover'
             }`}
           >
             {/* Gender indicator */}

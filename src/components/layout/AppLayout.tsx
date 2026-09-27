@@ -3,6 +3,7 @@ import { useAppStore } from '@/store/appStore'
 import { Sidebar } from './Sidebar'
 import { ChatWindow } from '@/components/chat/ChatWindow'
 import { RightPanel } from '@/components/layout/RightPanel'
+import { PanelErrorBoundary } from '@/components/ui/PanelErrorBoundary'
 import { SettingsView } from '@/components/settings/SettingsView'
 import { MemoryView } from '@/components/memory/MemoryView'
 import { ResearchView } from '@/components/research/ResearchView'
@@ -29,27 +30,14 @@ export function AppLayout() {
       />
 
       {/* ── Atmospheric layers (fixed under shell) ─────────────────────── */}
-      {/* Backdrop illustration sits DEEPEST — the aurora / vignette / grain
-          stack on top of it so the artwork feels absorbed into the theme
-          rather than pasted on. Chat/sidebar/right-panel glass surfaces
-          sit above via `z-10` and stay legible via backdrop-blur. */}
+      {/* Wallpaper (vivid per-theme mesh) → illustration softly blended → vignette → grain.
+          Chat/sidebar/right-panel glass surfaces sit above via `z-10` and stay legible. */}
+      <div className="atmos atmos-wallpaper" />
       <div className="atmos atmos-backdrop" />
-      <div className="atmos atmos-aurora" />
       <div className="atmos atmos-vignette" />
       <div className="atmos atmos-grain" />
 
-      {/* Subtle scanline / horizon line near the top */}
-      <div
-        className="atmos"
-        style={{
-          background:
-            'linear-gradient(180deg, transparent 0, var(--border) 1px, transparent 2px), linear-gradient(180deg, var(--accent-dim) 0%, transparent 12%)',
-          opacity: 0.35,
-          height: '120px',
-        }}
-      />
-
-      <div className="relative z-10 flex flex-1 overflow-hidden">
+      <div className="relative z-10 flex flex-1 overflow-hidden p-3 gap-3">
         <Sidebar />
 
         <div className="flex-1 flex overflow-hidden relative">
@@ -61,12 +49,16 @@ export function AppLayout() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -6 }}
                 transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
-                className="flex-1 flex overflow-hidden p-4 gap-4"
+                className="flex-1 flex overflow-hidden gap-3"
               >
-                <div className="flex-1 overflow-hidden">
-                  <ChatWindow />
+                <div className="flex-1 min-w-0 overflow-hidden">
+                  <PanelErrorBoundary label="Chat" resetKey={currentView} framed>
+                    <ChatWindow />
+                  </PanelErrorBoundary>
                 </div>
-                <RightPanel />
+                <PanelErrorBoundary label="Right panel" resetKey={currentView} framed>
+                  <RightPanel />
+                </PanelErrorBoundary>
               </motion.div>
             ) : currentView === 'settings' ? (
               <motion.div
@@ -75,9 +67,11 @@ export function AppLayout() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -6 }}
                 transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
-                className="flex-1 p-4"
+                className="flex-1 min-w-0 overflow-hidden"
               >
-                <SettingsView />
+                <PanelErrorBoundary label="Settings" resetKey={currentView} framed>
+                  <SettingsView />
+                </PanelErrorBoundary>
               </motion.div>
             ) : currentView === 'reels' ? (
               <motion.div
@@ -86,9 +80,11 @@ export function AppLayout() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -6 }}
                 transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
-                className="flex-1 p-4"
+                className="flex-1 min-w-0 overflow-hidden"
               >
-                <ReelsView />
+                <PanelErrorBoundary label="Reels" resetKey={currentView} framed>
+                  <ReelsView />
+                </PanelErrorBoundary>
               </motion.div>
             ) : currentView === 'documents' ? (
               <motion.div
@@ -97,9 +93,11 @@ export function AppLayout() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -6 }}
                 transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
-                className="flex-1 p-4 overflow-hidden"
+                className="flex-1 min-w-0 overflow-hidden"
               >
-                <DocumentsPanel />
+                <PanelErrorBoundary label="Documents" resetKey={currentView} framed>
+                  <DocumentsPanel />
+                </PanelErrorBoundary>
               </motion.div>
             ) : currentView === 'music' ? (
               <motion.div
@@ -108,9 +106,11 @@ export function AppLayout() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -6 }}
                 transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
-                className="flex-1 p-4"
+                className="flex-1 min-w-0 overflow-hidden"
               >
-                <AbletonView />
+                <PanelErrorBoundary label="Ableton" resetKey={currentView} framed>
+                  <AbletonView />
+                </PanelErrorBoundary>
               </motion.div>
             ) : currentView === 'research' ? (
               <motion.div
@@ -119,9 +119,11 @@ export function AppLayout() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -6 }}
                 transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
-                className="flex-1 p-4"
+                className="flex-1 min-w-0 overflow-hidden"
               >
-                <ResearchView />
+                <PanelErrorBoundary label="Research" resetKey={currentView} framed>
+                  <ResearchView />
+                </PanelErrorBoundary>
               </motion.div>
             ) : currentView === 'workers' ? (
               <motion.div
@@ -130,9 +132,11 @@ export function AppLayout() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -6 }}
                 transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
-                className="flex-1 overflow-hidden"
+                className="flex-1 min-w-0 overflow-hidden glass rounded-3xl"
               >
-                <WorkersView />
+                <PanelErrorBoundary label="Workers" resetKey={currentView} framed>
+                  <WorkersView />
+                </PanelErrorBoundary>
               </motion.div>
             ) : currentView === 'tasks' ? (
               <motion.div
@@ -141,9 +145,11 @@ export function AppLayout() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -6 }}
                 transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
-                className="flex-1 p-4 overflow-hidden"
+                className="flex-1 min-w-0 overflow-hidden"
               >
-                <TasksView />
+                <PanelErrorBoundary label="Tasks" resetKey={currentView} framed>
+                  <TasksView />
+                </PanelErrorBoundary>
               </motion.div>
             ) : currentView === 'flows' ? (
               <motion.div
@@ -152,9 +158,11 @@ export function AppLayout() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -6 }}
                 transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
-                className="flex-1 overflow-hidden"
+                className="flex-1 min-w-0 overflow-hidden glass rounded-3xl"
               >
-                <FlowsView />
+                <PanelErrorBoundary label="Flows" resetKey={currentView} framed>
+                  <FlowsView />
+                </PanelErrorBoundary>
               </motion.div>
             ) : (
               <motion.div
@@ -163,9 +171,11 @@ export function AppLayout() {
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0, y: -6 }}
                 transition={{ duration: 0.35, ease: [0.22, 1, 0.36, 1] }}
-                className="flex-1 p-4"
+                className="flex-1 min-w-0 overflow-hidden"
               >
-                <MemoryView />
+                <PanelErrorBoundary label="Memory" resetKey={currentView} framed>
+                  <MemoryView />
+                </PanelErrorBoundary>
               </motion.div>
             )}
           </AnimatePresence>

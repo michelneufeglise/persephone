@@ -35,7 +35,7 @@ export function ModelActivity({
 
   return (
     <div className={clsx('space-y-1.5', className)}>
-      <div className="h-1.5 rounded-full bg-[var(--bg-secondary)] overflow-hidden relative">
+      <div className="h-1.5 rounded-full bg-[var(--glass-fill)] overflow-hidden relative">
         {indeterminate ? (
           <div
             className="absolute inset-y-0 w-1/3 bg-[var(--accent)] rounded-full"

@@ -106,9 +106,9 @@ export function ModelSelector() {
       <button
         ref={triggerRef}
         onClick={() => setOpen(o => !o)}
-        className="group inline-flex items-center gap-2 bg-[var(--bg-tertiary)] border border-[var(--border)]
+        className="group inline-flex items-center gap-2 glass-card glass-card-hover
           rounded-lg pl-2.5 pr-2 py-1.5 text-xs text-[var(--text-primary)] font-mono cursor-pointer
-          hover:border-[var(--border-bright)] focus:outline-none focus:border-[var(--accent)] transition-all"
+          focus:outline-none transition-all"
         title={
           autoRoute
             ? `Auto-route on · preferred: ${activeModel}`
@@ -142,7 +142,7 @@ export function ModelSelector() {
         <span
           className={clsx(
             'ml-1 relative inline-block w-6 h-3 rounded-full transition-colors',
-            autoRoute ? 'bg-[var(--accent)]' : 'bg-[var(--bg-secondary)]',
+            autoRoute ? 'bg-[var(--accent)]' : 'bg-[var(--glass-fill)]',
           )}
         >
           <motion.span
@@ -166,7 +166,7 @@ export function ModelSelector() {
       )}
       {mcps.length > 0 && (
         <div
-          className="flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-[var(--bg-tertiary)] border border-[var(--border)] text-[10px] text-[var(--text-secondary)]"
+          className="flex items-center gap-1 px-1.5 py-0.5 rounded-full glass-card text-[10px] text-[var(--text-secondary)]"
           title={`Connected tools: ${mcps.map(m => m.name).join(', ')}`}
         >
           <Wrench className="w-3 h-3" />
@@ -282,7 +282,7 @@ function ModelRow({
         'group relative rounded-xl border p-3 cursor-pointer transition-all duration-200 overflow-hidden',
         active
           ? 'border-[var(--accent)] bg-[var(--accent-dim)] shadow-[var(--shadow-glow)]'
-          : 'border-transparent hover:border-[var(--border-bright)] hover:bg-[var(--bg-tertiary)]',
+          : 'border-transparent hover:border-[var(--border-bright)] hover:bg-[var(--glass-fill-hover)]',
       )}
       onClick={onSelect}
     >
@@ -294,14 +294,12 @@ function ModelRow({
             </span>
             <TypeChip meta={meta} />
             {paramsLabel && (
-              <span className="text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded
-                bg-[var(--bg-secondary)] border border-[var(--border)] text-[var(--text-secondary)]">
+              <span className="text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded glass-card text-[var(--text-secondary)]">
                 {paramsLabel}
               </span>
             )}
             {meta.contextK && (
-              <span className="text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded
-                bg-[var(--bg-secondary)] border border-[var(--border)] text-[var(--text-muted)]">
+              <span className="text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded glass-card text-[var(--text-muted)]">
                 {meta.contextK}K ctx
               </span>
             )}
@@ -397,7 +395,7 @@ function ModelRow({
 
 function Spec({ icon: Icon, label, value }: { icon: React.ElementType; label: string; value: string }) {
   return (
-    <div className="flex items-center gap-1.5 px-2 py-1 rounded bg-[var(--bg-secondary)] border border-[var(--border)]">
+    <div className="flex items-center gap-1.5 px-2 py-1 rounded glass-card">
       <Icon className="w-3 h-3 text-[var(--text-muted)] flex-shrink-0" />
       <div className="min-w-0">
         <div className="text-[8px] uppercase tracking-wider text-[var(--text-muted)]">{label}</div>

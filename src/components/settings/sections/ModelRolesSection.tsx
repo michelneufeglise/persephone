@@ -46,6 +46,10 @@ const ROLES = [
     description: 'Reasons across several selected documents at once (RAG). Used by the Documents panel\'s multi-doc chat. Falls back to Documents/Main Chat.',
   },
   {
+    key: 'web_lookup_model', label: 'Web Lookup (tools)', required: false,
+    description: 'Tool-calling model the Documents agent uses to search the web / LinkedIn when you ask it to verify a person online. Needs tool support — small instruct models work best (e.g. qwen3:4b-instruct-2507, qwen2.5:7b-instruct). Empty = auto-select.',
+  },
+  {
     key: 'embed_model', label: 'Embeddings', required: false,
     description: 'Powers semantic search, document RAG, and memory. Use a dedicated embedding model (e.g. mxbai-embed-large, nomic-embed-text, bge-m3).',
   },
@@ -65,7 +69,7 @@ type RoleValues = Record<RoleKey, string>
 const EMPTY_ROLES: RoleValues = {
   active_model: '', judge_model: '', vision_model: '', code_model: '',
   ocr_model: '', docs_model: '', handwriting_model: '', tables_model: '',
-  multidoc_model: '', embed_model: '',
+  multidoc_model: '', web_lookup_model: '', embed_model: '',
   ableton_composer_model: '', ableton_deep_model: '',
 }
 
@@ -198,7 +202,7 @@ export function ModelRolesSection() {
       {loading ? (
         <div className="space-y-3">
           {ROLES.map(r => (
-            <div key={r.key} className="h-[88px] rounded-xl bg-[var(--bg-tertiary)] animate-pulse" />
+            <div key={r.key} className="h-[88px] rounded-xl glass-card animate-pulse" />
           ))}
         </div>
       ) : (

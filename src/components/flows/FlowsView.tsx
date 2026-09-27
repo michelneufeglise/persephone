@@ -210,7 +210,7 @@ function FlowsViewContent() {
     <FlowNodeContext.Provider value={{ getNodeState, updateNodeConfig }}>
       <div
         ref={flowsRootRef}
-        className="relative w-full h-full overflow-hidden bg-[var(--bg-primary)]"
+        className="relative w-full h-full overflow-hidden bg-transparent"
       >
         {/* Canvas */}
         <ReactFlow
@@ -252,11 +252,11 @@ function FlowsViewContent() {
             value={flowName}
             onChange={e => setFlowName(e.target.value)}
             placeholder="Flow name…"
-            className="text-xs font-medium text-[var(--text-primary)] bg-transparent border-none outline-none min-w-48 placeholder:text-[var(--text-muted)]"
+            className="glass-input text-xs font-medium min-w-48"
           />
 
           {/* Divider */}
-          <div className="w-px h-5 bg-[var(--border)]" />
+          <div className="w-px h-5 bg-[var(--glass-stroke)]" />
 
           {/* Flow switcher (if multiple flows) */}
           {flows.length > 1 && (
@@ -269,20 +269,20 @@ function FlowsViewContent() {
                     useAppStore.getState().setActiveFlow(flowId)
                   }
                 }}
-                className="text-xs font-medium text-[var(--text-primary)] bg-[var(--bg-secondary)] border border-[var(--border)] rounded-lg px-2 py-1 outline-none focus:ring-1 focus:ring-[var(--accent)] transition-all"
+                className="glass-input text-xs font-medium px-2 py-1"
               >
                 {flows.map(f => (
                   <option key={f.id} value={f.id}>{f.name}</option>
                 ))}
               </select>
-              <div className="w-px h-5 bg-[var(--border)]" />
+              <div className="w-px h-5 bg-[var(--glass-stroke)]" />
             </>
           )}
 
           {/* Action buttons */}
           <button
             onClick={handleNewFlow}
-            className="p-2 rounded-lg text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--accent-dim)] transition-colors"
+            className="p-2 rounded-lg text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--glass-fill-hover)] transition-colors"
             title="New flow"
           >
             <Plus className="w-4 h-4" />
@@ -290,7 +290,7 @@ function FlowsViewContent() {
 
           <button
             onClick={handleSaveFlow}
-            className="p-2 rounded-lg text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--accent-dim)] transition-colors"
+            className="p-2 rounded-lg text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--glass-fill-hover)] transition-colors"
             title="Save flow name"
           >
             <Save className="w-4 h-4" />
@@ -298,7 +298,7 @@ function FlowsViewContent() {
 
           <button
             onClick={() => fitView()}
-            className="p-2 rounded-lg text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--accent-dim)] transition-colors"
+            className="p-2 rounded-lg text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--glass-fill-hover)] transition-colors"
             title="Fit to view"
           >
             <ZoomIn className="w-4 h-4" />
@@ -313,7 +313,7 @@ function FlowsViewContent() {
           </button>
 
           {/* Divider */}
-          <div className="w-px h-5 bg-[var(--border)]" />
+          <div className="w-px h-5 bg-[var(--glass-stroke)]" />
 
           {/* Run button */}
           <button

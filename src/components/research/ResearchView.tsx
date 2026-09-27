@@ -57,7 +57,7 @@ export function ResearchView() {
   return (
     <div className="h-full glass rounded-3xl overflow-hidden flex flex-col">
       {/* Header */}
-      <div className="px-6 py-4 border-b border-[var(--border)] bg-[var(--bg-glass-strong)]">
+      <div className="px-6 py-4 border-b border-[var(--glass-stroke)]">
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <PersephoneIcon size={40} />
@@ -70,7 +70,7 @@ export function ResearchView() {
               </p>
             </div>
           </div>
-          <div className="flex bg-[var(--bg-tertiary)] rounded-xl p-1 gap-1">
+          <div className="flex glass-card rounded-full p-0.5 gap-0.5">
             <TabBtn active={tab === 'new'}     onClick={() => setTab('new')}     icon={Sparkles} label="New" />
             <TabBtn active={tab === 'history'} onClick={() => setTab('history')} icon={Library}  label="History" />
             <TabBtn active={tab === 'kb'}      onClick={() => setTab('kb')}      icon={Search}   label="KB search" />
@@ -221,8 +221,8 @@ function ResearchRun({ onComplete, onOpen }: {
           placeholder="e.g. What are the practical differences between sqlite-vec and lancedb for local RAG in 2026?"
           rows={3}
           disabled={running}
-          className="w-full bg-[var(--bg-primary)] border border-[var(--border)] rounded-xl px-3 py-2.5 text-sm
-            text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]
+          className="w-full glass-input rounded-xl px-3 py-2.5 text-sm
+            text-[var(--text-primary)] placeholder:text-[var(--text-muted)]
             transition-colors disabled:opacity-60"
         />
         <div className="flex items-center justify-between gap-3">
@@ -263,7 +263,7 @@ function ResearchRun({ onComplete, onOpen }: {
       {report && (
         <Panel className="p-5">
           {doneRun && (
-            <div className="flex items-center justify-between gap-3 mb-3 pb-3 border-b border-[var(--border)]">
+            <div className="flex items-center justify-between gap-3 mb-3 pb-3 border-b border-[var(--glass-stroke)]">
               <span className="text-[10px] font-mono uppercase tracking-[0.22em] text-[var(--accent)]">
                 ⊹ report ready · {doneRun.duration.toFixed(1)}s · {doneRun.sources.length} sources
               </span>
@@ -367,7 +367,7 @@ function RunDetail({ run, onClose }: { run: RunFull; onClose: () => void }) {
         className="m-4 w-full max-w-4xl glass rounded-3xl overflow-hidden flex flex-col"
         onClick={e => e.stopPropagation()}
       >
-        <div className="px-5 py-4 border-b border-[var(--border)] flex items-start gap-3">
+        <div className="px-5 py-4 border-b border-[var(--glass-stroke)] flex items-start gap-3">
           <div className="flex-1 min-w-0">
             <div className="text-[10px] font-mono uppercase tracking-[0.28em] text-[var(--text-muted)]">Research run</div>
             <div className="text-base text-[var(--text-primary)] font-display mt-0.5">{run.query}</div>
@@ -404,7 +404,7 @@ function RunDetail({ run, onClose }: { run: RunFull; onClose: () => void }) {
               <div className="space-y-1">
                 {run.sources.map(s => (
                   <a key={s.id} href={s.url} target="_blank" rel="noreferrer"
-                    className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border)] hover:border-[var(--border-bright)] text-xs transition-colors">
+                    className="flex items-center gap-2 px-3 py-2 rounded-lg glass-card glass-card-hover text-xs">
                     <Globe className={clsx('w-3.5 h-3.5 flex-shrink-0', s.ok ? 'text-[var(--accent)]' : 'text-red-400')} />
                     <span className="text-[var(--text-primary)] truncate flex-1">{s.title || s.url}</span>
                     <span className="text-[10px] font-mono text-[var(--text-muted)]">{(s.chars / 1000).toFixed(1)}KB</span>
@@ -439,8 +439,8 @@ function KBSearch() {
 
   return (
     <div className="max-w-4xl mx-auto space-y-4">
-      <Panel className="p-3">
-        <div className="flex items-center gap-2">
+      <Panel className="p-0 glass-card rounded-2xl overflow-hidden">
+        <div className="flex items-center gap-2 px-3 py-2.5">
           <Search className="w-4 h-4 text-[var(--text-muted)] flex-shrink-0" />
           <input
             value={q}
@@ -492,9 +492,9 @@ function TabBtn({ active, onClick, icon: Icon, label }:
   { active: boolean; onClick: () => void; icon: React.ElementType; label: string }) {
   return (
     <button onClick={onClick}
-      className={clsx('flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200',
+      className={clsx('flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-200',
         active
-          ? 'text-[var(--text-primary)] bg-[var(--bg-primary)] shadow-[var(--shadow-soft)]'
+          ? 'text-[var(--text-primary)] bg-[var(--glass-fill-hover)] shadow-[inset_0_1px_0_var(--glass-highlight)]'
           : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]')}>
       <Icon className={clsx('w-3.5 h-3.5', active && 'text-[var(--accent)]')} />
       {label}

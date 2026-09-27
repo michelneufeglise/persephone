@@ -131,7 +131,7 @@ export function TasksView() {
   return (
     <div className="h-full glass rounded-3xl overflow-hidden flex flex-col">
       {/* Header */}
-      <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)] bg-[var(--bg-glass-strong)]">
+      <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--glass-stroke)]">
         <div className="flex items-center gap-2.5">
           <CalendarClock className="w-5 h-5 text-[var(--accent)]" />
           <div>
@@ -141,7 +141,7 @@ export function TasksView() {
         </div>
         <div className="flex items-center gap-1.5">
           <button onClick={() => void refresh()}
-            className="text-xs text-[var(--text-muted)] hover:text-[var(--accent)] p-1.5 rounded-md hover:bg-[var(--bg-tertiary)] transition-colors"
+            className="text-xs text-[var(--text-muted)] hover:text-[var(--accent)] p-1.5 rounded-md hover:bg-[var(--glass-fill-hover)] transition-colors"
             title="Refresh">
             <RefreshCw className={clsx('w-3.5 h-3.5', loading && 'animate-spin')} />
           </button>
@@ -155,7 +155,7 @@ export function TasksView() {
       {/* Body */}
       <div className="flex-1 flex overflow-hidden">
         {/* Left: task list */}
-        <div className="w-80 flex-shrink-0 border-r border-[var(--border)] overflow-y-auto bg-[var(--bg-secondary)]/40"
+        <div className="w-80 flex-shrink-0 border-r border-[var(--glass-stroke)] overflow-y-auto"
           style={{ scrollbarWidth: 'thin' }}>
           {loading && tasks.length === 0 ? (
             <div className="flex items-center gap-2 text-sm text-[var(--text-muted)] justify-center py-10">
@@ -184,7 +184,7 @@ export function TasksView() {
         </div>
 
         {/* Right: detail or editor */}
-        <div className="flex-1 overflow-y-auto bg-[var(--bg-secondary)]/20" style={{ scrollbarWidth: 'thin' }}>
+        <div className="flex-1 overflow-y-auto" style={{ scrollbarWidth: 'thin' }}>
           <AnimatePresence mode="wait">
             {mode.kind === 'empty' ? (
               <motion.div key="empty" className="h-full flex items-center justify-center p-10 text-center"
@@ -251,7 +251,7 @@ function TaskCard({
         'group rounded-xl border p-3 cursor-pointer transition-colors',
         selected
           ? 'border-[var(--accent)] bg-[var(--accent-dim)]'
-          : 'border-[var(--border)] bg-[var(--bg-tertiary)]/50 hover:border-[var(--border-bright)] hover:bg-[var(--bg-tertiary)]',
+          : 'border-[var(--border)] bg-[var(--bg-tertiary)]/50 hover:border-[var(--border-bright)] hover:bg-[var(--glass-fill-hover)]',
       )}
     >
       <div className="flex items-start gap-2">
@@ -390,7 +390,7 @@ function TaskDetail({
         <InfoTile label="Last run"  value={data.lastRunTs ? formatFull(data.lastRunTs * 1000) : '—'} />
       </div>
 
-      <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-tertiary)] p-4">
+      <div className="glass-card rounded-xl p-4">
         <div className="text-xs text-[var(--text-muted)] uppercase tracking-wider mb-2 font-medium">Prompt</div>
         <pre className="text-sm text-[var(--text-primary)] whitespace-pre-wrap font-sans leading-relaxed max-h-64 overflow-y-auto">
           {data.prompt}
@@ -400,19 +400,19 @@ function TaskDetail({
       {(data.toolIds.length > 0 || data.skillNames.length > 0) && (
         <div className="grid grid-cols-2 gap-3">
           {data.toolIds.length > 0 && (
-            <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-tertiary)] p-4">
+            <div className="glass-card rounded-xl p-4">
               <div className="text-xs text-[var(--text-muted)] uppercase tracking-wider mb-2 font-medium flex items-center gap-1.5">
                 <Wrench className="w-3 h-3" /> Allowed tools
               </div>
               <div className="flex flex-wrap gap-1">
                 {data.toolIds.map(id => (
-                  <span key={id} className="text-[11px] px-1.5 py-0.5 rounded bg-[var(--bg-secondary)] border border-[var(--border)] font-mono text-[var(--text-secondary)]">{id}</span>
+                  <span key={id} className="text-[11px] px-1.5 py-0.5 rounded bg-[var(--glass-fill)] border border-[var(--glass-stroke)] font-mono text-[var(--text-secondary)]">{id}</span>
                 ))}
               </div>
             </div>
           )}
           {data.skillNames.length > 0 && (
-            <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-tertiary)] p-4">
+            <div className="glass-card rounded-xl p-4">
               <div className="text-xs text-[var(--text-muted)] uppercase tracking-wider mb-2 font-medium flex items-center gap-1.5">
                 <Wand2 className="w-3 h-3" /> Skills
               </div>
@@ -453,7 +453,7 @@ function TaskDetail({
 
 function InfoTile({ label, value }: { label: string; value: React.ReactNode }) {
   return (
-    <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-tertiary)] px-4 py-3">
+    <div className="glass-card rounded-xl px-4 py-3">
       <div className="text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1 font-medium">{label}</div>
       <div className="text-sm text-[var(--text-primary)]">{value}</div>
     </div>
@@ -472,8 +472,8 @@ function RunRow({ run, onOpenConv }: { run: PlannedTaskRun; onOpenConv: () => vo
       onClick={onOpenConv}
       disabled={!run.convId}
       className={clsx(
-        'w-full text-left rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)]/50 p-3 flex items-start gap-3 transition-colors',
-        run.convId ? 'hover:border-[var(--accent)] hover:bg-[var(--bg-tertiary)] cursor-pointer' : 'opacity-60 cursor-default',
+        'w-full text-left glass-card rounded-lg p-3 flex items-start gap-3 transition-colors',
+        run.convId ? 'hover:border-[var(--accent)] hover:bg-[var(--glass-fill-hover)] cursor-pointer' : 'opacity-60 cursor-default',
       )}
     >
       <Icon className={clsx('w-4 h-4 flex-shrink-0 mt-0.5', color, run.status === 'running' && 'animate-spin')} />
@@ -568,14 +568,14 @@ function TaskEditor({
       <Field label="Name">
         <input value={name} onChange={e => setName(e.target.value)}
           placeholder="Morning briefing"
-          className="w-full px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]" />
+          className="w-full glass-input px-3 py-2 rounded-lg text-sm" />
       </Field>
 
       {/* Prompt */}
       <Field label="Prompt" hint="What should the model do at each run?">
         <textarea value={prompt} onChange={e => setPrompt(e.target.value)}
           rows={5} placeholder="Check my inbox for anything urgent and summarise the top 3 items."
-          className="w-full px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] resize-y font-sans leading-relaxed" />
+          className="w-full glass-input px-3 py-2 rounded-lg text-sm resize-y font-sans leading-relaxed" />
       </Field>
 
       {/* Model */}
@@ -584,7 +584,7 @@ function TaskEditor({
           <div className="text-xs text-[var(--text-muted)] italic">No local models installed.</div>
         ) : (
           <select value={model} onChange={e => setModel(e.target.value)}
-            className="w-full px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]">
+            className="w-full px-3 py-2 glass-input rounded-lg text-sm">
             {available.models.map(m => <option key={m} value={m}>{m}</option>)}
           </select>
         )}
@@ -605,7 +605,7 @@ function TaskEditor({
                 'px-3 py-1.5 rounded-md text-xs font-medium border transition-colors',
                 scheduleKind === t.id
                   ? 'border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--accent)]'
-                  : 'border-[var(--border)] bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:border-[var(--border-bright)]',
+                  : 'border-[var(--glass-stroke)] bg-[var(--glass-fill)] text-[var(--text-secondary)] hover:border-[var(--border-bright)]',
               )}
             >
               {t.label}
@@ -623,9 +623,9 @@ function TaskEditor({
         {available.mcp_tools.length === 0 ? (
           <div className="text-xs text-[var(--text-muted)] italic">No MCP servers running. Enable some in Settings → Tools.</div>
         ) : (
-          <div className="max-h-48 overflow-y-auto border border-[var(--border)] rounded-lg bg-[var(--bg-tertiary)] p-2 space-y-1">
+          <div className="max-h-48 overflow-y-auto border border-[var(--glass-stroke)] rounded-lg bg-[var(--glass-fill)] p-2 space-y-1">
             {available.mcp_tools.map(t => (
-              <label key={t.id} className="flex items-start gap-2 px-2 py-1.5 rounded hover:bg-[var(--bg-secondary)] cursor-pointer text-xs">
+              <label key={t.id} className="flex items-start gap-2 px-2 py-1.5 rounded hover:bg-[var(--glass-fill-hover)] cursor-pointer text-xs">
                 <input type="checkbox" checked={toolIds.includes(t.id)} onChange={() => toggleIn(toolIds, setToolIds, t.id)} className="mt-0.5" />
                 <div className="min-w-0 flex-1">
                   <div className="text-[var(--text-primary)] font-mono truncate">{t.name}</div>
@@ -642,9 +642,9 @@ function TaskEditor({
         {available.skills.length === 0 ? (
           <div className="text-xs text-[var(--text-muted)] italic">No skills discovered.</div>
         ) : (
-          <div className="max-h-48 overflow-y-auto border border-[var(--border)] rounded-lg bg-[var(--bg-tertiary)] p-2 space-y-1">
+          <div className="max-h-48 overflow-y-auto border border-[var(--glass-stroke)] rounded-lg bg-[var(--glass-fill)] p-2 space-y-1">
             {available.skills.map(sk => (
-              <label key={sk.name} className="flex items-start gap-2 px-2 py-1.5 rounded hover:bg-[var(--bg-secondary)] cursor-pointer text-xs">
+              <label key={sk.name} className="flex items-start gap-2 px-2 py-1.5 rounded hover:bg-[var(--glass-fill-hover)] cursor-pointer text-xs">
                 <input type="checkbox" checked={skillNames.includes(sk.name)} onChange={() => toggleIn(skillNames, setSkillNames, sk.name)} className="mt-0.5" />
                 <div className="min-w-0 flex-1">
                   <div className="text-[var(--text-primary)] font-mono truncate">{sk.name}</div>
@@ -664,7 +664,7 @@ function TaskEditor({
       {/* Actions */}
       <div className="flex items-center justify-end gap-2 pt-2 border-t border-[var(--border)]">
         <button onClick={onCancel}
-          className="px-4 py-2 rounded-lg text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)] transition-colors">
+          className="px-4 py-2 rounded-lg text-sm text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--glass-fill-hover)] transition-colors">
           Cancel
         </button>
         <button onClick={save} disabled={!canSave}
@@ -691,13 +691,13 @@ function ScheduleInput({ kind, value, onChange }: { kind: ScheduleKind; value: s
   if (kind === 'once') {
     return (
       <input type="datetime-local" value={value} onChange={e => onChange(e.target.value)}
-        className="w-full px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]" />
+        className="w-full px-3 py-2 glass-input rounded-lg text-sm" />
     )
   }
   if (kind === 'daily') {
     return (
       <input type="time" value={value} onChange={e => onChange(e.target.value)}
-        className="w-full px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]" />
+        className="w-full px-3 py-2 glass-input rounded-lg text-sm" />
     )
   }
   if (kind === 'weekly') {
@@ -708,11 +708,11 @@ function ScheduleInput({ kind, value, onChange }: { kind: ScheduleKind; value: s
     return (
       <div className="flex gap-2">
         <select value={day} onChange={e => onChange(`${e.target.value} ${time}`)}
-          className="px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]">
+          className="px-3 py-2 glass-input rounded-lg text-sm">
           {WEEKDAYS.map(d => <option key={d} value={d}>{d}</option>)}
         </select>
         <input type="time" value={time} onChange={e => onChange(`${day} ${e.target.value}`)}
-          className="flex-1 px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]" />
+          className="flex-1 px-3 py-2 glass-input rounded-lg text-sm" />
       </div>
     )
   }
@@ -721,7 +721,7 @@ function ScheduleInput({ kind, value, onChange }: { kind: ScheduleKind; value: s
       <div className="flex items-center gap-2">
         <span className="text-sm text-[var(--text-muted)]">every</span>
         <input type="number" min={1} value={value} onChange={e => onChange(e.target.value)}
-          className="w-24 px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]" />
+          className="w-24 px-3 py-2 glass-input rounded-lg text-sm" />
         <span className="text-sm text-[var(--text-muted)]">minutes</span>
       </div>
     )
@@ -730,7 +730,7 @@ function ScheduleInput({ kind, value, onChange }: { kind: ScheduleKind; value: s
   return (
     <input value={value} onChange={e => onChange(e.target.value)}
       placeholder="0 9 * * MON-FRI"
-      className="w-full px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] font-mono" />
+      className="w-full glass-input px-3 py-2 rounded-lg text-sm font-mono" />
   )
 }
 

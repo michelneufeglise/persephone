@@ -17,10 +17,9 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(
       <input
         ref={ref}
         className={clsx(
-          'w-full rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)]',
+          'w-full rounded-lg glass-input',
           'px-3 py-2 text-sm text-[var(--text-primary)] font-sans',
           'placeholder:text-[var(--text-muted)]',
-          'focus:outline-none focus:border-[var(--accent)] focus:ring-1 focus:ring-[var(--accent)]',
           'transition-colors duration-200',
           className,
         )}
@@ -48,10 +47,9 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
       <textarea
         ref={ref}
         className={clsx(
-          'w-full rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)]',
+          'w-full rounded-lg glass-input',
           'px-3 py-2 text-sm text-[var(--text-primary)] font-sans leading-relaxed resize-none',
           'placeholder:text-[var(--text-muted)]',
-          'focus:outline-none focus:border-[var(--accent)] focus:ring-1 focus:ring-[var(--accent)]',
           'transition-colors duration-200',
           className,
         )}

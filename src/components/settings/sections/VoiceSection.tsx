@@ -84,10 +84,10 @@ export function VoiceSection() {
               <button
                 key={f}
                 onClick={() => setAccentFilter(f)}
-                className={`px-2.5 py-1 rounded-full text-[10px] font-mono uppercase tracking-wider border transition-all ${
+                className={`px-2.5 py-1 rounded-full text-[10px] font-mono uppercase tracking-wider transition-all glass-card ${
                   accentFilter === f
-                    ? 'border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--accent)]'
-                    : 'border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--border-bright)]'
+                    ? 'glass-card-active text-[var(--accent)]'
+                    : 'glass-card-hover text-[var(--text-muted)]'
                 }`}
               >
                 {f === 'all'
@@ -104,10 +104,10 @@ export function VoiceSection() {
             <button
               key={v.id}
               onClick={() => updateTTSSettings({ voice: v.id })}
-              className={`p-3 rounded-xl text-left border transition-all duration-200 ${
+              className={`p-3 rounded-xl text-left transition-all duration-200 glass-card ${
                 tts.voice === v.id
-                  ? 'border-[var(--accent)] bg-[var(--accent-dim)] shadow-md shadow-[var(--accent-glow)]'
-                  : 'border-[var(--border)] bg-[var(--bg-secondary)] hover:border-[var(--border-bright)]'
+                  ? 'glass-card-active shadow-md shadow-[var(--accent-glow)]'
+                  : 'glass-card-hover'
               }`}
             >
               <div className="flex items-center justify-between mb-1 flex-wrap gap-1">

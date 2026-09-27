@@ -45,10 +45,9 @@ export function AccountStep({ name, color, onNameChange, onColorChange }: Accoun
           onChange={e => onNameChange(e.target.value)}
           placeholder="Enter your name"
           maxLength={24}
-          className="w-full rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)]
+          className="w-full rounded-lg glass-input
             px-4 py-3 text-base text-[var(--text-primary)] font-sans text-center
             placeholder:text-[var(--text-muted)]
-            focus:outline-none focus:border-[var(--accent)] focus:ring-1 focus:ring-[var(--accent)]
             transition-colors duration-200"
         />
         {/* Quick names */}
@@ -57,10 +56,10 @@ export function AccountStep({ name, color, onNameChange, onColorChange }: Accoun
             <button
               key={n}
               onClick={() => onNameChange(n)}
-              className={`px-2.5 py-1 rounded-full text-xs border transition-all ${
+              className={`px-2.5 py-1 rounded-full text-xs transition-all glass-card ${
                 name === n
-                  ? 'border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--accent)]'
-                  : 'border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--border-bright)]'
+                  ? 'glass-card-active text-[var(--accent)]'
+                  : 'glass-card-hover text-[var(--text-muted)]'
               }`}
             >
               {n}

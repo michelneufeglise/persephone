@@ -80,7 +80,7 @@ export function WelcomeStep() {
         initial={{ opacity: 0, y: 12 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ delay: 0.3 }}
-        className="w-full rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] p-5 text-left"
+        className="w-full rounded-xl glass-card p-5 text-left"
       >
         <div className="flex items-center gap-2 mb-4">
           <Zap className="w-4 h-4 text-[var(--accent)]" />

@@ -134,9 +134,9 @@ export function ModelStep({ title, subtitle, category, selectedId, onSelect, ram
             value={filter}
             onChange={e => setFilter(e.target.value)}
             placeholder="Filter models…"
-            className="w-full pl-9 pr-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)]
+            className="w-full pl-9 pr-3 py-2 rounded-lg glass-input
               text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)]
-              focus:outline-none focus:border-[var(--accent)] transition-colors"
+              transition-colors"
           />
         </div>
         {category !== 'embed' && category !== 'judge' && (
@@ -196,7 +196,7 @@ export function ModelStep({ title, subtitle, category, selectedId, onSelect, ram
       {loading ? (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           {[1, 2, 3, 4].map(i => (
-            <div key={i} className="h-40 rounded-xl bg-[var(--bg-tertiary)] animate-pulse" />
+            <div key={i} className="h-40 rounded-xl glass-card animate-pulse" />
           ))}
         </div>
       ) : sorted.length === 0 ? (

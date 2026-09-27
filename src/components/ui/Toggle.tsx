@@ -20,7 +20,7 @@ export function Toggle({ checked, onChange, label, description, disabled }: Togg
         className={clsx(
           'relative inline-flex h-6 w-11 flex-shrink-0 rounded-full border-2 border-transparent',
           'transition-colors duration-200 focus:outline-none cursor-pointer',
-          checked ? 'bg-[var(--accent)]' : 'bg-[var(--bg-tertiary)]',
+          checked ? 'bg-[var(--accent)]' : 'bg-[var(--glass-fill)]',
           disabled && 'opacity-40 cursor-not-allowed',
         )}
       >

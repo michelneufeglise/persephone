@@ -28,11 +28,11 @@ function ToolCallCard({ call }: { call: ToolCall }) {
     <div className={`rounded-lg border overflow-hidden ${
       isDelegate
         ? 'border-amber-400/40 bg-amber-400/5'
-        : 'border-[var(--border)] bg-[var(--bg-tertiary)]'
+        : 'border-[var(--border)] glass-card'
     }`}>
       <button
         onClick={() => setOpen(o => !o)}
-        className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left hover:bg-[var(--bg-secondary)] transition-colors"
+        className="w-full flex items-center gap-2 px-2.5 py-1.5 text-left hover:bg-[var(--glass-fill-hover)] transition-colors"
       >
         {isDelegate ? <Bot className="w-3.5 h-3.5 text-amber-300 shrink-0" /> : <StatusIcon status={call.status} />}
 

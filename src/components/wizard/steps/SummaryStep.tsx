@@ -115,7 +115,7 @@ export function SummaryStep({ config }: SummaryStepProps) {
       </div>
 
       {/* Config summary */}
-      <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] overflow-hidden">
+      <div className="rounded-xl glass-card overflow-hidden">
         {rows.map(({ icon: Icon, label, value }, i) => (
           <motion.div
             key={label}
@@ -138,7 +138,7 @@ export function SummaryStep({ config }: SummaryStepProps) {
       </div>
 
       {/* TTS install status — shown so the user sees Kokoro finishing on-screen */}
-      <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)]/60 px-4 py-3 space-y-1.5">
+      <div className="rounded-xl glass-card px-4 py-3 space-y-1.5">
         <div className="flex items-center gap-2 text-xs">
           <Volume2 className="w-3.5 h-3.5 text-[var(--accent)]" />
           <span className="text-[var(--text-primary)] font-medium">Voice engine</span>

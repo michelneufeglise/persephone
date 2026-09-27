@@ -1,7 +1,7 @@
 import type { Theme } from '@/types'
 
 /**
- * Liquid Obsidian design system.
+ * Liquid Glass design system.
  *
  * Each theme carries:
  *   • A 4-stop background ramp (deeper than before) for parallax glass.
@@ -9,6 +9,8 @@ import type { Theme } from '@/types'
  *     button fills, and aurora washes.
  *   • A holographic edge colour for high-fidelity rim lighting.
  *   • A multi-stop shadow stack (key + ambient + glow) replacing flat shadows.
+ *   • A vivid per-theme wallpaper palette (--wall-*) that shines through the glass.
+ *   • Glass tokens (--glass-*) defining frosted surfaces, fills, strokes, and highlights.
  */
 
 export const themes: Theme[] = [
@@ -16,15 +18,38 @@ export const themes: Theme[] = [
     id: 'underworld',
     name: 'Underworld',
     description: 'Polished obsidian veined with pomegranate fire',
-    preview: { bg: '#06040c', accent: '#d6356a', text: '#f5ecff' },
+    preview: { bg: '#06040c', accent: '#d6356a', text: '#f5ecff', wall: ['#d6356a', '#5b1fb8', '#1c8fd6', '#ff7a45'] },
     vars: {
       // surface ramp — abyss → polished basalt
       '--bg-primary':    '#06040c',
-      '--bg-secondary':  '#0c0918',
-      '--bg-tertiary':   '#141027',
-      '--bg-quaternary': '#1d1638',
-      '--bg-glass':      'rgba(14,10,28,0.55)',
-      '--bg-glass-strong':'rgba(20,16,42,0.78)',
+      '--bg-solid-secondary': '#0c0918',
+      '--bg-solid-tertiary': '#141027',
+      '--bg-secondary':  'rgba(20,15,40,0.55)',
+      '--bg-tertiary':   'rgba(255,255,255,0.06)',
+      '--bg-quaternary': 'rgba(255,255,255,0.10)',
+      '--bg-glass':      'rgba(14,10,28,0.45)',
+      '--bg-glass-strong':'rgba(16,12,32,0.82)',
+
+      // glass tokens
+      '--glass-fill':            'rgba(255,255,255,0.045)',
+      '--glass-fill-hover':      'rgba(255,255,255,0.085)',
+      '--glass-stroke':          'rgba(255,255,255,0.10)',
+      '--glass-stroke-strong':   'rgba(255,255,255,0.20)',
+      '--glass-highlight':       'rgba(255,255,255,0.16)',
+      '--glass-blur':            '28px',
+      '--glass-saturate':        '180%',
+      '--glass-shadow':          '0 1px 0 rgba(255,255,255,0.06) inset, 0 24px 60px -24px rgba(0,0,0,0.7), 0 2px 8px -2px rgba(0,0,0,0.35)',
+      '--glass-tint':            'rgba(14,10,28,0.55)',
+      '--glass-tint-strong':     'rgba(16,12,32,0.86)',
+
+      // wallpaper
+      '--wall-base':             '#0a0616',
+      '--wall-1':                '#d6356a',
+      '--wall-2':                '#5b1fb8',
+      '--wall-3':                '#1c8fd6',
+      '--wall-4':                '#ff7a45',
+      '--wall-opacity':          '0.95',
+      '--illustration-opacity':  '0.30',
 
       // borders
       '--border':        'rgba(214,53,106,0.18)',
@@ -50,7 +75,7 @@ export const themes: Theme[] = [
       // text
       '--text-primary':  '#f5ecff',
       '--text-secondary':'#b9a4dc',
-      '--text-muted':    '#675683',
+      '--text-muted':    '#8a78a8',
 
       // orbs (avatar + hero gradients)
       '--orb-color-1':   '#d6356a',
@@ -75,14 +100,37 @@ export const themes: Theme[] = [
     id: 'spring',
     name: 'Spring Goddess',
     description: 'Iridescent dawn — when Persephone returns and the earth blooms',
-    preview: { bg: '#f4eeff', accent: '#7c3aed', text: '#1a0a2e' },
+    preview: { bg: '#f4eeff', accent: '#7c3aed', text: '#1a0a2e', wall: ['#b794ff', '#7de3f4', '#ffc3e1', '#ffd89a'] },
     vars: {
       '--bg-primary':    '#f6f1ff',
-      '--bg-secondary':  '#ece4fb',
-      '--bg-tertiary':   '#e0d2f5',
-      '--bg-quaternary': '#d1bff0',
-      '--bg-glass':      'rgba(246,241,255,0.7)',
-      '--bg-glass-strong':'rgba(255,255,255,0.85)',
+      '--bg-solid-secondary': '#ece4fb',
+      '--bg-solid-tertiary': '#e0d2f5',
+      '--bg-secondary':  'rgba(255,255,255,0.50)',
+      '--bg-tertiary':   'rgba(124,58,237,0.08)',
+      '--bg-quaternary': 'rgba(124,58,237,0.14)',
+      '--bg-glass':      'rgba(255,255,255,0.45)',
+      '--bg-glass-strong':'rgba(255,255,255,0.84)',
+
+      // glass tokens
+      '--glass-fill':            'rgba(255,255,255,0.50)',
+      '--glass-fill-hover':      'rgba(255,255,255,0.72)',
+      '--glass-stroke':          'rgba(255,255,255,0.70)',
+      '--glass-stroke-strong':   'rgba(255,255,255,0.95)',
+      '--glass-highlight':       'rgba(255,255,255,0.95)',
+      '--glass-blur':            '24px',
+      '--glass-saturate':        '160%',
+      '--glass-shadow':          '0 1px 0 rgba(255,255,255,0.9) inset, 0 20px 50px -24px rgba(124,58,237,0.30), 0 2px 8px -2px rgba(124,58,237,0.10)',
+      '--glass-tint':            'rgba(255,255,255,0.52)',
+      '--glass-tint-strong':     'rgba(255,255,255,0.86)',
+
+      // wallpaper
+      '--wall-base':             '#efe6ff',
+      '--wall-1':                '#b794ff',
+      '--wall-2':                '#7de3f4',
+      '--wall-3':                '#ffc3e1',
+      '--wall-4':                '#ffd89a',
+      '--wall-opacity':          '0.85',
+      '--illustration-opacity':  '0.22',
 
       '--border':        'rgba(124,58,237,0.18)',
       '--border-bright': 'rgba(124,58,237,0.45)',
@@ -103,7 +151,7 @@ export const themes: Theme[] = [
 
       '--text-primary':  '#1a0a2e',
       '--text-secondary':'#5b4480',
-      '--text-muted':    '#9684ba',
+      '--text-muted':    '#7d6aa6',
 
       '--orb-color-1':   '#7c3aed',
       '--orb-color-2':   '#22d3ee',
@@ -125,14 +173,37 @@ export const themes: Theme[] = [
     id: 'pomegranate',
     name: 'Pomegranate',
     description: 'Blood-red seeds set in lacquered black',
-    preview: { bg: '#0a0306', accent: '#ff2e4e', text: '#ffe8eb' },
+    preview: { bg: '#0a0306', accent: '#ff2e4e', text: '#ffe8eb', wall: ['#ff2e4e', '#7a0620', '#ffb020', '#ff5e8a'] },
     vars: {
       '--bg-primary':    '#0a0306',
-      '--bg-secondary':  '#16060b',
-      '--bg-tertiary':   '#220912',
-      '--bg-quaternary': '#330c19',
-      '--bg-glass':      'rgba(22,6,11,0.6)',
-      '--bg-glass-strong':'rgba(34,9,18,0.85)',
+      '--bg-solid-secondary': '#16060b',
+      '--bg-solid-tertiary': '#220912',
+      '--bg-secondary':  'rgba(34,9,18,0.55)',
+      '--bg-tertiary':   'rgba(255,255,255,0.06)',
+      '--bg-quaternary': 'rgba(255,255,255,0.10)',
+      '--bg-glass':      'rgba(22,6,11,0.48)',
+      '--bg-glass-strong':'rgba(24,6,12,0.86)',
+
+      // glass tokens
+      '--glass-fill':            'rgba(255,255,255,0.045)',
+      '--glass-fill-hover':      'rgba(255,255,255,0.085)',
+      '--glass-stroke':          'rgba(255,255,255,0.10)',
+      '--glass-stroke-strong':   'rgba(255,255,255,0.20)',
+      '--glass-highlight':       'rgba(255,255,255,0.16)',
+      '--glass-blur':            '28px',
+      '--glass-saturate':        '180%',
+      '--glass-shadow':          '0 1px 0 rgba(255,255,255,0.06) inset, 0 24px 60px -24px rgba(0,0,0,0.7), 0 2px 8px -2px rgba(0,0,0,0.35)',
+      '--glass-tint':            'rgba(22,6,11,0.58)',
+      '--glass-tint-strong':     'rgba(24,6,12,0.88)',
+
+      // wallpaper
+      '--wall-base':             '#120308',
+      '--wall-1':                '#ff2e4e',
+      '--wall-2':                '#7a0620',
+      '--wall-3':                '#ffb020',
+      '--wall-4':                '#ff5e8a',
+      '--wall-opacity':          '0.95',
+      '--illustration-opacity':  '0.30',
 
       '--border':        'rgba(255,46,78,0.18)',
       '--border-bright': 'rgba(255,46,78,0.55)',
@@ -153,7 +224,7 @@ export const themes: Theme[] = [
 
       '--text-primary':  '#ffe8eb',
       '--text-secondary':'#ef9aa6',
-      '--text-muted':    '#8a3845',
+      '--text-muted':    '#b86070',
 
       '--orb-color-1':   '#ff2e4e',
       '--orb-color-2':   '#52030d',
@@ -175,14 +246,37 @@ export const themes: Theme[] = [
     id: 'elysian',
     name: 'Elysian Fields',
     description: 'Silver light over still water — paradise just beyond',
-    preview: { bg: '#eef2f7', accent: '#3b82f6', text: '#0f172a' },
+    preview: { bg: '#eef2f7', accent: '#3b82f6', text: '#0f172a', wall: ['#8fb8ff', '#b9a4ff', '#7fe0ec', '#ffe0b0'] },
     vars: {
       '--bg-primary':    '#eef2f7',
-      '--bg-secondary':  '#e0e7f0',
-      '--bg-tertiary':   '#cfd8e6',
-      '--bg-quaternary': '#bcc8da',
-      '--bg-glass':      'rgba(238,242,247,0.7)',
-      '--bg-glass-strong':'rgba(255,255,255,0.88)',
+      '--bg-solid-secondary': '#e0e7f0',
+      '--bg-solid-tertiary': '#cfd8e6',
+      '--bg-secondary':  'rgba(255,255,255,0.50)',
+      '--bg-tertiary':   'rgba(59,130,246,0.08)',
+      '--bg-quaternary': 'rgba(59,130,246,0.14)',
+      '--bg-glass':      'rgba(255,255,255,0.45)',
+      '--bg-glass-strong':'rgba(255,255,255,0.86)',
+
+      // glass tokens
+      '--glass-fill':            'rgba(255,255,255,0.50)',
+      '--glass-fill-hover':      'rgba(255,255,255,0.72)',
+      '--glass-stroke':          'rgba(255,255,255,0.70)',
+      '--glass-stroke-strong':   'rgba(255,255,255,0.95)',
+      '--glass-highlight':       'rgba(255,255,255,0.95)',
+      '--glass-blur':            '24px',
+      '--glass-saturate':        '160%',
+      '--glass-shadow':          '0 1px 0 rgba(255,255,255,0.9) inset, 0 20px 50px -24px rgba(59,130,246,0.30), 0 2px 8px -2px rgba(59,130,246,0.10)',
+      '--glass-tint':            'rgba(255,255,255,0.52)',
+      '--glass-tint-strong':     'rgba(255,255,255,0.88)',
+
+      // wallpaper
+      '--wall-base':             '#e6eef9',
+      '--wall-1':                '#8fb8ff',
+      '--wall-2':                '#b9a4ff',
+      '--wall-3':                '#7fe0ec',
+      '--wall-4':                '#ffe0b0',
+      '--wall-opacity':          '0.85',
+      '--illustration-opacity':  '0.22',
 
       '--border':        'rgba(59,130,246,0.18)',
       '--border-bright': 'rgba(59,130,246,0.5)',
@@ -203,7 +297,7 @@ export const themes: Theme[] = [
 
       '--text-primary':  '#0f172a',
       '--text-secondary':'#475569',
-      '--text-muted':    '#8aa0bd',
+      '--text-muted':    '#6b7f99',
 
       '--orb-color-1':   '#3b82f6',
       '--orb-color-2':   '#8b5cf6',
@@ -225,14 +319,37 @@ export const themes: Theme[] = [
     id: 'obsidian',
     name: 'Obsidian Garden',
     description: 'Midnight emerald — flowers grown in volcanic glass',
-    preview: { bg: '#04090a', accent: '#34f0a2', text: '#d4fde8' },
+    preview: { bg: '#04090a', accent: '#34f0a2', text: '#d4fde8', wall: ['#34f0a2', '#0e6e7a', '#7c5cf0', '#1a9e5c'] },
     vars: {
       '--bg-primary':    '#04090a',
-      '--bg-secondary':  '#08130f',
-      '--bg-tertiary':   '#0f2018',
-      '--bg-quaternary': '#163024',
-      '--bg-glass':      'rgba(8,19,15,0.6)',
-      '--bg-glass-strong':'rgba(15,32,24,0.82)',
+      '--bg-solid-secondary': '#08130f',
+      '--bg-solid-tertiary': '#0f2018',
+      '--bg-secondary':  'rgba(15,32,24,0.55)',
+      '--bg-tertiary':   'rgba(255,255,255,0.06)',
+      '--bg-quaternary': 'rgba(255,255,255,0.10)',
+      '--bg-glass':      'rgba(8,19,15,0.45)',
+      '--bg-glass-strong':'rgba(8,20,16,0.84)',
+
+      // glass tokens
+      '--glass-fill':            'rgba(255,255,255,0.045)',
+      '--glass-fill-hover':      'rgba(255,255,255,0.085)',
+      '--glass-stroke':          'rgba(255,255,255,0.10)',
+      '--glass-stroke-strong':   'rgba(255,255,255,0.20)',
+      '--glass-highlight':       'rgba(255,255,255,0.16)',
+      '--glass-blur':            '28px',
+      '--glass-saturate':        '180%',
+      '--glass-shadow':          '0 1px 0 rgba(255,255,255,0.06) inset, 0 24px 60px -24px rgba(0,0,0,0.7), 0 2px 8px -2px rgba(0,0,0,0.35)',
+      '--glass-tint':            'rgba(8,19,15,0.55)',
+      '--glass-tint-strong':     'rgba(8,20,16,0.86)',
+
+      // wallpaper
+      '--wall-base':             '#031010',
+      '--wall-1':                '#34f0a2',
+      '--wall-2':                '#0e6e7a',
+      '--wall-3':                '#7c5cf0',
+      '--wall-4':                '#1a9e5c',
+      '--wall-opacity':          '0.95',
+      '--illustration-opacity':  '0.30',
 
       '--border':        'rgba(52,240,162,0.18)',
       '--border-bright': 'rgba(52,240,162,0.5)',
@@ -253,7 +370,7 @@ export const themes: Theme[] = [
 
       '--text-primary':  '#d4fde8',
       '--text-secondary':'#6ee7b7',
-      '--text-muted':    '#34805b',
+      '--text-muted':    '#4fa07a',
 
       '--orb-color-1':   '#34f0a2',
       '--orb-color-2':   '#053a2c',

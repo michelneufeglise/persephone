@@ -171,5 +171,5 @@ export interface Theme {
   name: string
   description: string
   vars: Record<string, string>
-  preview: { bg: string; accent: string; text: string }
+  preview: { bg: string; accent: string; text: string; wall?: string[] }
 }

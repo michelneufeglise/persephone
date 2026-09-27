@@ -243,7 +243,7 @@ function CodeBlock({
             'opacity-0 group-hover/code:opacity-100 focus-visible:opacity-100',
             copied
               ? 'text-emerald-300 bg-emerald-500/10 border border-emerald-500/30'
-              : 'text-[var(--text-muted)] bg-[var(--bg-tertiary)] border border-[var(--border)] hover:text-[var(--accent)] hover:border-[var(--accent)]',
+              : 'text-[var(--text-muted)] glass-card hover:text-[var(--accent)] hover:border-[var(--accent)]',
           )}
         >
           {copied

@@ -97,10 +97,10 @@ export function CharacterSection() {
             <button
               key={p}
               onClick={() => updateCharacter({ personality: p })}
-              className={`px-3 py-1.5 rounded-full text-xs font-medium border transition-all ${
+              className={`px-3 py-1.5 rounded-full text-xs font-medium transition-all ${
                 char.personality === p
-                  ? 'border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--accent)]'
-                  : 'border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--border-bright)]'
+                  ? 'glass-card glass-card-active'
+                  : 'glass-card glass-card-hover'
               }`}
             >
               {p}

@@ -52,7 +52,7 @@ export function OllamaSection() {
           <p className="text-sm text-[var(--text-muted)]">Everything pulled into your local Ollama. Delete what you no longer need.</p>
         </div>
         <button onClick={() => load(true)} disabled={loading}
-          className="flex items-center gap-2 px-3 py-2 rounded-lg border border-[var(--border)] text-sm text-[var(--text-secondary)] hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors flex-shrink-0">
+          className="flex items-center gap-2 px-3 py-2 rounded-lg glass-card text-sm text-[var(--text-secondary)] hover:text-[var(--accent)] transition-colors flex-shrink-0">
           <RefreshCw className={clsx('w-3.5 h-3.5', loading && 'animate-spin')} /> Refresh
         </button>
       </div>
@@ -65,7 +65,7 @@ export function OllamaSection() {
       {error && <Panel className="px-4 py-3 border border-red-500/40 text-sm text-red-300">{error}</Panel>}
 
       {loading ? (
-        <div className="space-y-2.5">{[1,2,3].map(i => <div key={i} className="h-16 rounded-xl bg-[var(--bg-tertiary)] animate-pulse" />)}</div>
+        <div className="space-y-2.5">{[1,2,3].map(i => <div key={i} className="h-16 rounded-xl glass-card animate-pulse" />)}</div>
       ) : models.length === 0 ? (
         <p className="text-center text-[var(--text-muted)] py-10 text-sm">No models installed. Use the Download tab to add some.</p>
       ) : (
@@ -73,7 +73,7 @@ export function OllamaSection() {
           {models.map(m => {
             const isLoaded = loaded.includes(m.name)
             return (
-              <div key={m.name} className="rounded-xl border border-[var(--border)] bg-[var(--bg-tertiary)]/50 p-4 flex items-center gap-4">
+              <div key={m.name} className="rounded-xl glass-card glass-card-hover p-4 flex items-center gap-4">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-sm font-medium text-[var(--text-primary)] font-mono truncate">{m.name}</span>

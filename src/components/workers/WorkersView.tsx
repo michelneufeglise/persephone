@@ -106,7 +106,7 @@ export function WorkersView() {
 
   return (
     <div className="h-full overflow-y-auto">
-      <div className="max-w-3xl mx-auto p-6 space-y-5">
+      <div className="max-w-3xl mx-auto space-y-5">
         {/* Header */}
         <div className="flex items-start justify-between gap-4">
           <div>
@@ -147,11 +147,11 @@ export function WorkersView() {
               <motion.div
                 key={w.id}
                 initial={{ opacity: 0, y: 6 }} animate={{ opacity: 1, y: 0 }}
-                className="rounded-xl border border-[var(--border)] bg-[var(--bg-primary)]/40 p-4 space-y-3"
+                className="rounded-xl glass-card glass-card-hover p-4 space-y-3"
               >
                 <div className="flex items-start gap-3">
                   <div className={`w-9 h-9 rounded-lg flex items-center justify-center flex-shrink-0 ${
-                    w.enabled ? 'bg-[var(--accent-dim)] text-[var(--accent)]' : 'bg-[var(--bg-tertiary)] text-[var(--text-muted)]'
+                    w.enabled ? 'bg-[var(--accent-dim)] text-[var(--accent)]' : 'glass-card text-[var(--text-muted)]'
                   }`}>
                     <Bot className="w-4 h-4" />
                   </div>
@@ -169,8 +169,8 @@ export function WorkersView() {
                   {/* Enable/disable */}
                   <label className="flex-shrink-0 cursor-pointer select-none">
                     <input type="checkbox" checked={w.enabled} onChange={e => toggleWorker(w.id, e.target.checked)} className="sr-only" />
-                    <span className={`relative block w-9 h-5 rounded-full transition-colors ${
-                      w.enabled ? 'bg-[var(--accent)]' : 'bg-[var(--bg-tertiary)]'
+                    <span className={`relative block w-9 h-5 rounded-full transition-colors border ${
+                      w.enabled ? 'bg-[var(--accent)]' : 'bg-[var(--glass-fill-hover)] border-[var(--glass-stroke)]'
                     }`}>
                       <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
                         w.enabled ? 'translate-x-4' : ''
@@ -424,10 +424,10 @@ function DelegateTaskRow({
       : 0
 
   return (
-    <div className={`rounded-lg border p-2.5 ${
-      running ? 'border-amber-400/40 bg-amber-400/5'
-      : failed ? 'border-red-500/30 bg-red-500/5'
-      : 'border-[var(--border)] bg-[var(--bg-primary)]/40'
+    <div className={`rounded-lg p-2.5 ${
+      running ? 'glass-card border-amber-400/60'
+      : failed ? 'glass-card border-red-500/40'
+      : 'glass-card'
     }`}>
       <button
         onClick={() => setOpen(o => !o)}
@@ -467,7 +467,7 @@ function DelegateTaskRow({
         )}
       </button>
       {open && (
-        <div className="mt-2 pt-2 border-t border-[var(--border)] space-y-2 text-[11px] font-mono">
+        <div className="mt-2 pt-2 border-t border-[var(--glass-stroke)] space-y-2 text-[11px] font-mono">
           <div className="text-[var(--text-muted)]">Prompt</div>
           <div className="text-[var(--text-primary)] whitespace-pre-wrap">{task.prompt}</div>
           {task.result && (

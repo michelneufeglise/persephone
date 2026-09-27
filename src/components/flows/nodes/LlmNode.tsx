@@ -38,7 +38,7 @@ export function LlmNode({ id, data, selected }: LlmNodeProps) {
           <select
             value={data.config.model}
             onChange={e => handleChange({ model: e.target.value })}
-            className="w-full px-2 py-1.5 rounded-lg bg-[var(--bg-secondary)] text-xs text-[var(--text-primary)] border border-[var(--border)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)] transition-all"
+            className="glass-input w-full px-2 py-1.5 text-xs"
           >
             <option value="">Select model…</option>
             {models.map(m => (
@@ -56,7 +56,7 @@ export function LlmNode({ id, data, selected }: LlmNodeProps) {
             value={data.config.prompt}
             onChange={e => handleChange({ prompt: e.target.value })}
             placeholder="Enter system instruction…"
-            className="w-full px-2 py-2 rounded-lg bg-[var(--bg-secondary)] text-xs text-[var(--text-primary)] border border-[var(--border)] font-mono resize-none h-28 focus:outline-none focus:ring-1 focus:ring-[var(--accent)] transition-all"
+            className="glass-input w-full px-2 py-2 text-xs font-mono resize-none h-28"
           />
         </div>
       </div>

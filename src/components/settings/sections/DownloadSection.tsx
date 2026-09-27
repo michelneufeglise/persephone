@@ -23,7 +23,7 @@ const CAP_COLORS: Record<string, string> = {
   code: 'text-emerald-300 border-emerald-400/40 bg-emerald-500/10',
   embedding: 'text-pink-300 border-pink-400/40 bg-pink-500/10',
   tools: 'text-indigo-300 border-indigo-400/40 bg-indigo-500/10',
-  llm: 'text-[var(--text-muted)] border-[var(--border)] bg-[var(--bg-secondary)]',
+  llm: 'text-[var(--text-muted)] border-[var(--glass-stroke)]',
 }
 
 export function DownloadSection() {
@@ -73,7 +73,7 @@ export function DownloadSection() {
           </p>
         </div>
         <button onClick={() => load(true)} disabled={loading}
-          className="flex items-center gap-2 px-3 py-2 rounded-lg border border-[var(--border)] text-sm text-[var(--text-secondary)] hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors flex-shrink-0">
+          className="flex items-center gap-2 px-3 py-2 rounded-lg glass-card text-sm text-[var(--text-secondary)] hover:text-[var(--accent)] transition-colors flex-shrink-0">
           <RefreshCw className={clsx('w-3.5 h-3.5', loading && 'animate-spin')} />
           Refresh
         </button>
@@ -91,16 +91,16 @@ export function DownloadSection() {
       <div className="relative">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[var(--text-muted)]" />
         <input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search models…"
-          className="w-full pl-9 pr-3 py-2.5 rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)] text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]" />
+          className="w-full pl-9 pr-3 py-2.5 rounded-lg glass-input text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)]" />
       </div>
 
       <div className="flex flex-wrap gap-2">
         {FILTERS.map(f => (
           <button key={f.key} onClick={() => toggleFilter(f.key)}
-            className={clsx('px-3 py-1.5 rounded-full text-xs border transition-colors',
+            className={clsx('px-3 py-1.5 rounded-full text-xs transition-colors glass-card',
               active.has(f.key)
-                ? 'border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--accent)]'
-                : 'border-[var(--border)] bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:border-[var(--border-bright)]')}>
+                ? 'glass-card-active text-[var(--accent)]'
+                : 'glass-card-hover text-[var(--text-secondary)]')}>
             {f.label}
           </button>
         ))}
@@ -112,7 +112,7 @@ export function DownloadSection() {
       {error && <Panel className="px-4 py-3 border border-red-500/40 text-sm text-red-300">{error}</Panel>}
 
       {loading ? (
-        <div className="space-y-2.5">{[1,2,3,4,5].map(i => <div key={i} className="h-24 rounded-xl bg-[var(--bg-tertiary)] animate-pulse" />)}</div>
+        <div className="space-y-2.5">{[1,2,3,4,5].map(i => <div key={i} className="h-24 rounded-xl glass-card animate-pulse" />)}</div>
       ) : filtered.length === 0 ? (
         <p className="text-center text-[var(--text-muted)] py-10 text-sm">No models match your search/filters.</p>
       ) : (
@@ -158,7 +158,7 @@ function ModelRow({ model, onChanged }: { model: LibraryModel; onChanged: () => 
 
   const caps = model.capabilities.filter(c => c !== 'llm')
   return (
-    <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-tertiary)]/50 p-4 flex items-start gap-4">
+    <div className="rounded-xl glass-card glass-card-hover p-4 flex items-start gap-4">
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="text-sm font-medium text-[var(--text-primary)] font-mono truncate">{model.name}</span>
@@ -175,7 +175,7 @@ function ModelRow({ model, onChanged }: { model: LibraryModel; onChanged: () => 
         </div>
         {state === 'pulling' && (
           <div className="mt-2.5">
-            <div className="h-1.5 rounded-full bg-[var(--bg-secondary)] overflow-hidden">
+            <div className="h-1.5 rounded-full bg-[var(--glass-fill-hover)] overflow-hidden">
               <div className="h-full bg-[var(--accent)] transition-all" style={{ width: `${percent}%` }} />
             </div>
             <div className="text-[10px] text-[var(--text-muted)] mt-1 font-mono truncate">{status} · {percent}%</div>

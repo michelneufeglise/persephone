@@ -36,15 +36,14 @@ export function Sidebar() {
   })
 
   return (
-    <div className="w-64 flex-shrink-0 flex flex-col h-full glass border-r border-[var(--border)]"
-         style={{ borderRadius: 0 }}>
+    <div className="w-64 flex-shrink-0 flex flex-col h-full glass rounded-3xl overflow-hidden">
       {/* ── Logo + wordmark ─────────────────────────────────────────── */}
       {/* Extra top padding (pt-10 instead of py-5) so the logo sits below
           the macOS Electron traffic-light buttons. Marked `window-drag`
           so the user can grab this whole header to move the window —
           matches native macOS app behaviour where the title bar area is
           draggable. */}
-      <div className="window-drag relative flex items-center gap-3 px-5 pt-10 pb-5 border-b border-[var(--border)]">
+      <div className="window-drag relative flex items-center gap-3 px-5 pt-10 pb-5">
         <PersephoneIcon size={40} />
         <div className="flex flex-col leading-none">
           <span className="font-display text-xl tracking-tight text-[var(--text-primary)]">
@@ -57,76 +56,88 @@ export function Sidebar() {
       </div>
 
       {/* ── Nav ─────────────────────────────────────────────────────── */}
-      <div className="px-3 py-3 space-y-1 border-b border-[var(--border)]">
-        <NavItem
-          icon={MessageCircle}
-          label="Chat"
-          active={currentView === 'chat'}
-          onClick={() => setCurrentView('chat')}
-        />
-        <NavItem
-          icon={Clapperboard}
-          label="Reels"
-          active={currentView === 'reels'}
-          onClick={() => setCurrentView('reels')}
-        />
-        <NavItem
-          icon={FileText}
-          label="Documents"
-          active={currentView === 'documents'}
-          onClick={() => setCurrentView('documents')}
-        />
-        {abletonAvailable && (
+      <nav className="px-3 pb-3 space-y-4">
+        <NavGroup label="Workspace">
           <NavItem
-            icon={Music4}
-            label="Music"
-            active={currentView === 'music'}
-            onClick={() => setCurrentView('music')}
+            icon={MessageCircle}
+            label="Chat"
+            active={currentView === 'chat'}
+            onClick={() => setCurrentView('chat')}
           />
-        )}
-        <NavItem
-          icon={Microscope}
-          label="Research"
-          active={currentView === 'research'}
-          onClick={() => setCurrentView('research')}
-        />
-        <NavItem
-          icon={Brain}
-          label="Memory"
-          active={currentView === 'memory'}
-          onClick={() => setCurrentView('memory')}
-        />
-        <NavItem
-          icon={Workflow}
-          label="Flows"
-          active={currentView === 'flows'}
-          onClick={() => setCurrentView('flows')}
-        />
-        <NavItem
-          icon={Bot}
-          label="Workers"
-          active={currentView === 'workers'}
-          onClick={() => setCurrentView('workers')}
-        />
-        <NavItem
-          icon={CalendarClock}
-          label="Tasks"
-          active={currentView === 'tasks'}
-          onClick={() => setCurrentView('tasks')}
-        />
-        <NavItem
-          icon={Settings}
-          label="Settings"
-          active={currentView === 'settings'}
-          onClick={() => setCurrentView('settings')}
-        />
-      </div>
+          <NavItem
+            icon={Clapperboard}
+            label="Reels"
+            active={currentView === 'reels'}
+            onClick={() => setCurrentView('reels')}
+          />
+          <NavItem
+            icon={FileText}
+            label="Documents"
+            active={currentView === 'documents'}
+            onClick={() => setCurrentView('documents')}
+          />
+          {abletonAvailable && (
+            <NavItem
+              icon={Music4}
+              label="Music"
+              active={currentView === 'music'}
+              onClick={() => setCurrentView('music')}
+            />
+          )}
+        </NavGroup>
+
+        <NavGroup label="Intelligence">
+          <NavItem
+            icon={Microscope}
+            label="Research"
+            active={currentView === 'research'}
+            onClick={() => setCurrentView('research')}
+          />
+          <NavItem
+            icon={Brain}
+            label="Memory"
+            active={currentView === 'memory'}
+            onClick={() => setCurrentView('memory')}
+          />
+          <NavItem
+            icon={Workflow}
+            label="Flows"
+            active={currentView === 'flows'}
+            onClick={() => setCurrentView('flows')}
+          />
+        </NavGroup>
+
+        <NavGroup label="Automation">
+          <NavItem
+            icon={Bot}
+            label="Workers"
+            active={currentView === 'workers'}
+            onClick={() => setCurrentView('workers')}
+          />
+          <NavItem
+            icon={CalendarClock}
+            label="Tasks"
+            active={currentView === 'tasks'}
+            onClick={() => setCurrentView('tasks')}
+          />
+        </NavGroup>
+
+        <NavGroup label="System">
+          <NavItem
+            icon={Settings}
+            label="Settings"
+            active={currentView === 'settings'}
+            onClick={() => setCurrentView('settings')}
+          />
+        </NavGroup>
+      </nav>
 
       {/* ── Conversations ───────────────────────────────────────────── */}
       {currentView === 'chat' && (
         <>
+          <div className="mx-4 border-t border-[var(--glass-stroke)]" />
           <div className="flex items-center justify-between px-5 py-3">
-            <span className="font-mono text-[10px] uppercase tracking-[0.28em] text-[var(--text-muted)]">
+            <span className="section-label">
               History
             </span>
             <button
@@ -173,6 +184,16 @@ export function Sidebar() {
   )
 }
 
+/* ─── Nav group ───────────────────────────────────────────────────── */
+function NavGroup({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <div className="section-label px-3 mb-1.5">{label}</div>
+      <div className="space-y-0.5">{children}</div>
+    </div>
+  )
+}
+
 /* ─── Nav row ──────────────────────────────────────────────────────── */
 function NavItem({
   icon: Icon,
@@ -188,26 +209,27 @@ function NavItem({
   return (
     <button
       onClick={onClick}
-      className={`group relative flex items-center gap-3 w-full px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-300 text-left overflow-hidden
+      className={`group relative flex items-center gap-3 w-full px-3 py-2 rounded-xl text-sm font-medium transition-colors duration-200 text-left
         ${active
-          ? 'text-[var(--text-primary)] bg-[var(--bg-tertiary)] shadow-[var(--shadow-soft)]'
-          : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]/40 hover:text-[var(--text-primary)]'
+          ? 'text-[var(--text-primary)]'
+          : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--glass-fill)]'
         }`}
     >
-      {/* active vertical rail */}
+      {/* active pill */}
       {active && (
         <motion.span
-          layoutId="nav-rail"
-          className="absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-full"
+          layoutId="nav-pill"
+          className="absolute inset-0 rounded-xl"
           style={{
-            background:
-              'linear-gradient(180deg, var(--accent), var(--holo))',
-            boxShadow: '0 0 12px var(--accent-glow)',
+            background: 'var(--glass-fill-hover)',
+            border: '1px solid var(--glass-stroke)',
+            boxShadow: '0 1px 0 var(--glass-highlight) inset',
           }}
+          transition={{ type: 'spring', stiffness: 420, damping: 34 }}
         />
       )}
-      <Icon className={`w-4 h-4 flex-shrink-0 transition-colors ${active ? 'text-[var(--accent)]' : ''}`} />
-      <span className="tracking-tight">{label}</span>
+      <Icon className={`w-4 h-4 flex-shrink-0 transition-colors relative ${active ? 'text-[var(--accent)]' : ''}`} />
+      <span className="tracking-tight relative">{label}</span>
     </button>
   )
 }
@@ -234,18 +256,12 @@ function ConvItem({
       transition={{ duration: 0.25, ease: [0.22, 1, 0.36, 1] }}
       className={`group relative flex items-center gap-2 px-3 py-2.5 rounded-xl cursor-pointer transition-all duration-200
         ${isActive
-          ? 'bg-[var(--bg-tertiary)] shadow-[var(--shadow-soft)]'
-          : 'hover:bg-[var(--bg-tertiary)]/50'
+          ? 'glass-card glass-card-active'
+          : 'border border-transparent hover:bg-[var(--glass-fill)]'
         }`}
       onClick={onSelect}
     >
-      {isActive && (
-        <span
-          className="absolute left-0 top-2 bottom-2 w-[2px] rounded-full"
-          style={{ background: 'linear-gradient(180deg, var(--accent), var(--holo))', boxShadow: '0 0 8px var(--accent-glow)' }}
-        />
-      )}
-      <div className="flex-1 min-w-0 pl-1">
+      <div className="flex-1 min-w-0">
         <div className={`text-xs font-medium truncate leading-snug ${isActive ? 'text-[var(--text-primary)]' : 'text-[var(--text-secondary)]'}`}>
           {conv.title}
         </div>

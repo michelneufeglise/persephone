@@ -36,7 +36,7 @@ export function DocOpNode({ id, data, selected }: DocOpNodeProps) {
           <select
             value={data.config.operation}
             onChange={e => handleChange({ operation: e.target.value as any })}
-            className="w-full px-2 py-1.5 rounded-lg bg-[var(--bg-secondary)] text-xs text-[var(--text-primary)] border border-[var(--border)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)] transition-all"
+            className="glass-input w-full px-2 py-1.5 text-xs"
           >
             {OPERATIONS.map(op => (
               <option key={op} value={op}>
@@ -54,7 +54,7 @@ export function DocOpNode({ id, data, selected }: DocOpNodeProps) {
             value={data.config.context || ''}
             onChange={e => handleChange({ context: e.target.value })}
             placeholder="e.g., question for qa, target language…"
-            className="w-full px-2 py-1.5 rounded-lg bg-[var(--bg-secondary)] text-xs text-[var(--text-primary)] border border-[var(--border)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)] transition-all"
+            className="glass-input w-full px-2 py-1.5 text-xs"
           />
         </div>
       </div>

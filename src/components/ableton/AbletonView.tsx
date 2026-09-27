@@ -925,7 +925,7 @@ export function AbletonView() {
   }
 
   return (
-    <div className="h-full flex flex-col overflow-hidden">
+    <div className="h-full flex flex-col overflow-hidden bg-transparent">
       {/* ── Header ───────────────────────────────────────────────── */}
       <div className="flex items-center justify-between mb-4 flex-shrink-0">
         <div className="flex items-center gap-3">
@@ -1048,7 +1048,7 @@ export function AbletonView() {
               <div className="flex items-center justify-between">
                 <span className="text-[10px] font-mono uppercase tracking-widest text-[var(--accent)]">One last step — inside Ableton</span>
                 <button onClick={copyNotes} title="Copy instructions"
-                        className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-mono uppercase tracking-widest text-[var(--accent)] hover:bg-[var(--accent-dim)]">
+                        className="flex items-center gap-1 px-2 py-1 rounded-md text-[10px] font-mono uppercase tracking-widest text-[var(--accent)] hover:bg-[var(--glass-fill-hover)]">
                   <Copy className="w-3 h-3" />{copied ? 'copied' : 'copy'}
                 </button>
               </div>
@@ -1067,7 +1067,7 @@ export function AbletonView() {
               onClick={launchLive}
               disabled={!status?.best}
               title={status?.best ? `Open ${status.best.name}` : 'No install to launch'}
-              className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-sm font-medium border border-[var(--border)] hover:border-[var(--accent)] hover:bg-[var(--accent-dim)] text-[var(--text-primary)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-sm font-medium border border-[var(--border)] hover:border-[var(--accent)] hover:bg-[var(--glass-fill-hover)] text-[var(--text-primary)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               <Play className="w-4 h-4" />
               {status?.running ? 'Live is running' : 'Launch Live'}
@@ -1080,7 +1080,7 @@ export function AbletonView() {
                 : !status.bridgeInstalled ? 'Bridge must be installed'
                 : 'Send an OSC ping to the bridge'
               }
-              className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-sm font-medium border border-[var(--border)] hover:border-[var(--accent)] hover:bg-[var(--accent-dim)] text-[var(--text-primary)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-sm font-medium border border-[var(--border)] hover:border-[var(--accent)] hover:bg-[var(--glass-fill-hover)] text-[var(--text-primary)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               {pinging ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
               {pingMs !== null ? `ping · ${pingMs} ms` : 'ping bridge'}
@@ -1238,7 +1238,7 @@ function StatusChip({ status, onRefresh }: { status: AbletonStatus | null; onRef
     ? 'border-emerald-500/40 bg-emerald-500/10 text-emerald-300'
     : variant === 'warn'
     ? 'border-amber-500/40 bg-amber-500/10 text-amber-300'
-    : 'border-[var(--border)] bg-[var(--bg-tertiary)] text-[var(--text-muted)]'
+    : 'border-[var(--glass-stroke)] bg-[var(--glass-tint-strong)] text-[var(--text-muted)]'
 
   return (
     <button
@@ -1257,7 +1257,7 @@ function StatusChip({ status, onRefresh }: { status: AbletonStatus | null; onRef
 
 function InstallRow({ install, isPreferred }: { install: AbletonInstall; isPreferred: boolean }) {
   return (
-    <div className={`flex items-center gap-3 p-3 rounded-xl border ${isPreferred ? 'border-[var(--accent)]' : 'border-[var(--border)]'} bg-[var(--bg-primary)]/40`}>
+    <div className={`glass-card flex items-center gap-3 p-3 rounded-xl ${isPreferred ? 'border-[var(--accent)]' : ''}`}>
       <Music4 className={`w-4 h-4 flex-shrink-0 ${isPreferred ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]'}`} />
       <div className="flex-1 min-w-0">
         <div className="text-sm text-[var(--text-primary)] leading-tight">
@@ -1286,7 +1286,7 @@ function ProgressBar({ progress }: { progress: InstallProgress }) {
   const pct = Math.max(0, Math.min(1, Number(progress.progress ?? 0))) * 100
   return (
     <div className="space-y-1.5">
-      <div className="h-1.5 rounded-full bg-[var(--bg-tertiary)] overflow-hidden">
+      <div className="h-1.5 rounded-full bg-[var(--glass-tint-strong)] overflow-hidden">
         <div
           className="h-full transition-all duration-300"
           style={{
@@ -1344,7 +1344,7 @@ function ProbeReport({ result }: { result: ProbeResult }) {
 
 function BrowserList({ title, items }: { title: string; items: { name: string; uri: string }[] }) {
   return (
-    <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-primary)]/40 overflow-hidden">
+    <div className="glass-card rounded-lg overflow-hidden">
       <div className="px-2.5 py-1.5 border-b border-[var(--border)] text-[9.5px] font-mono uppercase tracking-widest text-[var(--text-muted)]">
         {title} · {items.length}
       </div>
@@ -1352,7 +1352,7 @@ function BrowserList({ title, items }: { title: string; items: { name: string; u
         {items.length === 0
           ? <div className="text-[10.5px] italic text-[var(--text-muted)] p-1">(empty)</div>
           : items.map(it => (
-              <div key={it.uri} title={it.uri} className="text-[10.5px] font-mono text-[var(--text-secondary)] px-1.5 py-0.5 rounded hover:bg-[var(--accent-dim)] truncate">
+              <div key={it.uri} title={it.uri} className="text-[10.5px] font-mono text-[var(--text-secondary)] px-1.5 py-0.5 rounded hover:bg-[var(--glass-fill-hover)] truncate">
                 {it.name}
               </div>
             ))
@@ -1462,7 +1462,7 @@ function ComposerPanel({
           <button
             onClick={onNewSong}
             title="Start a new empty song (optionally wipe Ableton too)"
-            className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-[var(--border)] text-sm text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] hover:bg-[var(--accent-dim)]/20 transition-colors"
+            className="flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border border-[var(--border)] text-sm text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] hover:bg-[var(--glass-fill-hover)]/20 transition-colors"
           >
             <FilePlus className="w-4 h-4" /> new
           </button>
@@ -1473,7 +1473,7 @@ function ComposerPanel({
             className={`flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border text-sm transition-colors ${
               showSaveInput
                 ? 'border-[var(--accent)] bg-[var(--accent-dim)]/20 text-[var(--accent)]'
-                : 'border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] hover:bg-[var(--accent-dim)]/20'
+                : 'border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] hover:bg-[var(--glass-fill-hover)]/20'
             } disabled:opacity-40 disabled:cursor-not-allowed`}
           >
             <Save className="w-4 h-4" /> {currentSongId ? 'update' : 'save'}
@@ -1484,7 +1484,7 @@ function ComposerPanel({
             className={`flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg border text-sm transition-colors ${
               showLibrary
                 ? 'border-[var(--accent)] bg-[var(--accent-dim)]/20 text-[var(--accent)]'
-                : 'border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] hover:bg-[var(--accent-dim)]/20'
+                : 'border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] hover:bg-[var(--glass-fill-hover)]/20'
             }`}
           >
             <Library className="w-4 h-4" /> library
@@ -1504,7 +1504,7 @@ function ComposerPanel({
               onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); onSaveSong() } }}
               placeholder={spec?.topic || spec?.genre || 'Song name…'}
               autoFocus
-              className="w-full bg-[var(--bg-primary)]/60 border border-[var(--border)] rounded-lg px-2.5 py-2 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none focus:border-[var(--accent)]"
+              className="glass-input w-full px-2.5 py-2 text-sm"
             />
             <div className="grid grid-cols-2 gap-2">
               <button
@@ -1568,7 +1568,7 @@ function ComposerPanel({
                       className={`flex items-center gap-2 rounded-md border p-2 transition-colors ${
                         isCurrent
                           ? 'border-[var(--accent)] bg-[var(--accent-dim)]/20'
-                          : 'border-[var(--border)] bg-[var(--bg-primary)]/40 hover:border-[var(--border-bright)]'
+                          : 'border-[var(--glass-stroke)] bg-[var(--glass-fill)] hover:border-[var(--border-bright)]'
                       }`}
                     >
                       <button
@@ -1614,7 +1614,7 @@ function ComposerPanel({
             }}
             rows={2}
             placeholder="e.g. rainy Sunday morning, warm rhodes, boom-bap kit"
-            className="w-full mt-2 bg-[var(--bg-primary)]/60 border border-[var(--border)] rounded-xl px-3 py-2 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none focus:border-[var(--accent)] resize-none font-display"
+            className="w-full mt-2 glass-input px-3 py-2 text-sm resize-none font-display"
           />
         </div>
 
@@ -1638,10 +1638,10 @@ function ComposerPanel({
         </div>
 
         {/* Deep-reasoning toggle — swaps compose model to deepseek-r1:70b */}
-        <label className="flex items-center justify-between gap-3 p-2.5 rounded-lg border border-[var(--border)] bg-[var(--bg-primary)]/40 cursor-pointer select-none">
+        <label className="glass-card flex items-center justify-between gap-3 p-2.5 rounded-lg cursor-pointer select-none">
           <div className="flex items-center gap-2.5 flex-1 min-w-0">
             <div className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors flex-shrink-0 ${
-              deepReasoning ? 'bg-[var(--accent-dim)] text-[var(--accent)]' : 'bg-[var(--bg-tertiary)] text-[var(--text-muted)]'
+              deepReasoning ? 'bg-[var(--accent-dim)] text-[var(--accent)]' : 'bg-[var(--glass-fill-hover)] text-[var(--text-muted)]'
             }`}>
               <Sparkles className="w-4 h-4" />
             </div>
@@ -1657,7 +1657,7 @@ function ComposerPanel({
           </div>
           <input type="checkbox" checked={deepReasoning} onChange={e => setDeepReasoning(e.target.checked)} className="sr-only" />
           <span className={`relative w-9 h-5 rounded-full transition-colors flex-shrink-0 ${
-            deepReasoning ? 'bg-[var(--accent)]' : 'bg-[var(--bg-tertiary)]'
+            deepReasoning ? 'bg-[var(--accent)]' : 'bg-[var(--glass-tint-strong)]'
           }`}>
             <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
               deepReasoning ? 'translate-x-4' : ''
@@ -1816,7 +1816,7 @@ function SongSpecCard({
           `${spec.timesig.num}/${spec.timesig.den}`,
           spec.genre || 'genre?',
         ].map((chip, i) => (
-          <span key={i} className="px-2.5 py-1 rounded-full text-[10.5px] font-mono uppercase tracking-widest border border-[var(--border)] bg-[var(--bg-primary)]/40 text-[var(--text-secondary)]">
+          <span key={i} className="px-2.5 py-1 rounded-full text-[10.5px] font-mono uppercase tracking-widest border border-[var(--glass-stroke)] bg-[var(--glass-fill)] text-[var(--text-secondary)]">
             {chip}
           </span>
         ))}
@@ -1830,7 +1830,7 @@ function SongSpecCard({
             {spec.sections.map((sec, i) => (
               <div
                 key={sec.id}
-                className="flex-1 flex flex-col items-center justify-center py-2 border-r last:border-r-0 border-[var(--border)] bg-[var(--bg-primary)]/40"
+                className="flex-1 flex flex-col items-center justify-center py-2 border-r last:border-r-0 border-[var(--glass-stroke)] bg-[var(--glass-fill)]"
                 style={{ flexGrow: Math.max(1, sec.length_bars) }}
                 title={`${sec.name} · bars ${sec.start_bar} → ${sec.start_bar + sec.length_bars}`}
               >
@@ -1863,8 +1863,8 @@ function SongSpecCard({
               key={t.id}
               className={`rounded-lg border p-2.5 space-y-1.5 transition-colors ${
                 isFocus  ? 'border-[var(--accent)] bg-[var(--accent-dim)]/20'
-                : isActive ? 'border-[var(--accent)]/60 bg-[var(--bg-primary)]/50'
-                : 'border-[var(--border)] bg-[var(--bg-primary)]/40'
+                : isActive ? 'border-[var(--accent)]/60 bg-[var(--glass-fill)]'
+                : 'border-[var(--glass-stroke)] bg-[var(--glass-fill)]'
               }`}
             >
               <div className="flex items-center gap-2">
@@ -1977,7 +1977,7 @@ function SongSpecCard({
         {!showAddTrack ? (
           <button
             onClick={() => setShowAddTrack(true)}
-            className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-dashed border-[var(--border)] text-[var(--text-muted)] text-sm hover:text-[var(--accent)] hover:border-[var(--accent)] hover:bg-[var(--accent-dim)]/20 transition-colors"
+            className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-dashed border-[var(--border)] text-[var(--text-muted)] text-sm hover:text-[var(--accent)] hover:border-[var(--accent)] hover:bg-[var(--glass-fill-hover)]/20 transition-colors"
           >
             <Plus className="w-4 h-4" /> add track
           </button>
@@ -2022,7 +2022,7 @@ function SongSpecCard({
                 }}
                 rows={2}
                 placeholder="e.g. warm rhodes chords with subtle vibrato, sparse in verses, fuller in chorus"
-                className="w-full mt-1.5 bg-[var(--bg-primary)]/60 border border-[var(--border)] rounded-lg px-2.5 py-2 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none focus:border-[var(--accent)] resize-none"
+                className="w-full mt-1.5 glass-input px-2.5 py-2 text-sm resize-none"
               />
             </div>
             {addTrackError && (
@@ -2053,10 +2053,10 @@ function SongSpecCard({
       </div>
 
       {/* Auto-load toggle */}
-      <label className="flex items-center justify-between gap-3 p-2.5 rounded-lg border border-[var(--border)] bg-[var(--bg-primary)]/40 cursor-pointer select-none">
+      <label className="glass-card flex items-center justify-between gap-3 p-2.5 rounded-lg cursor-pointer select-none">
         <div className="flex items-center gap-2.5 flex-1 min-w-0">
           <div className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors flex-shrink-0 ${
-            autoLoad ? 'bg-[var(--accent-dim)] text-[var(--accent)]' : 'bg-[var(--bg-tertiary)] text-[var(--text-muted)]'
+            autoLoad ? 'bg-[var(--accent-dim)] text-[var(--accent)]' : 'bg-[var(--glass-fill-hover)] text-[var(--text-muted)]'
           }`}>
             <Music4 className="w-4 h-4" />
           </div>
@@ -2073,7 +2073,7 @@ function SongSpecCard({
         </div>
         <input type="checkbox" checked={autoLoad} onChange={e => setAutoLoad(e.target.checked)} className="sr-only" />
         <span className={`relative w-9 h-5 rounded-full transition-colors flex-shrink-0 ${
-          autoLoad ? 'bg-[var(--accent)]' : 'bg-[var(--bg-tertiary)]'
+          autoLoad ? 'bg-[var(--accent)]' : 'bg-[var(--glass-tint-strong)]'
         }`}>
           <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
             autoLoad ? 'translate-x-4' : ''
@@ -2082,10 +2082,10 @@ function SongSpecCard({
       </label>
 
       {/* Auto-play toggle */}
-      <label className="flex items-center justify-between gap-3 p-2.5 rounded-lg border border-[var(--border)] bg-[var(--bg-primary)]/40 cursor-pointer select-none">
+      <label className="glass-card flex items-center justify-between gap-3 p-2.5 rounded-lg cursor-pointer select-none">
         <div className="flex items-center gap-2.5 flex-1 min-w-0">
           <div className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors flex-shrink-0 ${
-            autoPlay ? 'bg-[var(--accent-dim)] text-[var(--accent)]' : 'bg-[var(--bg-tertiary)] text-[var(--text-muted)]'
+            autoPlay ? 'bg-[var(--accent-dim)] text-[var(--accent)]' : 'bg-[var(--glass-fill-hover)] text-[var(--text-muted)]'
           }`}>
             <Play className="w-4 h-4" />
           </div>
@@ -2098,7 +2098,7 @@ function SongSpecCard({
         </div>
         <input type="checkbox" checked={autoPlay} onChange={e => setAutoPlay(e.target.checked)} className="sr-only" />
         <span className={`relative w-9 h-5 rounded-full transition-colors flex-shrink-0 ${
-          autoPlay ? 'bg-[var(--accent)]' : 'bg-[var(--bg-tertiary)]'
+          autoPlay ? 'bg-[var(--accent)]' : 'bg-[var(--glass-tint-strong)]'
         }`}>
           <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
             autoPlay ? 'translate-x-4' : ''
@@ -2117,7 +2117,7 @@ function SongSpecCard({
           className={`flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${
             dirtyTrackIds.size > 0 && !applying
               ? 'bg-amber-400/15 border border-amber-400/50 text-amber-200 hover:bg-amber-400/25'
-              : 'bg-[var(--bg-primary)]/40 border border-[var(--border)] text-[var(--text-muted)]'
+              : 'bg-[var(--glass-fill)] border border-[var(--glass-stroke)] text-[var(--text-muted)]'
           } disabled:opacity-40`}
         >
           {applyingTrackId ? <Loader2 className="w-4 h-4 animate-spin" /> : <Zap className="w-4 h-4" />}
@@ -2271,7 +2271,7 @@ function AddSoundCard({
         {targets.map(t => {
           const hint = INSTRUMENT_HINTS[t.role] ?? INSTRUMENT_HINTS.chord
           return (
-            <div key={t.id} className="flex items-start gap-3 p-2.5 rounded-lg border border-[var(--border)] bg-[var(--bg-primary)]/40">
+            <div key={t.id} className="glass-card flex items-start gap-3 p-2.5 rounded-lg">
               <span className="w-14 text-[10px] font-mono uppercase tracking-widest text-[var(--accent)] flex-shrink-0 pt-0.5">{t.role}</span>
               <div className="flex-1 min-w-0">
                 <div className="text-sm text-[var(--text-primary)] leading-tight">
@@ -2344,7 +2344,7 @@ function EditChatPanel({
           rows={1}
           placeholder={editing ? 'thinking…' : 'ask the composer for a change… (Enter to send)'}
           disabled={editing}
-          className="flex-1 bg-[var(--bg-primary)]/60 border border-[var(--border)] rounded-xl px-3 py-2 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none focus:border-[var(--accent)] resize-none font-display disabled:opacity-60"
+          className="flex-1 glass-input px-3 py-2 text-sm resize-none font-display disabled:opacity-60"
           style={{ maxHeight: 96 }}
         />
         <button
@@ -2391,7 +2391,7 @@ function TurnRow({ turn }: { turn: ChatTurn }) {
   }
   return (
     <div className="flex justify-start">
-      <div className="max-w-[85%] px-3 py-2 rounded-2xl rounded-tl-md text-sm text-[var(--text-primary)] bg-[var(--bg-tertiary)]/60 border border-[var(--border)] space-y-1.5">
+      <div className="max-w-[85%] px-3 py-2 rounded-2xl rounded-tl-md text-sm text-[var(--text-primary)] bg-[var(--glass-fill)] border border-[var(--glass-stroke)] space-y-1.5">
         {turn.reply && <div className="leading-snug">{turn.reply}</div>}
         {turn.summaries && turn.summaries.length > 0 && (
           <ul className="space-y-0.5 pt-0.5">
@@ -2437,7 +2437,7 @@ function ClipPatternChip({
         title={vocab.length === 0 ? 'No pattern vocabulary for this role' : 'Change pattern for this clip'}
         className={`flex items-center gap-1.5 px-2 py-0.5 rounded-full border text-[10px] font-mono uppercase tracking-widest transition-all ${
           pattern
-            ? 'border-[var(--accent)]/50 bg-[var(--accent-dim)] text-[var(--accent)] hover:bg-[var(--accent-dim)]/70'
+            ? 'border-[var(--accent)]/50 bg-[var(--accent-dim)] text-[var(--accent)] hover:bg-[var(--glass-fill-hover)]/70'
             : 'border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--border-bright)] hover:text-[var(--text-secondary)]'
         } disabled:opacity-40 disabled:cursor-not-allowed`}
       >
@@ -2446,7 +2446,7 @@ function ClipPatternChip({
         {saving ? <Loader2 className="w-3 h-3 animate-spin" /> : <span>{label}</span>}
       </button>
       {open && vocab.length > 0 && (
-        <div className="absolute top-full left-0 mt-1 z-10 min-w-[180px] max-h-64 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--bg-primary)] shadow-lg py-1"
+        <div className="absolute top-full left-0 mt-1 z-10 min-w-[180px] max-h-64 overflow-y-auto glass-strong rounded-2xl py-1"
              style={{ scrollbarWidth: 'thin' }}>
           <button
             onClick={() => handlePick('')}
@@ -2505,7 +2505,7 @@ function ApplyProgressBar({ stage, totalTracks }: { stage: ApplyStage; totalTrac
   const pct = Math.max(0, Math.min(1, stage.progress ?? 0)) * 100
   return (
     <div className="space-y-1.5">
-      <div className="h-1.5 rounded-full bg-[var(--bg-tertiary)] overflow-hidden">
+      <div className="h-1.5 rounded-full bg-[var(--glass-tint-strong)] overflow-hidden">
         <div
           className="h-full transition-all duration-300"
           style={{

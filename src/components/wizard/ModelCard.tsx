@@ -121,10 +121,10 @@ export function ModelCard({ model, selected, onSelect, ramGb = 0 }: ModelCardPro
       animate={{ opacity: 1, y: 0 }}
       onClick={onSelect}
       className={clsx(
-        'relative rounded-xl border p-3.5 cursor-pointer transition-all duration-200 group',
+        'relative rounded-xl p-3.5 cursor-pointer transition-all duration-200 group glass-card',
         selected
-          ? 'border-[var(--accent)] bg-[var(--accent-dim)] shadow-lg shadow-[var(--accent-glow)]'
-          : 'border-[var(--border)] bg-[var(--bg-tertiary)] hover:border-[var(--border-bright)]',
+          ? 'glass-card-active shadow-lg shadow-[var(--accent-glow)]'
+          : 'glass-card-hover',
         !canRun && 'opacity-60',
       )}
     >
@@ -199,7 +199,7 @@ export function ModelCard({ model, selected, onSelect, ramGb = 0 }: ModelCardPro
       {/* Tags */}
       <div className="flex flex-wrap gap-1 mb-2.5">
         {model.tags.map(t => (
-          <span key={t} className="text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--bg-secondary)] text-[var(--text-muted)] border border-[var(--border)]">
+          <span key={t} className="text-[10px] px-1.5 py-0.5 rounded-full glass-card">
             {t}
           </span>
         ))}
@@ -232,7 +232,7 @@ export function ModelCard({ model, selected, onSelect, ramGb = 0 }: ModelCardPro
                     <X className="w-3.5 h-3.5" />
                   </button>
                 </div>
-                <div className="h-1.5 rounded-full bg-[var(--bg-secondary)] overflow-hidden">
+                <div className="h-1.5 rounded-full bg-[var(--glass-fill-hover)] overflow-hidden">
                   <motion.div
                     className="h-full rounded-full bg-[var(--accent)]"
                     animate={{ width: `${progress}%` }}

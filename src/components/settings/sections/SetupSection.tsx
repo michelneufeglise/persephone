@@ -71,7 +71,7 @@ export function SetupSection() {
       </div>
 
       {/* Parallel-tab throughput */}
-      <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] p-5">
+      <div className="rounded-xl glass-card p-5">
         <div className="flex items-start gap-3">
           <div className={`w-9 h-9 rounded-lg border flex items-center justify-center flex-shrink-0 ${
             parCfg?.ok
@@ -126,7 +126,7 @@ export function SetupSection() {
           )}
           <button
             onClick={() => { void loadParallel() }}
-            className="p-2 rounded-lg border border-[var(--border)] text-[var(--text-muted)] hover:text-[var(--accent)] hover:border-[var(--accent)] transition-colors"
+            className="p-2 rounded-lg glass-card text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
             title="Re-check current values"
           >
             <RefreshCw className="w-4 h-4" />
@@ -142,9 +142,9 @@ export function SetupSection() {
         )}
       </div>
 
-      <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] p-5">
+      <div className="rounded-xl glass-card p-5">
         <div className="flex items-start gap-3">
-          <div className="w-9 h-9 rounded-lg bg-[var(--accent-dim)] border border-[var(--border-bright)]
+          <div className="w-9 h-9 rounded-lg glass-card
             flex items-center justify-center flex-shrink-0">
             <Sparkles className="w-4 h-4 text-[var(--accent)]" />
           </div>
@@ -182,7 +182,7 @@ export function SetupSection() {
                 onClick={() => setConfirming(false)}
                 className="px-4 py-2 rounded-lg text-sm font-medium
                   text-[var(--text-secondary)] hover:text-[var(--text-primary)]
-                  hover:bg-[var(--bg-tertiary)] transition-all"
+                  hover:bg-[var(--glass-fill-hover)] transition-all"
               >
                 Cancel
               </button>

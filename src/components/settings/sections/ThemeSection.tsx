@@ -30,7 +30,11 @@ export function ThemeSection() {
                 ? 'border-[var(--accent)] shadow-lg shadow-[var(--accent-glow)] scale-[1.01]'
                 : 'border-[var(--border)] hover:border-[var(--border-bright)] hover:scale-[1.005]'
               }`}
-            style={{ background: theme.preview.bg }}
+            style={{
+              background: theme.preview.wall
+                ? `radial-gradient(60% 70% at 15% 20%, ${theme.preview.wall[0]} 0%, transparent 70%), radial-gradient(60% 70% at 85% 15%, ${theme.preview.wall[1]} 0%, transparent 70%), radial-gradient(60% 70% at 80% 90%, ${theme.preview.wall[2]} 0%, transparent 70%), radial-gradient(50% 60% at 15% 90%, ${theme.preview.wall[3]} 0%, transparent 72%), ${theme.preview.bg}`
+                : theme.preview.bg
+            }}
           >
             {/* Color preview swatches */}
             <div className="flex-shrink-0 flex gap-1">
@@ -40,7 +44,7 @@ export function ThemeSection() {
             </div>
 
             {/* Info */}
-            <div className="flex-1 min-w-0">
+            <div className="glass rounded-xl p-3 flex-1 min-w-0">
               <div className="font-serif text-base" style={{ color: theme.preview.text }}>
                 {theme.name}
               </div>

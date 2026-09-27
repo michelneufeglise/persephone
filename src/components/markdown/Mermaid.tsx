@@ -103,11 +103,11 @@ function initMermaid() {
       primaryColor:        v('--accent-dim', '#d6356a22'),
       primaryTextColor:    v('--text-primary', '#f5ecff'),
       primaryBorderColor:  v('--accent', '#d6356a'),
-      secondaryColor:      v('--bg-tertiary', '#141027'),
-      tertiaryColor:       v('--bg-secondary', '#0c0918'),
+      secondaryColor:      v('--bg-solid-tertiary', '#141027'),
+      tertiaryColor:       v('--bg-solid-secondary', '#0c0918'),
       lineColor:           v('--accent', '#d6356a'),
       textColor:           v('--text-secondary', '#b9a4dc'),
-      mainBkg:             v('--bg-tertiary', '#141027'),
+      mainBkg:             v('--bg-solid-tertiary', '#141027'),
       secondaryBorderColor:v('--holo', '#7df9ff'),
       tertiaryBorderColor: v('--gold', '#f0c060'),
     },
@@ -253,7 +253,7 @@ export function Mermaid({ source }: { source: string }) {
     <div className="my-4 relative">
       <div
         ref={containerRef}
-        className="overflow-x-auto rounded-xl bg-[var(--bg-tertiary)]/60 border border-[var(--border)] p-4 flex justify-center"
+        className="overflow-x-auto rounded-xl glass-card p-4 flex justify-center"
         style={{ boxShadow: 'var(--shadow-soft)' }}
       />
       {didSanitize && (

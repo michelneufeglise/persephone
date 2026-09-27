@@ -84,7 +84,7 @@ export function MemoryView() {
   return (
     <div className="h-full glass rounded-3xl overflow-hidden flex flex-col">
       {/* Header */}
-      <div className="px-6 py-4 border-b border-[var(--border)] bg-[var(--bg-glass-strong)]">
+      <div className="px-6 py-4 border-b border-[var(--glass-stroke)]">
         <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <PersephoneIcon size={40} />
@@ -97,7 +97,7 @@ export function MemoryView() {
           </div>
 
           {/* tabs */}
-          <div className="flex bg-[var(--bg-tertiary)] rounded-xl p-1 gap-1">
+          <div className="flex glass-card rounded-full p-0.5 gap-0.5">
             <TabBtn active={tab === 'facts'} onClick={() => setTab('facts')} icon={Sparkles} label="Facts" />
             <TabBtn active={tab === 'conversations'} onClick={() => setTab('conversations')} icon={MessageSquare} label="History" />
           </div>
@@ -149,13 +149,13 @@ export function MemoryView() {
                         onChange={e => setNewFact(e.target.value)}
                         onKeyDown={e => { if (e.key === 'Enter') addFact() }}
                         placeholder='e.g. "The user prefers concise replies"'
-                        className="w-full bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg px-3 py-2 text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]"
+                        className="w-full glass-input rounded-lg px-3 py-2 text-sm text-[var(--text-primary)]"
                       />
                       <div className="flex items-center gap-2">
                         <select
                           value={newCat}
                           onChange={e => setNewCat(e.target.value)}
-                          className="bg-[var(--bg-primary)] border border-[var(--border)] rounded-lg px-2 py-1.5 text-xs text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)]"
+                          className="glass-input rounded-lg px-2 py-1.5 text-xs text-[var(--text-primary)]"
                         >
                           {orderedCats.concat(['other', 'general']).map(c => (
                             <option key={c} value={c}>{c}</option>
@@ -264,7 +264,7 @@ function FactRow({ fact, onDelete }: { fact: UserFact; onDelete: () => void }) {
       initial={{ opacity: 0, x: -4 }}
       animate={{ opacity: 1, x: 0 }}
       exit={{ opacity: 0, x: 4 }}
-      className="group relative flex items-start gap-3 px-3.5 py-2.5 rounded-xl bg-[var(--bg-tertiary)] border border-[var(--border)] hover:border-[var(--border-bright)] transition-colors"
+      className="group relative flex items-start gap-3 px-3.5 py-2.5 rounded-xl glass-card glass-card-hover"
     >
       <Hash className="w-3 h-3 text-[var(--accent)] mt-1 flex-shrink-0 opacity-60" />
       <div className="flex-1 min-w-0">
@@ -291,9 +291,9 @@ function TabBtn({
     <button
       onClick={onClick}
       className={clsx(
-        'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all duration-200',
+        'flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-200',
         active
-          ? 'text-[var(--text-primary)] bg-[var(--bg-primary)] shadow-[var(--shadow-soft)]'
+          ? 'bg-[var(--glass-fill-hover)] text-[var(--text-primary)] shadow-[inset_0_1px_0_var(--glass-highlight)]'
           : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]',
       )}
     >

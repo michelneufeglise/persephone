@@ -64,7 +64,7 @@ export function ThinkingPanel({ content, isStreaming }: ThinkingPanelProps) {
           >
             <div
               ref={bodyRef}
-              className="mt-2 p-3 rounded-lg bg-[var(--thinking-bg)] border border-[var(--border)] max-h-64 overflow-y-auto"
+              className="mt-2 p-3 rounded-lg bg-[var(--thinking-bg)] border border-[var(--glass-stroke)] max-h-64 overflow-y-auto"
             >
               <pre className="text-xs font-mono text-[var(--text-muted)] whitespace-pre-wrap leading-relaxed">
                 {content}

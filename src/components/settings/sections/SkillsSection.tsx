@@ -73,7 +73,7 @@ export function SkillsSection() {
         <button
           onClick={refresh}
           disabled={loading}
-          className="flex items-center gap-1.5 text-xs text-[var(--text-muted)] hover:text-[var(--accent)] px-2.5 py-1.5 rounded-md hover:bg-[var(--bg-tertiary)] transition-colors"
+          className="flex items-center gap-1.5 text-xs text-[var(--text-muted)] hover:text-[var(--accent)] px-2.5 py-1.5 rounded-md hover:bg-[var(--glass-fill-hover)] transition-colors"
           title="Rescan skill folders"
         >
           {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
@@ -147,7 +147,7 @@ function SkillCard({
         {/* Expand chevron */}
         <button
           onClick={onExpand}
-          className="mt-0.5 p-1 rounded text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--bg-tertiary)] transition-colors"
+          className="mt-0.5 p-1 rounded text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--glass-fill-hover)] transition-colors"
           title={expanded ? 'Collapse' : 'Show body + keywords'}
         >
           {expanded ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
@@ -156,7 +156,7 @@ function SkillCard({
         <div className="flex-1 min-w-0 cursor-pointer" onClick={onExpand}>
           <div className="flex items-center gap-2 flex-wrap">
             <span className="font-medium text-[var(--text-primary)] text-sm">{skill.name}</span>
-            <span className="flex items-center gap-1 text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-[var(--bg-tertiary)] text-[var(--text-muted)] border border-[var(--border)]">
+            <span className="flex items-center gap-1 text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded glass-card">
               <SourceIcon className="w-3 h-3" /> {skill.source}
             </span>
             {skill.category && skill.category !== 'general' && (
@@ -188,7 +188,7 @@ function SkillCard({
             transition={{ duration: 0.2 }}
             className="overflow-hidden"
           >
-            <div className="mt-4 pt-4 border-t border-[var(--border)] space-y-4">
+            <div className="mt-4 pt-4 border-t border-[var(--glass-stroke)] space-y-4">
               {skill.keywords.length > 0 && (
                 <div>
                   <div className="text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1.5 font-medium">
@@ -196,7 +196,7 @@ function SkillCard({
                   </div>
                   <div className="flex flex-wrap gap-1.5">
                     {skill.keywords.map(k => (
-                      <span key={k} className="text-xs px-2 py-0.5 rounded-full bg-[var(--bg-tertiary)] text-[var(--text-secondary)] border border-[var(--border)]">
+                      <span key={k} className="text-xs px-2 py-0.5 rounded-full glass-card">
                         {k}
                       </span>
                     ))}
@@ -212,7 +212,7 @@ function SkillCard({
                     <Loader2 className="w-3.5 h-3.5 animate-spin" /> Loading…
                   </div>
                 ) : (
-                  <pre className="text-xs text-[var(--text-primary)] whitespace-pre-wrap font-sans leading-relaxed max-h-96 overflow-y-auto bg-[var(--bg-secondary)] rounded-lg p-3 border border-[var(--border)]">
+                  <pre className="text-xs text-[var(--text-primary)] whitespace-pre-wrap font-sans leading-relaxed max-h-96 overflow-y-auto glass-card rounded-lg p-3">
                     {body || skill.body_preview || '(empty)'}
                   </pre>
                 )}

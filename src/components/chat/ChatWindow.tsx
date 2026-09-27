@@ -325,12 +325,12 @@ export function ChatWindow() {
   return (
     <div className="relative flex flex-col h-full glass rounded-3xl overflow-hidden">
       {/* Header */}
-      <div className="relative flex items-center justify-between px-5 py-3.5 border-b border-[var(--border)] bg-[var(--bg-glass-strong)]">
+      <div className="relative flex items-center justify-between px-5 py-3.5 border-b border-[var(--glass-stroke)]">
         <ModelSelector />
         <div className="flex items-center gap-1">
           <button
             onClick={() => activeConversationId && clearMessages(activeConversationId)}
-            className="p-2 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+            className="p-2 rounded-lg text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--glass-fill-hover)] transition-colors"
             title="Clear messages in this tab"
           >
             <Trash2 className="w-4 h-4" />

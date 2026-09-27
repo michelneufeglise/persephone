@@ -135,6 +135,9 @@ export function SetupWizard() {
 
   return (
     <div className="fixed inset-0 bg-[var(--bg-primary)] flex flex-col overflow-hidden">
+      <div className="atmos atmos-wallpaper" />
+      <div className="atmos atmos-backdrop" />
+
       {/* Ambient background */}
       <div className="fixed inset-0 pointer-events-none"
         style={{
@@ -145,14 +148,14 @@ export function SetupWizard() {
       />
 
       {/* Header */}
-      <div className="relative z-10 flex items-center justify-between px-8 py-5 border-b border-[var(--border)]">
+      <div className="relative z-10 flex items-center justify-between px-8 py-5 border-b border-[var(--glass-stroke)]">
         <div className="flex items-center gap-2">
           <PersephoneIcon size={28} glow={false} />
           <span className="font-serif text-lg text-[var(--text-primary)]">Persephone Setup</span>
         </div>
 
         {/* Step dots */}
-        <div className="flex items-center gap-1.5">
+        <div className="relative z-10 flex items-center gap-1.5">
           {STEPS.map((s, i) => (
             <button
               key={s.id}
@@ -169,13 +172,13 @@ export function SetupWizard() {
           ))}
         </div>
 
-        <div className="text-xs text-[var(--text-muted)] font-mono">
+        <div className="relative z-10 text-xs text-[var(--text-muted)] font-mono">
           {step + 1} / {STEPS.length}
         </div>
       </div>
 
       {/* Progress bar */}
-      <div className="relative z-10 h-0.5 bg-[var(--bg-tertiary)]">
+      <div className="relative z-10 h-0.5 bg-[var(--glass-fill-hover)]">
         <motion.div
           className="h-full bg-[var(--accent)]"
           animate={{ width: `${progress}%` }}
@@ -337,12 +340,12 @@ export function SetupWizard() {
       </div>
 
       {/* Footer nav */}
-      <div className="relative z-10 flex items-center justify-between px-8 py-5 border-t border-[var(--border)]">
+      <div className="relative z-10 flex items-center justify-between px-8 py-5 border-t border-[var(--glass-stroke)]">
         <button
           onClick={goPrev}
           disabled={isFirst}
           className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
-            text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]
+            text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--glass-fill-hover)]
             transition-all disabled:opacity-0 disabled:pointer-events-none"
         >
           <ChevronLeft className="w-4 h-4" />
@@ -402,7 +405,9 @@ function ThemeStep({ selected, onSelect }: { selected: string; onSelect: (id: st
                 : 'hover:scale-[1.005] opacity-90 hover:opacity-100'
             }`}
             style={{
-              background: theme.preview.bg,
+              background: theme.preview.wall
+                ? `radial-gradient(60% 70% at 15% 20%, ${theme.preview.wall[0]} 0%, transparent 70%), radial-gradient(60% 70% at 85% 15%, ${theme.preview.wall[1]} 0%, transparent 70%), radial-gradient(60% 70% at 80% 90%, ${theme.preview.wall[2]} 0%, transparent 70%), radial-gradient(50% 60% at 15% 90%, ${theme.preview.wall[3]} 0%, transparent 72%), ${theme.preview.bg}`
+                : theme.preview.bg,
               border: `2px solid ${selected === theme.id ? theme.preview.accent : 'rgba(255,255,255,0.08)'}`,
               boxShadow: selected === theme.id ? `0 0 20px ${theme.preview.accent}40` : undefined,
             }}
@@ -412,7 +417,7 @@ function ThemeStep({ selected, onSelect }: { selected: string; onSelect: (id: st
                 <div key={i} className="w-6 h-6 rounded-full border border-white/10" style={{ background: c }} />
               ))}
             </div>
-            <div>
+            <div className="glass rounded-xl p-3">
               <div className="font-serif text-sm font-medium" style={{ color: theme.preview.text }}>{theme.name}</div>
               <div className="text-[11px] mt-0.5 opacity-60" style={{ color: theme.preview.text }}>{theme.description}</div>
             </div>

@@ -182,12 +182,12 @@ export function ChatInput({
 
   return (
     <div
-      className="flex flex-col p-4 border-t border-[var(--border)] bg-[var(--bg-glass-strong)] rounded-b-3xl"
+      className="flex flex-col p-4 border-t border-[var(--glass-stroke)] rounded-b-3xl"
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
       style={dragActive && enableRoles ? {
-        backgroundColor: 'var(--bg-secondary)',
+        backgroundColor: 'var(--glass-fill-hover)',
         borderColor: 'var(--accent)',
       } : {}}
     >
@@ -195,13 +195,13 @@ export function ChatInput({
       {files.length > 0 && (
         <div className="flex flex-wrap gap-2 mb-3">
           {files.map((file, i) => (
-            <div key={i} className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-[var(--bg-tertiary)] border border-[var(--border)]">
+            <div key={i} className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full glass-card">
               <span className="text-xs text-[var(--text-primary)] max-w-[200px] truncate">{file.name}</span>
               {enableRoles && (
                 <select
                   value={fileRoles[i] ?? 'auto'}
                   onChange={(e) => setFileRole(i, e.target.value as 'auto' | 'subject' | 'reference')}
-                  className="text-xs bg-[var(--bg-secondary)] border border-[var(--border)] rounded px-1.5 py-0.5 text-[var(--text-secondary)] focus:outline-none focus:border-[var(--accent)]"
+                  className="text-xs glass-input rounded px-1.5 py-0.5 text-[var(--text-secondary)]"
                   title="Document classification"
                 >
                   <option value="auto">Auto</option>
@@ -248,14 +248,11 @@ export function ChatInput({
             onPaste={handlePaste}
             placeholder={placeholder}
             rows={1}
-            className="w-full resize-none rounded-2xl border border-[var(--border)]
+            className="w-full resize-none rounded-2xl glass-input
               px-4 py-3 text-[14px] text-[var(--text-primary)] leading-relaxed
-              placeholder:text-[var(--text-muted)] focus:outline-none
-              transition-all duration-300 max-h-[200px] overflow-y-auto
-              focus:border-[var(--accent)] focus:shadow-[0_0_0_3px_var(--accent-dim)]"
+              placeholder:text-[var(--text-muted)]
+              transition-all duration-300 max-h-[200px] overflow-y-auto"
             style={{
-              background: 'var(--bg-primary)',
-              boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.04), inset 0 2px 12px rgba(0,0,0,0.25)',
               scrollbarWidth: 'thin',
             }}
           />
@@ -264,10 +261,8 @@ export function ChatInput({
         {/* Attach button */}
         <button
           onClick={() => fileRef.current?.click()}
-          className="flex-shrink-0 w-12 h-12 rounded-2xl flex items-center justify-center transition-all duration-200"
+          className="flex-shrink-0 w-12 h-12 rounded-2xl glass-input flex items-center justify-center transition-all duration-200"
           style={{
-            background: 'var(--bg-primary)',
-            border: '1px solid var(--border)',
             color: 'var(--text-muted)',
           }}
           onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--accent)')}
@@ -304,7 +299,7 @@ export function ChatInput({
               whileTap={{ scale: 0.96 }}
               onClick={handleSend}
               disabled={!value.trim() && files.length === 0}
-              className="flex-shrink-0 w-12 h-12 rounded-2xl text-white flex items-center justify-center
+              className="flex-shrink-0 w-12 h-12 rounded-2xl pill-btn !p-0 flex items-center justify-center
                 transition-all duration-300 disabled:opacity-40 disabled:cursor-not-allowed"
               style={{
                 background: 'linear-gradient(135deg, var(--accent), var(--accent-deep))',

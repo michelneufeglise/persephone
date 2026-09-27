@@ -46,7 +46,7 @@
   width: 12px !important;
   height: 12px !important;
   background: var(--accent) !important;
-  border: 2px solid var(--bg-primary) !important;
+  border: 2px solid var(--glass-tint-strong) !important;
   border-radius: 50% !important;
   box-shadow: 0 0 12px var(--accent-glow) !important;
   transition: all 0.3s ease !important;
@@ -70,8 +70,8 @@
 
 /* Controls */
 .react-flow__controls {
-  background: var(--bg-glass) !important;
-  border: 1px solid var(--border-glass) !important;
+  background: var(--glass-tint-strong) !important;
+  border: 1px solid var(--glass-stroke) !important;
   border-radius: 0.75rem;
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
@@ -110,8 +110,8 @@
 
 /* MiniMap */
 .react-flow__minimap {
-  background: var(--bg-glass-strong) !important;
-  border: 1px solid var(--border-glass) !important;
+  background: var(--glass-tint-strong) !important;
+  border: 1px solid var(--glass-stroke) !important;
   border-radius: 0.75rem;
   backdrop-filter: blur(10px);
   -webkit-backdrop-filter: blur(10px);
@@ -151,9 +151,9 @@
    Dark theme overrides (if needed)
    ────────────────────────────────────────────────────────────────── */
 [data-theme='dark'] .react-flow__minimap {
-  background: var(--bg-glass-strong) !important;
+  background: var(--glass-tint-strong) !important;
 }
 
 [data-theme='dark'] .react-flow__controls {
-  background: var(--bg-glass) !important;
+  background: var(--glass-tint-strong) !important;
 }

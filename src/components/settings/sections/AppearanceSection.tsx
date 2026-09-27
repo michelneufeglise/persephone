@@ -89,7 +89,7 @@ export function AppearanceSection() {
         </div>
         <button
           onClick={handleReset}
-          className="flex-shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs text-[var(--text-muted)] border border-[var(--border)] hover:border-[var(--accent)] hover:text-[var(--accent)] transition-colors"
+          className="flex-shrink-0 flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs pill-btn-outline"
           title="Reset every appearance setting"
         >
           <RotateCcw className="w-3.5 h-3.5" /> Reset
@@ -162,10 +162,10 @@ export function AppearanceSection() {
               key={opt.id}
               onClick={() => s.set('fontFamily', opt.id)}
               className={clsx(
-                'w-full text-left p-3 rounded-xl border transition-colors flex items-center justify-between gap-4',
+                'w-full text-left p-3 rounded-xl flex items-center justify-between gap-4 glass-card transition-colors',
                 s.fontFamily === opt.id
-                  ? 'border-[var(--accent)] bg-[var(--accent-dim)]'
-                  : 'border-[var(--border)] bg-[var(--bg-tertiary)] hover:border-[var(--border-bright)]',
+                  ? 'glass-card-active'
+                  : 'glass-card-hover',
               )}
             >
               <div className="min-w-0">
@@ -271,7 +271,7 @@ export function AppearanceSection() {
       </Panel>
 
       {/* Current settings summary */}
-      <div className="text-xs text-[var(--text-muted)] italic pt-2 border-t border-[var(--border)]">
+      <div className="text-xs text-[var(--text-muted)] italic pt-2 border-t border-[var(--glass-stroke)]">
         Current: {sizePx} px base · {(s.uiScale * 100).toFixed(0)}% zoom · {s.motion} motion · {s.contrast} contrast · {s.fontFamily} font
       </div>
     </div>
@@ -312,10 +312,10 @@ function PickerCard({
     <button
       onClick={onClick}
       className={clsx(
-        'text-left p-3 rounded-xl border transition-colors flex flex-col gap-1',
+        'text-left p-3 rounded-xl flex flex-col gap-1 glass-card transition-colors',
         selected
-          ? 'border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--accent)]'
-          : 'border-[var(--border)] bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:border-[var(--border-bright)] hover:text-[var(--text-primary)]',
+          ? 'glass-card-active text-[var(--accent)]'
+          : 'glass-card-hover text-[var(--text-secondary)] hover:text-[var(--text-primary)]',
       )}
     >
       {preview && (
@@ -354,7 +354,7 @@ function LivePreview() {
 
   return (
     <motion.div layout
-      className="rounded-2xl border border-[var(--border-bright)] bg-[var(--bg-glass-strong)] p-5 leading-relaxed text-[var(--text-primary)]"
+      className="rounded-2xl glass-card p-5 leading-relaxed text-[var(--text-primary)]"
       style={{ fontFamily: 'var(--font-family-body)' }}
     >
       {sample}

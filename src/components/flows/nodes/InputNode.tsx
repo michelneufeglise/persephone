@@ -94,7 +94,7 @@ export function InputNode({ id, data, selected }: InputNodeProps) {
           <select
             value={data.config.kind}
             onChange={e => handleChange({ kind: e.target.value as 'text' | 'document' })}
-            className="w-full px-2 py-1.5 rounded-lg bg-[var(--bg-secondary)] text-xs text-[var(--text-primary)] border border-[var(--border)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)] transition-all"
+            className="glass-input w-full px-2 py-1.5 text-xs"
           >
             <option value="text">Text</option>
             <option value="document">Document</option>
@@ -109,7 +109,7 @@ export function InputNode({ id, data, selected }: InputNodeProps) {
               value={data.config.text || ''}
               onChange={e => handleChange({ text: e.target.value })}
               placeholder="Enter input text…"
-              className="w-full px-2 py-2 rounded-lg bg-[var(--bg-secondary)] text-xs text-[var(--text-primary)] border border-[var(--border)] font-mono resize-none h-24 focus:outline-none focus:ring-1 focus:ring-[var(--accent)] transition-all"
+              className="glass-input w-full px-2 py-2 text-xs font-mono resize-none h-24"
             />
           </div>
         ) : (
@@ -119,7 +119,7 @@ export function InputNode({ id, data, selected }: InputNodeProps) {
             <select
               value={data.config.documentId || ''}
               onChange={e => handleChange({ documentId: e.target.value })}
-              className="w-full px-2 py-1.5 rounded-lg bg-[var(--bg-secondary)] text-xs text-[var(--text-primary)] border border-[var(--border)] focus:outline-none focus:ring-1 focus:ring-[var(--accent)] transition-all"
+              className="glass-input w-full px-2 py-1.5 text-xs"
             >
               <option value="">Select a document…</option>
               {docs.map(d => (
@@ -133,7 +133,7 @@ export function InputNode({ id, data, selected }: InputNodeProps) {
             <button
               onClick={handleUploadClick}
               disabled={isUploading}
-              className="w-full px-2 py-2 rounded-lg bg-[var(--bg-secondary)] text-xs text-[var(--accent)] border border-[var(--border)] hover:bg-[var(--accent-dim)] hover:border-[var(--accent)] transition-colors disabled:opacity-50 flex items-center justify-center gap-2 font-medium"
+              className="pill-btn-outline w-full px-2 py-2 text-xs flex items-center justify-center gap-2 font-medium disabled:opacity-50"
             >
               {isUploading ? (
                 <>
@@ -150,7 +150,7 @@ export function InputNode({ id, data, selected }: InputNodeProps) {
 
             {/* Upload feedback */}
             {uploadedFileName && (
-              <div className="text-xs text-green-400 bg-[var(--bg-secondary)] p-2 rounded-lg border border-green-400/20 flex items-center justify-between">
+              <div className="text-xs text-green-400 glass-card p-2 border-green-400/20 flex items-center justify-between">
                 <span className="truncate">{uploadedFileName}</span>
                 <button
                   onClick={() => setUploadedFileName('')}
@@ -162,7 +162,7 @@ export function InputNode({ id, data, selected }: InputNodeProps) {
             )}
 
             {uploadError && (
-              <div className="text-xs text-red-400 bg-[var(--bg-secondary)] p-2 rounded-lg border border-red-400/20 flex items-center justify-between">
+              <div className="text-xs text-red-400 glass-card p-2 border-red-400/20 flex items-center justify-between">
                 <span className="truncate">{uploadError}</span>
                 <button
                   onClick={() => setUploadError('')}

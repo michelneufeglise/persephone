@@ -690,7 +690,7 @@ function ReelsViewInner() {
   }
 
   return (
-    <div className="h-full flex flex-col overflow-hidden">
+    <div className="h-full flex flex-col overflow-hidden bg-transparent">
       {/* ── Header ────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between mb-4 flex-shrink-0">
         <div className="flex items-center gap-3">
@@ -796,7 +796,7 @@ function ReelsViewInner() {
                       onChange={e => setTopic(e.target.value)}
                       rows={3}
                       placeholder="e.g. Three things you didn't know about the pomegranate…"
-                      className="w-full mt-2 bg-[var(--bg-primary)]/60 border border-[var(--border)] rounded-xl px-3 py-2.5 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none focus:border-[var(--accent)] resize-none font-display"
+                      className="w-full mt-2 glass-input px-3 py-2.5 text-sm resize-none font-display"
                     />
                   </div>
 
@@ -836,7 +836,7 @@ function ReelsViewInner() {
                     <select
                       value={voiceId}
                       onChange={e => setVoiceId(e.target.value)}
-                      className="w-full mt-2 bg-[var(--bg-primary)]/60 border border-[var(--border)] rounded-xl px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)] font-mono"
+                      className="w-full mt-2 glass-input px-3 py-2 text-sm font-mono"
                     >
                       {Object.entries(groupedVoices).map(([accent, list]) => (
                         <optgroup key={accent} label={accent.toUpperCase()}>
@@ -937,7 +937,7 @@ function ReelsViewInner() {
                         value={checkpoint}
                         onChange={e => setChkp(e.target.value)}
                         disabled={!comfy?.running || checkpoints.length === 0}
-                        className="w-full mt-2 bg-[var(--bg-primary)]/60 border border-[var(--border)] rounded-xl px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)] font-mono disabled:opacity-50"
+                        className="w-full mt-2 glass-input px-3 py-2 text-sm font-mono disabled:opacity-50"
                       >
                         {checkpoints.length === 0
                           ? <option value="">{comfy?.running ? 'no checkpoints found in ComfyUI' : 'ComfyUI offline — start it on :8188'}</option>
@@ -1227,7 +1227,7 @@ function InstallComfyPanel({
         {!installing && (
           <button
             onClick={onCancel}
-            className="p-1.5 rounded-md text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]"
+            className="p-1.5 rounded-md text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--glass-fill-hover)]"
           >
             <X className="w-4 h-4" />
           </button>
@@ -1245,7 +1245,7 @@ function InstallComfyPanel({
               type="text"
               value={path}
               onChange={e => onPath(e.target.value)}
-              className="w-full mt-2 bg-[var(--bg-primary)]/60 border border-[var(--border)] rounded-xl px-3 py-2 text-sm text-[var(--text-primary)] outline-none focus:border-[var(--accent)] font-mono"
+              className="w-full mt-2 glass-input px-3 py-2 text-sm font-mono"
             />
           </div>
           <label className="flex items-center gap-2.5 cursor-pointer select-none">
@@ -1288,7 +1288,7 @@ function InstallComfyPanel({
                     state === 'done'   ? 'bg-emerald-400'
                     : state === 'active' ? 'bg-gradient-to-r from-[var(--accent)] to-[var(--holo)] animate-pulse'
                     : state === 'error'  ? 'bg-red-400'
-                                         : 'bg-[var(--bg-tertiary)]'
+                                         : 'bg-[var(--glass-tint-strong)]'
                   }`} />
                   <div className={`text-[9px] font-mono uppercase tracking-widest mt-1.5 truncate ${
                     state === 'done'   ? 'text-emerald-300'
@@ -1306,7 +1306,7 @@ function InstallComfyPanel({
           {/* per-stage progress bar */}
           {installing && (
             <div className="space-y-1.5">
-              <div className="h-1.5 rounded-full bg-[var(--bg-tertiary)] overflow-hidden">
+              <div className="h-1.5 rounded-full bg-[var(--glass-tint-strong)] overflow-hidden">
                 <div
                   className="h-full transition-all duration-300"
                   style={{
@@ -1443,7 +1443,7 @@ function SceneCard({
     : ''
 
   return (
-    <div className="p-3 rounded-xl border border-[var(--border)] bg-[var(--bg-primary)]/40 hover:border-[var(--border-bright)] transition-colors space-y-2">
+    <div className="glass-card p-3 rounded-xl hover:border-[var(--border-bright)] transition-colors space-y-2">
     <div className="flex gap-3">
       {/* Thumbnail: video preview, image preview, or numbered orb */}
       {hasVideo ? (
@@ -1526,7 +1526,7 @@ function SceneCard({
           rows={1}
           placeholder="caption text · read by Kokoro if voiceover is on"
           title="This text is what Kokoro will speak AND what gets burned in as the scene caption."
-          className="w-full bg-transparent outline-none resize-none text-sm text-[var(--text-primary)] leading-snug hover:bg-[var(--bg-primary)]/40 focus:bg-[var(--bg-primary)]/60 rounded px-1 -mx-1 py-0.5"
+          className="w-full bg-transparent outline-none resize-none text-sm text-[var(--text-primary)] leading-snug hover:bg-[var(--glass-fill-hover)]/40 focus:bg-[var(--glass-fill-hover)]/60 rounded px-1 -mx-1 py-0.5"
           style={{ minHeight: '1.4em' }}
         />
 
@@ -1557,7 +1557,7 @@ function SceneCard({
               onKeyDown={e => {
                 if (e.key === 'Enter') { commitStart(); (e.target as HTMLInputElement).blur() }
               }}
-              className="w-14 bg-[var(--bg-primary)]/60 border border-[var(--border)] rounded px-1.5 py-0.5 text-right text-[var(--text-primary)] outline-none focus:border-[var(--accent)]"
+              className="glass-input w-14 px-1.5 py-0.5 text-right text-sm"
             />
             <span className="lowercase">s into {hasVideo ? 'clip' : 'master'}</span>
           </div>
@@ -1599,8 +1599,8 @@ function SceneCard({
             }
             className={`p-1 rounded-md transition-colors ${
               hasOverride
-                ? 'text-[var(--accent)] hover:bg-[var(--accent-dim)]'
-                : 'text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--accent-dim)]'
+                ? 'text-[var(--accent)] hover:bg-[var(--glass-fill-hover)]'
+                : 'text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--glass-fill-hover)]'
             } disabled:opacity-40`}
           >
             {uploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
@@ -1809,7 +1809,7 @@ function AspectPreview({
               className={`w-2 h-2 rounded-full transition-all ${
                 i === scene
                   ? 'bg-[var(--accent)] w-6 shadow-[0_0_6px_var(--accent-glow)]'
-                  : 'bg-[var(--bg-tertiary)] hover:bg-[var(--border-bright)]'
+                  : 'bg-[var(--glass-tint-strong)] hover:bg-[var(--border-bright)]'
               }`}
             />
           ))}
@@ -1836,7 +1836,7 @@ function PipelinePanel({ comfy }: { comfy: ComfyStatus | null }) {
           <div key={i} className="flex items-center gap-3">
             <div className={`flex-shrink-0 w-8 h-8 rounded-lg flex items-center justify-center ${
               s.ready ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/40'
-                     : 'bg-[var(--bg-tertiary)] text-[var(--text-muted)] border border-[var(--border)]'
+                     : 'bg-[var(--glass-tint-strong)] text-[var(--text-muted)] border border-[var(--glass-stroke)]'
             }`}>
               <s.icon className="w-4 h-4" />
             </div>
@@ -1912,7 +1912,7 @@ function RenderOptionsPanel({
             ))}
           </div>
           {capMode === 'transcript' && (
-            <div className="space-y-2 p-3 rounded-lg border border-[var(--border)] bg-[var(--bg-primary)]/40">
+            <div className="glass-card space-y-2 p-3 rounded-lg">
               <div className="flex items-start gap-2 text-[11px] text-[var(--text-muted)] leading-snug">
                 <Languages className="w-3.5 h-3.5 flex-shrink-0 mt-0.5 text-[var(--accent)]" />
                 <span>
@@ -1956,10 +1956,10 @@ function OptionRow({
       role="switch"
       aria-checked={checked}
       onClick={() => onChange(!checked)}
-      className="w-full flex items-center gap-3 p-2.5 rounded-lg border border-[var(--border)] bg-[var(--bg-primary)]/40 hover:border-[var(--border-bright)] transition-colors text-left"
+      className="glass-card w-full flex items-center gap-3 p-2.5 rounded-lg hover:border-[var(--border-bright)] transition-colors text-left"
     >
       <div className={`w-8 h-8 rounded-lg flex items-center justify-center transition-colors flex-shrink-0 ${
-        checked ? 'bg-[var(--accent-dim)] text-[var(--accent)]' : 'bg-[var(--bg-tertiary)] text-[var(--text-muted)]'
+        checked ? 'bg-[var(--accent-dim)] text-[var(--accent)]' : 'bg-[var(--glass-fill-hover)] text-[var(--text-muted)]'
       }`}>
         <Icon className="w-4 h-4" />
       </div>
@@ -1969,7 +1969,7 @@ function OptionRow({
       </div>
       {/* Pill switch — purely visual, the whole row is one <button>. */}
       <span className={`relative w-9 h-5 rounded-full transition-colors flex-shrink-0 ${
-        checked ? 'bg-[var(--accent)]' : 'bg-[var(--bg-tertiary)]'
+        checked ? 'bg-[var(--accent)]' : 'bg-[var(--glass-tint-strong)]'
       }`}>
         <span className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${
           checked ? 'translate-x-4' : ''
@@ -2060,7 +2060,7 @@ function MasterVideoPanel({
           <button
             onClick={() => inputRef.current?.click()}
             disabled={uploading}
-            className="w-full flex flex-col items-center justify-center gap-1.5 px-4 py-6 rounded-xl border border-dashed border-[var(--border)] hover:border-[var(--accent)] hover:bg-[var(--accent-dim)]/40 text-[var(--text-muted)] hover:text-[var(--accent)] transition-all disabled:opacity-40"
+            className="w-full flex flex-col items-center justify-center gap-1.5 px-4 py-6 rounded-xl border border-dashed border-[var(--border)] hover:border-[var(--accent)] hover:bg-[var(--glass-fill-hover)]/40 text-[var(--text-muted)] hover:text-[var(--accent)] transition-all disabled:opacity-40"
           >
             {uploading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Upload className="w-5 h-5" />}
             <span className="text-[12px] font-mono uppercase tracking-widest">
@@ -2073,7 +2073,7 @@ function MasterVideoPanel({
           {hasLibraryItems && (
             <button
               onClick={onBrowse}
-              className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-[11px] font-mono uppercase tracking-widest text-[var(--accent)] hover:bg-[var(--accent-dim)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors"
+              className="w-full flex items-center justify-center gap-1.5 px-3 py-2 rounded-lg text-[11px] font-mono uppercase tracking-widest text-[var(--accent)] hover:bg-[var(--glass-fill-hover)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors"
             >
               <Film className="w-3.5 h-3.5" />
               or pick from library
@@ -2154,7 +2154,7 @@ function MusicPanel({
           <button
             onClick={() => inputRef.current?.click()}
             disabled={uploading}
-            className="w-full flex flex-col items-center justify-center gap-1 px-4 py-4 rounded-xl border border-dashed border-[var(--border)] hover:border-[var(--accent)] hover:bg-[var(--accent-dim)]/40 text-[var(--text-muted)] hover:text-[var(--accent)] transition-all disabled:opacity-40"
+            className="w-full flex flex-col items-center justify-center gap-1 px-4 py-4 rounded-xl border border-dashed border-[var(--border)] hover:border-[var(--accent)] hover:bg-[var(--glass-fill-hover)]/40 text-[var(--text-muted)] hover:text-[var(--accent)] transition-all disabled:opacity-40"
           >
             {uploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
             <span className="text-[11px] font-mono uppercase tracking-widest">
@@ -2167,7 +2167,7 @@ function MusicPanel({
           {hasLibraryItems && (
             <button
               onClick={onBrowse}
-              className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[10.5px] font-mono uppercase tracking-widest text-[var(--accent)] hover:bg-[var(--accent-dim)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors"
+              className="w-full flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-[10.5px] font-mono uppercase tracking-widest text-[var(--accent)] hover:bg-[var(--glass-fill-hover)] border border-[var(--border)] hover:border-[var(--accent)] transition-colors"
             >
               <Music className="w-3 h-3" />
               or pick from library
@@ -2209,7 +2209,7 @@ function RenderProgressBar({ progress, total }: { progress: RenderProgress; tota
   }
   return (
     <div className="space-y-1.5">
-      <div className="h-1.5 rounded-full bg-[var(--bg-tertiary)] overflow-hidden">
+      <div className="h-1.5 rounded-full bg-[var(--glass-tint-strong)] overflow-hidden">
         <div
           className="h-full transition-all duration-300"
           style={{
@@ -2234,7 +2234,7 @@ function ReelCard({ reel }: { reel: Reel }) {
   const dims = reel.aspect === '9:16' ? { w: 180, h: 320 } :
                reel.aspect === '1:1'  ? { w: 260, h: 260 } : { w: 320, h: 180 }
   return (
-    <div className="rounded-2xl overflow-hidden border border-[var(--border)] bg-[var(--bg-primary)]/40 hover:border-[var(--accent)] transition-all group">
+    <div className="glass-card rounded-2xl overflow-hidden hover:border-[var(--accent)] transition-all group">
       <video
         src={reel.url}
         controls
@@ -2378,7 +2378,7 @@ function AssetCard({
   const canUse = asset.kind === 'scene_video' || asset.kind === 'music'
 
   return (
-    <div className="rounded-2xl overflow-hidden border border-[var(--border)] bg-[var(--bg-primary)]/40 hover:border-[var(--accent)] transition-colors group">
+    <div className="glass-card rounded-2xl overflow-hidden hover:border-[var(--accent)] transition-colors group">
       {preview()}
       <div className="p-3 space-y-2">
         <div className="flex items-center gap-1.5">
@@ -2395,7 +2395,7 @@ function AssetCard({
           {canUse && (
             <button
               onClick={onUse}
-              className="flex-1 px-2 py-1 rounded-md text-[10px] font-mono uppercase tracking-widest text-[var(--accent)] border border-[var(--accent)]/40 hover:bg-[var(--accent-dim)] transition-colors"
+              className="flex-1 px-2 py-1 rounded-md text-[10px] font-mono uppercase tracking-widest text-[var(--accent)] border border-[var(--accent)]/40 hover:bg-[var(--glass-fill-hover)] transition-colors"
               title={asset.kind === 'scene_video' ? 'Use as master video' : 'Use as background music'}
             >
               use
@@ -2427,9 +2427,9 @@ function AssetPickerModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
          onClick={onClose}>
-      <div className="w-full max-w-3xl max-h-[85vh] rounded-2xl border border-[var(--border)] bg-[var(--bg-primary)] shadow-2xl flex flex-col overflow-hidden"
+      <div className="glass-strong w-full max-w-3xl max-h-[85vh] rounded-2xl shadow-2xl flex flex-col overflow-hidden"
            onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-5 py-3 border-b border-[var(--border)]">
+        <div className="flex items-center justify-between px-5 py-3 border-b border-[var(--glass-stroke)]">
           <div>
             <h3 className="font-display text-lg text-[var(--text-primary)] leading-none">
               Pick a {label}

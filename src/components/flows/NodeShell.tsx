@@ -75,7 +75,7 @@ export function NodeShell({
       )}
 
       {/* Header */}
-      <div className="px-4 py-3 border-b border-[var(--border)] flex items-center justify-between gap-3">
+      <div className="px-4 py-3 border-b border-[var(--glass-stroke)] flex items-center justify-between gap-3">
         <div className="flex items-center gap-2.5 flex-1 min-w-0">
           <div
             className="flex items-center justify-center w-6 h-6 rounded-lg flex-shrink-0"
@@ -109,7 +109,7 @@ export function NodeShell({
 
       {/* Run state display */}
       {runState && (
-        <div className="px-4 py-3 border-t border-[var(--border)] bg-[var(--bg-secondary)] text-xs">
+        <div className="px-4 py-3 border-t border-[var(--glass-stroke)] text-xs">
           {isRunning && (
             <div className="flex items-center gap-2 text-blue-400">
               <Loader2 className="w-3 h-3 animate-spin flex-shrink-0" />
@@ -120,7 +120,7 @@ export function NodeShell({
             <div className="space-y-2">
               <span className="text-green-400 block font-medium">Complete</span>
               {runState.output !== undefined && (
-                <div className="max-h-32 overflow-y-auto bg-[var(--bg-primary)] rounded p-2 text-[var(--text-secondary)] font-mono text-xs whitespace-pre-wrap break-words">
+                <div className="max-h-32 overflow-y-auto glass-card rounded p-2 text-[var(--text-secondary)] font-mono text-xs whitespace-pre-wrap break-words">
                   {typeof runState.output === 'string'
                     ? runState.output
                     : JSON.stringify(runState.output, null, 2)}

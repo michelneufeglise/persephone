@@ -39,9 +39,9 @@ export function SettingsView() {
   const [activeTab, setActiveTab] = useState<Tab>('character')
 
   return (
-    <div className="flex h-full bg-[var(--bg-primary)] rounded-xl overflow-hidden border border-[var(--border)]">
+    <div className="flex h-full gap-3">
       {/* Left nav */}
-      <div className="w-44 flex-shrink-0 bg-[var(--bg-secondary)] border-r border-[var(--border)] py-4 flex flex-col gap-1 px-2">
+      <div className="w-44 flex-shrink-0 glass rounded-3xl overflow-hidden py-4 flex flex-col gap-1 px-2">
         <div className="px-2 pb-3">
           <h2 className="font-serif text-lg text-[var(--text-primary)]">Settings</h2>
           <p className="text-xs text-[var(--text-muted)] mt-0.5">Configure Persephone</p>
@@ -52,10 +52,10 @@ export function SettingsView() {
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-200 text-left
+              className={`flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm font-medium transition-all duration-200 text-left
                 ${activeTab === tab.id
-                  ? 'bg-[var(--accent-dim)] text-[var(--accent)] border border-[var(--border-bright)]'
-                  : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] hover:text-[var(--text-primary)]'
+                  ? 'glass-card glass-card-active'
+                  : 'text-[var(--text-secondary)] hover:bg-[var(--glass-fill)] hover:text-[var(--text-primary)]'
                 }`}
             >
               <Icon className="w-4 h-4 flex-shrink-0" />
@@ -66,7 +66,7 @@ export function SettingsView() {
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto p-6" style={{ scrollbarWidth: 'thin', scrollbarColor: 'var(--scrollbar) transparent' }}>
+      <div className="flex-1 glass rounded-3xl overflow-y-auto p-6" style={{ scrollbarWidth: 'thin', scrollbarColor: 'var(--scrollbar) transparent' }}>
         <AnimatePresence mode="wait">
           <motion.div
             key={activeTab}

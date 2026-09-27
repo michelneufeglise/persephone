@@ -113,10 +113,10 @@ export function MCPStep({ selected, onChange }: MCPStepProps) {
               animate={{ opacity: 1, y: 0 }}
               onClick={() => toggle(s.id)}
               className={clsx(
-                'relative rounded-xl border p-3.5 cursor-pointer transition-all duration-200',
+                'relative rounded-xl p-3.5 cursor-pointer transition-all duration-200 glass-card',
                 isSelected
-                  ? 'border-[var(--accent)] bg-[var(--accent-dim)] shadow-md shadow-[var(--accent-glow)]'
-                  : 'border-[var(--border)] bg-[var(--bg-tertiary)] hover:border-[var(--border-bright)]',
+                  ? 'glass-card-active shadow-md shadow-[var(--accent-glow)]'
+                  : 'glass-card-hover',
               )}
             >
               <div className="flex items-start justify-between gap-2 mb-1.5">
@@ -131,7 +131,7 @@ export function MCPStep({ selected, onChange }: MCPStepProps) {
 
               <div className="flex flex-wrap gap-1 mb-2">
                 {s.tags.map(t => (
-                  <span key={t} className="text-[10px] px-1.5 py-0.5 rounded-full bg-[var(--bg-secondary)] text-[var(--text-muted)] border border-[var(--border)]">
+                  <span key={t} className="text-[10px] px-1.5 py-0.5 rounded-full glass-card">
                     {t}
                   </span>
                 ))}

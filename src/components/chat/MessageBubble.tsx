@@ -79,7 +79,7 @@ export function MessageBubble({ message, onSpeak, isLatest, renderExtra, onSelec
   if (isSystem) {
     return (
       <div className="flex justify-center my-3">
-        <span className="text-xs text-[var(--text-muted)] italic px-3 py-1 rounded-full bg-[var(--bg-tertiary)]">
+        <span className="text-xs text-[var(--text-muted)] italic px-3 py-1 rounded-full glass-card">
           {message.content}
         </span>
       </div>
@@ -115,9 +115,10 @@ export function MessageBubble({ message, onSpeak, isLatest, renderExtra, onSelec
         }`}
         onClick={() => !isUser && onSelect && onSelect(message)}
         style={!isUser && onSelect && selected ? {
-          outline: '2px solid var(--accent)',
-          outlineOffset: '2px',
-          borderRadius: '12px',
+          outline: '1px solid color-mix(in oklab, var(--accent) 35%, transparent)',
+          outlineOffset: '3px',
+          borderRadius: '20px',
+          boxShadow: '0 0 0 4px color-mix(in oklab, var(--accent) 8%, transparent), 0 10px 30px -18px var(--accent-glow)',
           padding: '2px',
         } : {}}
       >
@@ -160,7 +161,7 @@ export function MessageBubble({ message, onSpeak, isLatest, renderExtra, onSelec
                 <span
                   className={`inline-flex items-center gap-1 text-[9px] font-mono px-1.5 py-0.5 rounded-full uppercase tracking-wider ${
                     isMainComment
-                      ? 'border border-[var(--border)] text-[var(--text-muted)] bg-[var(--bg-tertiary)]/60'
+                      ? 'border border-[var(--border)] text-[var(--text-muted)] glass-card'
                       : 'border border-amber-400/40 text-amber-300 bg-amber-400/10'
                   }`}
                   title={`Delegated to ${meta.delegate_model ?? '?'} (${meta.delegate_category ?? '?'})`}
@@ -193,10 +194,9 @@ export function MessageBubble({ message, onSpeak, isLatest, renderExtra, onSelec
 
         <div
           className={`relative rounded-2xl px-4 py-3 text-[14px] leading-relaxed text-[var(--text-primary)]
-            ${isUser ? 'rounded-tr-md' : 'rounded-tl-md'}`}
+            ${isUser ? 'rounded-tr-md border border-[var(--glass-stroke)]' : 'rounded-tl-md glass-card'}`}
           style={{
             background: isUser ? 'var(--user-bubble)' : 'var(--ai-bubble)',
-            border: '1px solid var(--border)',
             boxShadow: 'var(--shadow-soft)',
             backdropFilter: 'blur(8px)',
             WebkitBackdropFilter: 'blur(8px)',
@@ -218,9 +218,9 @@ export function MessageBubble({ message, onSpeak, isLatest, renderExtra, onSelec
             {message.attachments.map((a, i) => (
               <div key={i} className="flex items-center gap-1.5">
                 {a.kind === 'image' && a.preview ? (
-                  <img src={a.preview} alt={a.name} className="w-16 h-16 rounded-lg object-cover border border-[var(--border)]" />
+                  <img src={a.preview} alt={a.name} className="w-16 h-16 rounded-lg object-cover border border-[var(--glass-stroke)]" />
                 ) : (
-                  <div className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg bg-[var(--bg-tertiary)] border border-[var(--border)]">
+                  <div className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg glass-card">
                     <FileText className="w-3.5 h-3.5 text-[var(--text-muted)]" />
                     <span className="text-xs text-[var(--text-secondary)] truncate max-w-[150px]">{a.name}</span>
                   </div>
@@ -251,7 +251,7 @@ export function MessageBubble({ message, onSpeak, isLatest, renderExtra, onSelec
             )}
             <button
               onClick={handleCopy}
-              className="p-1.5 rounded-md text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)] transition-colors"
+              className="p-1.5 rounded-md text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--glass-fill-hover)] transition-colors"
               title="Copy"
             >
               {copied ? <Check className="w-3.5 h-3.5 text-green-500" /> : <Copy className="w-3.5 h-3.5" />}
@@ -273,7 +273,7 @@ export function MessageBubble({ message, onSpeak, isLatest, renderExtra, onSelec
             </span>
             {!isUser && message.tokPerSec != null && message.tokPerSec > 0 && (
               <span
-                className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-[var(--bg-tertiary)] ml-1"
+                className="text-[10px] font-mono px-1.5 py-0.5 rounded glass-card ml-1"
                 style={{ color: message.tokPerSec >= 30 ? 'var(--accent)' : message.tokPerSec >= 15 ? 'var(--gold)' : '#ef4444' }}
                 title={`${message.evalCount} tokens generated`}
               >
@@ -333,7 +333,7 @@ function SectionToc({ content }: { content: string }) {
   }
 
   return (
-    <div className="mb-3 -mt-1 rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)]/60">
+    <div className="mb-3 -mt-1 rounded-lg glass-card">
       <button
         onClick={() => setCollapsed(c => !c)}
         className="w-full flex items-center gap-2 px-3 py-1.5 text-[10px] font-mono uppercase tracking-[0.24em] text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"

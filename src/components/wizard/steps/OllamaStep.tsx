@@ -176,7 +176,7 @@ export function OllamaStep({ onReady }: OllamaStepProps) {
             Detected version <span className="font-mono text-[var(--accent)]">{status.version || 'unknown'}</span>
           </p>
         </div>
-        <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-[var(--bg-tertiary)] border border-[var(--border)]">
+        <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full glass-card">
           <OSIcon className="w-3.5 h-3.5 text-[var(--text-muted)]" />
           <span className="text-xs text-[var(--text-secondary)]">{OS_LABEL[status.os] ?? status.os}</span>
           {status.executable && (
@@ -233,7 +233,7 @@ export function OllamaStep({ onReady }: OllamaStepProps) {
       <div className="flex flex-col items-center text-center gap-2.5">
         <motion.div
           animate={{ scale: [1, 1.04, 1] }} transition={{ duration: 4, repeat: Infinity, ease: 'easeInOut' }}
-          className="w-20 h-20 rounded-full bg-[var(--bg-tertiary)] border-2 border-dashed border-[var(--border-bright)] flex items-center justify-center"
+          className="w-20 h-20 rounded-full glass-card border-2 border-dashed flex items-center justify-center"
         >
           <Server className="w-9 h-9 text-[var(--accent)]" />
         </motion.div>
@@ -250,7 +250,7 @@ export function OllamaStep({ onReady }: OllamaStepProps) {
       </div>
 
       {/* Install card */}
-      <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-secondary)] p-4 space-y-3">
+      <div className="rounded-xl glass-card p-4 space-y-3">
         <p className="text-xs text-[var(--text-muted)] leading-relaxed">
           {status.install_info.instructions}
         </p>

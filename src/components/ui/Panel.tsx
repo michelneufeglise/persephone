@@ -12,10 +12,10 @@ export function Panel({ children, className, glass, glow, ...props }: PanelProps
     <div
       {...props}
       className={clsx(
-        'rounded-xl border border-[var(--border)]',
+        'rounded-xl border border-[var(--glass-stroke)]',
         glass
-          ? 'bg-[var(--bg-glass)] backdrop-blur-md'
-          : 'bg-[var(--bg-secondary)]',
+          ? 'bg-[var(--glass-tint)] backdrop-blur-md -webkit-backdrop-filter-[blur(var(--glass-blur)_saturate(var(--glass-saturate)))]'
+          : 'bg-[var(--glass-fill)]',
         glow && 'shadow-lg shadow-[var(--accent-glow)]',
         className,
       )}

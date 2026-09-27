@@ -36,7 +36,7 @@ export function Slider({
         </div>
       )}
       <div className="relative h-5 flex items-center">
-        <div className="absolute inset-x-0 h-1 rounded-full bg-[var(--bg-tertiary)]">
+        <div className="absolute inset-x-0 h-1 rounded-full bg-[var(--glass-fill)]">
           <div
             className="absolute left-0 top-0 h-full rounded-full bg-[var(--accent)] transition-all duration-100"
             style={{ width: `${pct}%` }}

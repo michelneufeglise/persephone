@@ -219,10 +219,10 @@ function CategoryPill({
     <button
       onClick={onClick}
       className={clsx(
-        'px-3 py-1.5 rounded-full text-xs font-medium border transition-all duration-200',
+        'px-3 py-1.5 rounded-full text-xs font-medium transition-all duration-200 glass-card',
         active
-          ? 'border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--accent)] shadow-[0_0_12px_var(--accent-glow)]'
-          : 'border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--border-bright)] hover:text-[var(--text-secondary)]',
+          ? 'glass-card-active text-[var(--accent)] shadow-[0_0_12px_var(--accent-glow)]'
+          : 'glass-card-hover text-[var(--text-muted)] hover:text-[var(--text-secondary)]',
       )}
     >
       <Icon className="w-3 h-3 inline mr-1" />{label}
@@ -260,10 +260,10 @@ function ServerCard({
       animate={{ opacity: 1, y: 0 }}
       onClick={onToggle}
       className={clsx(
-        'group relative rounded-2xl border p-4 cursor-pointer transition-all duration-300 overflow-hidden',
+        'group relative rounded-2xl p-4 cursor-pointer transition-all duration-300 overflow-hidden glass-card',
         enabled
-          ? 'border-[var(--accent)] bg-[var(--accent-dim)] shadow-[var(--shadow-glow)]'
-          : 'border-[var(--border)] bg-[var(--bg-tertiary)] hover:border-[var(--border-bright)]',
+          ? 'glass-card-active shadow-[var(--shadow-glow)]'
+          : 'glass-card-hover',
       )}
     >
       {/* shimmer rim on enabled */}
@@ -300,8 +300,7 @@ function ServerCard({
         {server.tags.slice(0, 4).map(t => (
           <span
             key={t}
-            className="text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded
-              bg-[var(--bg-secondary)] text-[var(--text-muted)] border border-[var(--border)]"
+            className="text-[9px] font-mono uppercase tracking-wider px-1.5 py-0.5 rounded glass-card"
           >
             {t}
           </span>
