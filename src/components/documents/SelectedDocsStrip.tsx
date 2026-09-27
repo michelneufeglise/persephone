@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { motion } from 'framer-motion'
 import { X, ChevronDown, ChevronUp } from 'lucide-react'
 import { clsx } from 'clsx'
@@ -48,14 +49,14 @@ export function SelectedDocsStrip({
   return (
     <div className="border-b border-[var(--glass-stroke)] ">
       {/* Header */}
-      <div className="px-4 py-3 flex items-center justify-between">
-        <div className="text-sm text-[var(--text-secondary)]">
+      <div className="px-4 py-3 flex items-center justify-between gap-2">
+        <div className="text-sm text-[var(--text-secondary)] min-w-0">
           <span className="font-medium">Selected documents ({selectedDocs.length})</span>
           <span className="text-[var(--text-muted)] ml-1.5">— the chat will work on these</span>
         </div>
         <button
           onClick={onClear}
-          className="text-xs text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
+          className="flex-shrink-0 text-xs text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
         >
           Clear
         </button>
@@ -120,8 +121,6 @@ function DocChip({
   onDeselect: () => void
   isCollapsed: boolean
 }) {
-  const [showRoleMenu, setShowRoleMenu] = useState(false)
-
   if (isCollapsed) {
     // Compact chip mode: just filename and page count
     return (
@@ -193,43 +192,167 @@ function DocChip({
         </div>
         <div className="text-[10px] text-[var(--text-muted)]">· {doc.pages}p</div>
 
-        {/* Role selector */}
-        <div className="relative">
-          <button
-            onClick={() => setShowRoleMenu(!showRoleMenu)}
-            className={clsx(
-              'w-full text-[10px] font-medium px-1.5 py-1 rounded transition-colors',
-              role === 'auto'
-                ? 'glass-card-active'
-                : 'glass-card glass-card-hover',
-            )}
-          >
-            {role === 'auto' ? 'Auto' : role === 'subject' ? 'Document' : 'Reference'}
-          </button>
-
-          {showRoleMenu && (
-            <div className="absolute top-full left-0 right-0 mt-1 glass-strong rounded-lg shadow-lg z-10 overflow-hidden">
-              {(['auto', 'subject', 'reference'] as const).map(r => (
-                <button
-                  key={r}
-                  onClick={() => {
-                    onRoleChange(r)
-                    setShowRoleMenu(false)
-                  }}
-                  className={clsx(
-                    'w-full text-[10px] px-2 py-1.5 text-left transition-colors',
-                    role === r
-                      ? 'bg-[var(--accent-dim)] text-[var(--accent)] font-medium'
-                      : 'text-[var(--text-secondary)] hover:bg-[var(--glass-fill-hover)]',
-                  )}
-                >
-                  {r === 'auto' ? 'Auto' : r === 'subject' ? 'Document' : 'Reference'}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+        {/* Role selector — menu is portalled so the overflow-x-auto strip can't clip it */}
+        <RoleSelect role={role} onChange={onRoleChange} />
       </div>
     </motion.div>
+  )
+}
+
+type DocRole = 'auto' | 'subject' | 'reference'
+const ROLES: readonly DocRole[] = ['auto', 'subject', 'reference']
+const roleLabel = (r: DocRole) => (r === 'auto' ? 'Auto' : r === 'subject' ? 'Document' : 'Reference')
+
+const MENU_GAP = 4
+const MENU_EST_HEIGHT = 96 // 3 rows; refined after first layout
+
+function RoleSelect({ role, onChange }: { role: DocRole; onChange: (r: DocRole) => void }) {
+  const [open, setOpen] = useState(false)
+  const [pos, setPos] = useState<{ left: number; top: number; width: number } | null>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  const place = useCallback(() => {
+    const t = triggerRef.current
+    if (!t) return
+    const r = t.getBoundingClientRect()
+    const menuH = menuRef.current?.offsetHeight || MENU_EST_HEIGHT
+    const width = Math.max(r.width, 112)
+    const spaceBelow = window.innerHeight - r.bottom
+    const flipUp = spaceBelow < menuH + MENU_GAP && r.top > spaceBelow
+    const top = flipUp ? Math.max(MENU_GAP, r.top - menuH - MENU_GAP) : r.bottom + MENU_GAP
+    const left = Math.min(Math.max(MENU_GAP, r.left), window.innerWidth - width - MENU_GAP)
+    setPos({ left, top, width })
+  }, [])
+
+  const close = useCallback((refocus = false) => {
+    setOpen(false)
+    if (refocus) triggerRef.current?.focus()
+  }, [])
+
+  // Position before paint. The portalled menu is already mounted (hidden) in
+  // this commit, so its real height is measurable here.
+  useLayoutEffect(() => {
+    if (!open) {
+      setPos(null)
+      return
+    }
+    place()
+  }, [open, place])
+
+  // Focus the selected option when the menu opens.
+  useEffect(() => {
+    if (!open || !pos) return
+    const el = menuRef.current?.querySelector<HTMLButtonElement>('[aria-selected="true"]')
+    el?.focus()
+  }, [open, pos])
+
+  useEffect(() => {
+    if (!open) return
+    const onPointerDown = (e: PointerEvent) => {
+      const target = e.target as Node
+      if (menuRef.current?.contains(target) || triggerRef.current?.contains(target)) return
+      close()
+    }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault()
+        e.stopPropagation()
+        close(true)
+      }
+    }
+    const onScroll = (e: Event) => {
+      // Ignore scrolls inside the menu itself.
+      if (menuRef.current && e.target instanceof Node && menuRef.current.contains(e.target)) return
+      close()
+    }
+    const onResize = () => close()
+    document.addEventListener('pointerdown', onPointerDown, true)
+    document.addEventListener('keydown', onKey, true)
+    window.addEventListener('scroll', onScroll, true)
+    window.addEventListener('resize', onResize)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown, true)
+      document.removeEventListener('keydown', onKey, true)
+      window.removeEventListener('scroll', onScroll, true)
+      window.removeEventListener('resize', onResize)
+    }
+  }, [open, close])
+
+  function onMenuKeyDown(e: React.KeyboardEvent<HTMLDivElement>) {
+    if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'Home' && e.key !== 'End') return
+    e.preventDefault()
+    const items = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="option"]') ?? [])
+    if (items.length === 0) return
+    const idx = items.indexOf(document.activeElement as HTMLButtonElement)
+    let next = 0
+    if (e.key === 'ArrowDown') next = idx < 0 ? 0 : (idx + 1) % items.length
+    else if (e.key === 'ArrowUp') next = idx < 0 ? items.length - 1 : (idx - 1 + items.length) % items.length
+    else if (e.key === 'End') next = items.length - 1
+    items[next].focus()
+  }
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        onClick={() => setOpen(o => !o)}
+        onKeyDown={e => {
+          if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !open) {
+            e.preventDefault()
+            setOpen(true)
+          }
+        }}
+        className={clsx(
+          'w-full text-[10px] font-medium px-1.5 py-1 rounded transition-colors',
+          role === 'auto' ? 'glass-card-active' : 'glass-card glass-card-hover',
+        )}
+      >
+        {roleLabel(role)}
+      </button>
+
+      {open &&
+        createPortal(
+          <div
+            ref={menuRef}
+            role="listbox"
+            aria-label="Document role"
+            onKeyDown={onMenuKeyDown}
+            style={{
+              position: 'fixed',
+              left: pos?.left ?? -9999,
+              top: pos?.top ?? -9999,
+              width: pos?.width,
+              visibility: pos ? 'visible' : 'hidden',
+            }}
+            className="glass-strong rounded-xl shadow-lg z-50 overflow-hidden py-1"
+          >
+            {ROLES.map(r => (
+              <button
+                key={r}
+                type="button"
+                role="option"
+                aria-selected={role === r}
+                onClick={() => {
+                  onChange(r)
+                  close(true)
+                }}
+                className={clsx(
+                  'w-full text-[11px] px-2.5 py-1.5 text-left transition-colors focus:outline-none focus-visible:bg-[var(--glass-fill-hover)]',
+                  role === r
+                    ? 'bg-[var(--accent-dim)] text-[var(--accent)] font-medium'
+                    : 'text-[var(--text-secondary)] hover:bg-[var(--glass-fill-hover)]',
+                )}
+              >
+                {roleLabel(r)}
+              </button>
+            ))}
+          </div>,
+          document.body,
+        )}
+    </>
   )
 }

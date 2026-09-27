@@ -1,4 +1,4 @@
-import { useRef, useEffect, useState } from 'react'
+import { useRef, useEffect, useState, useCallback } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { MessageBubble } from './MessageBubble'
 import { ChatInput } from './ChatInput'
@@ -21,6 +21,8 @@ interface ChatPaneProps {
   selectedMessageId?: string | null
   className?: string
   resetKey?: string | null
+  /** Pre-fill the composer (e.g. from an example prompt). Bump `nonce` to re-apply the same text. */
+  prefill?: { text: string; nonce: number; select?: string } | null
 }
 
 export function ChatPane({
@@ -39,8 +41,18 @@ export function ChatPane({
   selectedMessageId,
   className,
   resetKey,
+  prefill,
 }: ChatPaneProps) {
   const bottomRef = useRef<HTMLDivElement>(null)
+
+  // Stable identities for the event-handler props so memoised MessageBubbles
+  // don't re-render on every parent render (latest-ref pattern).
+  const onSpeakRef = useRef(onSpeak)
+  const onSelectRef = useRef(onSelectMessage)
+  onSpeakRef.current = onSpeak
+  onSelectRef.current = onSelectMessage
+  const stableSpeak = useCallback((text: string) => onSpeakRef.current?.(text), [])
+  const stableSelect = useCallback((m: Message) => onSelectRef.current?.(m), [])
   const scrollerRef = useRef<HTMLDivElement>(null)
   const [stickBottom, setStickBottom] = useState(true)
 
@@ -105,9 +117,9 @@ export function ChatPane({
             <MessageBubble
               key={msg.id}
               message={msg}
-              onSpeak={onSpeak}
+              onSpeak={onSpeak ? stableSpeak : undefined}
               renderExtra={renderMessageExtra}
-              onSelect={onSelectMessage}
+              onSelect={onSelectMessage ? stableSelect : undefined}
               selected={selectedMessageId === msg.id}
             />
           ))}
@@ -143,6 +155,7 @@ export function ChatPane({
         accept={accept}
         enableRoles={enableRoles}
         largePasteChars={largePasteChars}
+        prefill={prefill}
       />
     </div>
   )

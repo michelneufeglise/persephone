@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from 'react'
+import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import { motion } from 'framer-motion'
 import {
   Upload, FileText, Trash2, FileScan, Languages, Sparkles,
@@ -15,7 +15,7 @@ import {
   idp, exportDoc, pageImageUrl, multiQa, streamIdp, streamMultiQa,
   layaStatus,
 } from '@/lib/idp'
-import type { IDPDocument } from '@/types'
+import type { IDPDocument, Message } from '@/types'
 import type { IDPMultiResult, StreamDone } from '@/lib/idp'
 import { RoutingGraph } from './RoutingGraph'
 import { DocChat } from './DocChat'
@@ -30,6 +30,11 @@ import { PanelErrorBoundary } from '@/components/ui/PanelErrorBoundary'
 
 type Tab = 'overview' | 'ocr' | 'summarize' | 'qa' | 'tables' | 'entities' | 'translate' | 'redact' | 'humanize' | 'export'
 type Mode = 'chat' | 'tools' | 'graph'
+const MODES: { id: Mode; label: string }[] = [
+  { id: 'chat', label: 'Chat' },
+  { id: 'tools', label: 'Tools' },
+  { id: 'graph', label: 'Graph' },
+]
 
 // ── Streaming state hook ────────────────────────────────────────────────────
 interface StreamState {
@@ -129,7 +134,10 @@ const TABS: { id: Tab; label: string; icon: React.ElementType; needsDoc: boolean
 ]
 
 export function DocumentsPanel() {
-  const { activeDocId, setActiveDocId } = useAppStore()
+  // Narrow selectors: this panel only needs these two store fields, so it must not
+  // re-render on unrelated store updates (e.g. main-chat streaming).
+  const activeDocId = useAppStore(s => s.activeDocId)
+  const setActiveDocId = useAppStore(s => s.setActiveDocId)
   const [docs, setDocs] = useState<IDPDocument[]>([])
   const [activeDoc, setActiveDoc] = useState<IDPDocument | null>(null)
   const [tab, setTab] = useState<Tab>('overview')
@@ -301,26 +309,79 @@ export function DocumentsPanel() {
     } catch {}
   }
 
-  const saveSelectedDocs = (ids: string[]) => {
-    setSelectedDocIds(ids)
-    try {
-      localStorage.setItem('persephone-docs-selected', JSON.stringify(ids))
-    } catch {}
-  }
+  const saveSelectedDocs = useCallback((next: string[] | ((prev: string[]) => string[])) => {
+    setSelectedDocIds(prev => {
+      const ids = typeof next === 'function' ? next(prev) : next
+      try {
+        localStorage.setItem('persephone-docs-selected', JSON.stringify(ids))
+      } catch {}
+      return ids
+    })
+  }, [])
+
+  // Latest library contents, readable from async callbacks without stale closures.
+  const docsRef = useRef<IDPDocument[]>([])
+  docsRef.current = docs
 
   const refresh = useCallback(async () => {
     const allDocs = await listDocuments()
+    docsRef.current = allDocs
     setDocs(allDocs)
     // Drop deleted docs from selection
     setSelectedDocIds(prev => prev.filter(id => allDocs.some(d => d.id === id)))
   }, [])
 
+  // Switching conversation re-targets the selection: select the documents that
+  // conversation's last turn was about (if they still exist); a new
+  // conversation starts with an empty selection. Otherwise the global selection
+  // would silently be sent with a turn in an unrelated conversation.
+  const handleConversationLoaded = useCallback((convId: string | null, msgs: Message[]) => {
+    if (!convId) {
+      saveSelectedDocs([])
+      return
+    }
+    for (let i = msgs.length - 1; i >= 0; i--) {
+      const m = msgs[i]
+      const meta = m.meta as { kind?: string; attachments?: unknown } | undefined
+      if (m.role !== 'user' || meta?.kind !== 'doc_user' || !Array.isArray(meta.attachments)) continue
+      const atts = meta.attachments as Array<{ doc_id?: unknown; role?: unknown }>
+      if (atts.length === 0) continue
+      const lib = docsRef.current
+      const ids: string[] = []
+      const roles: Record<string, 'auto' | 'subject' | 'reference'> = {}
+      for (const a of atts) {
+        if (typeof a?.doc_id !== 'string' || ids.includes(a.doc_id)) continue
+        if (!lib.some(d => d.id === a.doc_id)) continue
+        ids.push(a.doc_id)
+        if (a.role === 'auto' || a.role === 'subject' || a.role === 'reference') roles[a.doc_id] = a.role
+      }
+      saveSelectedDocs(ids)
+      if (Object.keys(roles).length > 0) setSelectedDocsRoles(prev => ({ ...prev, ...roles }))
+      return
+    }
+    saveSelectedDocs([])
+  }, [saveSelectedDocs])
+
   const chat = useDocChat({
     onDocsChanged: () => refresh(),
     onDocsUploaded: (docIds) => {
-      saveSelectedDocs([...selectedDocIds, ...docIds])
+      saveSelectedDocs(prev => [...prev, ...docIds.filter(id => !prev.includes(id))])
     },
+    onConversationLoaded: handleConversationLoaded,
   })
+
+  const selectedDocs = useMemo(
+    () => docs.filter(d => selectedDocIds.includes(d.id)),
+    [docs, selectedDocIds],
+  )
+
+  const onSelectedDocsRoleChange = useCallback((docId: string, role: 'auto' | 'subject' | 'reference') => {
+    setSelectedDocsRoles(prev => ({ ...prev, [docId]: role }))
+  }, [])
+
+  const onDeselectDoc = useCallback((docId: string) => {
+    saveSelectedDocs(prev => prev.filter(x => x !== docId))
+  }, [saveSelectedDocs])
 
   function toggleSelected(id: string) {
     const next = selectedDocIds.includes(id)
@@ -329,9 +390,7 @@ export function DocumentsPanel() {
     saveSelectedDocs(next)
   }
 
-  function clearSelected() {
-    saveSelectedDocs([])
-  }
+  const clearSelected = useCallback(() => saveSelectedDocs([]), [saveSelectedDocs])
 
   function selectAllDocs() {
     saveSelectedDocs(docs.map(d => d.id))
@@ -347,35 +406,65 @@ export function DocumentsPanel() {
     }
   }, [activeDocId])
 
-  async function handleUpload(file: File) {
+  /** Upload files one after another (the server processes each on arrival). */
+  async function handleUploadFiles(files: File[]) {
+    if (files.length === 0) return
     setUploading(true)
+    let lastId: string | null = null
     try {
-      const doc = await uploadDocument(file)
-      if (doc) {
-        await refresh()
-        setActiveDocId(doc.id)
+      for (const file of files) {
+        try {
+          const doc = await uploadDocument(file)
+          if (doc) {
+            lastId = doc.id
+            await refresh()
+          }
+        } catch (err) {
+          console.error(`Upload failed: ${file.name}`, err)
+        }
+      }
+      if (lastId) {
+        setActiveDocId(lastId)
         setTab('overview')
       }
-    } catch (err) {
-      console.error('Upload failed', err)
     } finally {
       setUploading(false)
     }
   }
 
 
-  async function handleDelete(id: string) {
-    await deleteDocument(id)
-    if (activeDocId === id) setActiveDocId(null)
-    saveSelectedDocs(selectedDocIds.filter(x => x !== id))
+  async function handleDelete(doc: IDPDocument) {
+    const ok = window.confirm(
+      `Delete “${doc.filename}”? This removes the file, its search index and what the knowledge store learned from it.`,
+    )
+    if (!ok) return
+    await deleteDocument(doc.id)
+    if (activeDocId === doc.id) setActiveDocId(null)
+    saveSelectedDocs(prev => prev.filter(x => x !== doc.id))
     await refresh()
   }
 
   function onDrop(e: React.DragEvent) {
     e.preventDefault()
     setDragOver(false)
-    const file = e.dataTransfer.files[0]
-    if (file) handleUpload(file)
+    const files = Array.from(e.dataTransfer.files ?? [])
+    if (files.length > 0) void handleUploadFiles(files)
+  }
+
+  // Mode tablist keyboard support (WAI-ARIA tabs: Left/Right/Home/End move focus + select).
+  const modeTabRefs = useRef<Record<Mode, HTMLButtonElement | null>>({ chat: null, tools: null, graph: null })
+  function onModeTabKeyDown(e: React.KeyboardEvent<HTMLButtonElement>) {
+    const idx = MODES.findIndex(m => m.id === mode)
+    let nextIdx = -1
+    if (e.key === 'ArrowRight') nextIdx = (idx + 1) % MODES.length
+    else if (e.key === 'ArrowLeft') nextIdx = (idx - 1 + MODES.length) % MODES.length
+    else if (e.key === 'Home') nextIdx = 0
+    else if (e.key === 'End') nextIdx = MODES.length - 1
+    if (nextIdx < 0) return
+    e.preventDefault()
+    const next = MODES[nextIdx].id
+    saveMode(next)
+    modeTabRefs.current[next]?.focus()
   }
 
   // Helper to render tab content with support for multi-doc operations
@@ -459,7 +548,12 @@ export function DocumentsPanel() {
                 type="file"
                 ref={fileRef}
                 className="hidden"
-                onChange={e => e.target.files?.[0] && handleUpload(e.target.files[0])}
+                multiple
+                onChange={e => {
+                  const files = Array.from(e.target.files ?? [])
+                  e.target.value = '' // allow re-selecting the same file
+                  if (files.length > 0) void handleUploadFiles(files)
+                }}
                 accept=".pdf,.docx,.doc,.xlsx,.csv,.txt,.md,.rtf,.pptx,.odt,.html,.htm,.json,.xml,.eml,.png,.jpg,.jpeg,.webp,.gif"
               />
               {uploading ? (
@@ -505,7 +599,7 @@ export function DocumentsPanel() {
                       checked={selectedDocIds.includes(d.id)}
                       onToggle={() => toggleSelected(d.id)}
                       onSelect={() => { setActiveDocId(d.id); saveSelectedDocs([d.id]) }}
-                      onDelete={() => handleDelete(d.id)}
+                      onDelete={() => handleDelete(d)}
                     />
                   ))}
                 </>
@@ -541,9 +635,9 @@ export function DocumentsPanel() {
         )}
 
         {/* CENTER COLUMN: Chat or Tools */}
-        <div className="flex-1 flex flex-col min-w-[380px] min-h-0">
+        <div className="flex-1 flex flex-col min-w-0 min-h-0">
           {/* Mode switcher at top */}
-          <div className="flex-shrink-0 px-4 py-3 border-b border-[var(--glass-stroke)] flex items-center justify-between ">
+          <div className="flex-shrink-0 px-4 py-3 border-b border-[var(--glass-stroke)] flex flex-wrap items-center justify-between gap-y-2">
             <div className="flex items-center gap-2 min-w-0 flex-1">
               {mode === 'tools' && activeDoc && (
                 <>
@@ -566,46 +660,28 @@ export function DocumentsPanel() {
 
             <div className="flex items-center gap-2 ml-2">
               {/* Mode switcher segmented control */}
-              <div className="flex gap-1" role="tablist">
-                <button
-                  onClick={() => saveMode('chat')}
-                  role="tab"
-                  aria-selected={mode === 'chat'}
-                  className={clsx(
-                    'px-3 py-1.5 rounded-md text-sm font-medium transition-colors',
-                    mode === 'chat'
-                      ? 'bg-[var(--accent-dim)] text-[var(--accent)]'
-                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--glass-fill-hover)]'
-                  )}
-                >
-                  Chat
-                </button>
-                <button
-                  onClick={() => saveMode('tools')}
-                  role="tab"
-                  aria-selected={mode === 'tools'}
-                  className={clsx(
-                    'px-3 py-1.5 rounded-md text-sm font-medium transition-colors',
-                    mode === 'tools'
-                      ? 'bg-[var(--accent-dim)] text-[var(--accent)]'
-                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--glass-fill-hover)]'
-                  )}
-                >
-                  Tools
-                </button>
-                <button
-                  onClick={() => saveMode('graph')}
-                  role="tab"
-                  aria-selected={mode === 'graph'}
-                  className={clsx(
-                    'px-3 py-1.5 rounded-md text-sm font-medium transition-colors',
-                    mode === 'graph'
-                      ? 'bg-[var(--accent-dim)] text-[var(--accent)]'
-                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--glass-fill-hover)]'
-                  )}
-                >
-                  Graph
-                </button>
+              <div className="flex gap-1 flex-shrink-0" role="tablist" aria-label="Documents mode">
+                {MODES.map(m => (
+                  <button
+                    key={m.id}
+                    ref={el => { modeTabRefs.current[m.id] = el }}
+                    id={`docs-mode-tab-${m.id}`}
+                    onClick={() => saveMode(m.id)}
+                    onKeyDown={onModeTabKeyDown}
+                    role="tab"
+                    aria-selected={mode === m.id}
+                    aria-controls={`docs-mode-panel-${m.id}`}
+                    tabIndex={mode === m.id ? 0 : -1}
+                    className={clsx(
+                      'px-3 py-1.5 rounded-md text-sm font-medium transition-colors',
+                      mode === m.id
+                        ? 'bg-[var(--accent-dim)] text-[var(--accent)]'
+                        : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--glass-fill-hover)]'
+                    )}
+                  >
+                    {m.label}
+                  </button>
+                ))}
               </div>
 
               {/* Flow toggle for mobile (chat mode only) */}
@@ -622,18 +698,20 @@ export function DocumentsPanel() {
           </div>
 
           {/* Content based on mode */}
+          <div
+            id={`docs-mode-panel-${mode}`}
+            role="tabpanel"
+            aria-labelledby={`docs-mode-tab-${mode}`}
+            className="flex-1 min-h-0 min-w-0 flex flex-col"
+          >
           {mode === 'chat' ? (
             <DocChat
               chat={chat}
               selectedDocIds={selectedDocIds}
-              selectedDocs={docs.filter(d => selectedDocIds.includes(d.id))}
+              selectedDocs={selectedDocs}
               selectedDocsRoles={selectedDocsRoles}
-              onSelectedDocsRoleChange={(docId, role) => {
-                setSelectedDocsRoles(prev => ({ ...prev, [docId]: role }))
-              }}
-              onDeselect={(docId) => {
-                saveSelectedDocs(selectedDocIds.filter(x => x !== docId))
-              }}
+              onSelectedDocsRoleChange={onSelectedDocsRoleChange}
+              onDeselect={onDeselectDoc}
               onClear={clearSelected}
             />
           ) : mode === 'graph' ? (
@@ -689,7 +767,7 @@ export function DocumentsPanel() {
                   {selectedDocIds.length > 1 ? (
                     // Multi-doc view
                     <MultiDocTab
-                      docs={docs.filter(d => selectedDocIds.includes(d.id))}
+                      docs={selectedDocs}
                       tab={tab}
                       renderTab={(doc, signal, onComplete, shared) => renderTabContent(tab, doc, signal, onComplete, shared)}
                       shared={{
@@ -730,6 +808,7 @@ export function DocumentsPanel() {
               )}
             </>
           )}
+          </div>
         </div>
       </div>
       </div>
@@ -848,7 +927,9 @@ function DocLibItem({ doc, checked, onToggle, onSelect, onDelete }: {
       </div>
       <button
         onClick={e => { e.stopPropagation(); onDelete() }}
-        className="opacity-0 group-hover:opacity-100 p-1.5 text-[var(--text-muted)] hover:text-red-400 rounded-md hover:bg-red-500/10 transition-all flex-shrink-0"
+        title="Delete document"
+        aria-label={`Delete ${doc.filename}`}
+        className="opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-1.5 text-[var(--text-muted)] hover:text-red-400 rounded-md hover:bg-red-500/10 transition-all flex-shrink-0"
       >
         <Trash2 className="w-3.5 h-3.5" />
       </button>

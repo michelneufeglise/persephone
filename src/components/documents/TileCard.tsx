@@ -6,6 +6,26 @@ import {
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import type { Tile } from '@/lib/docAgent'
+import { SOCIAL_PLATFORMS, resolvePlatform } from './socialPlatforms'
+
+/** Small coloured platform badge next to a search result (in / f / IG / 𝕏). */
+function PlatformBadge({ platform, url }: { platform?: string | null; url?: string | null }) {
+  const pid = resolvePlatform(platform, url)
+  if (!pid) return null
+  const p = SOCIAL_PLATFORMS[pid]
+  return (
+    <span
+      title={p.label}
+      style={{ background: p.badgeBg }}
+      className={clsx(
+        'text-[9px] font-bold px-1 py-0.5 rounded text-white flex-shrink-0 whitespace-nowrap leading-none',
+        pid === 'x' && 'border border-white/70',
+      )}
+    >
+      {p.badge}
+    </span>
+  )
+}
 
 interface TileCardProps {
   tile: Tile
@@ -318,11 +338,7 @@ export function TileCard({ tile, now }: TileCardProps) {
                     >
                       {item.label}
                     </a>
-                    {item.url && item.url.includes('linkedin.com/in/') && (
-                      <span className="text-[9px] font-bold px-1 py-0.5 rounded text-white bg-[#0a66c2] flex-shrink-0 whitespace-nowrap">
-                        in
-                      </span>
-                    )}
+                    <PlatformBadge platform={item.platform} url={item.url} />
                     {item.url && (
                       <span className="text-[var(--text-muted)] text-[10px] flex-shrink-0 truncate max-w-[100px]">
                         {(() => {

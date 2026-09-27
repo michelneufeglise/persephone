@@ -1,5 +1,6 @@
 import { MarkerType, type Node, type Edge } from '@xyflow/react'
 import type { Tile, KGGraph } from '@/lib/docAgent'
+import { targetsLabel } from './socialPlatforms'
 
 /**
  * Pure builder for the Knowledge-graph "Pipeline" view: turns ONE doc-agent
@@ -310,10 +311,14 @@ export function buildPipeline(
   const webDetails: string[] = []
   if (webUsed && webTile) {
     if (webTile.model) webDetails.push(shortModel(webTile.model))
-    webDetails.push(`${plural(webSearches, 'search', 'searches')} · ${plural(webResults, 'match', 'matches')}`)
+    const fromTitle = /·\s*(.+)$/.exec(webTile.title || '')
+    const platforms = targetsLabel(web?.value) || (fromTitle ? fromTitle[1].trim() : '')
+    webDetails.push(
+      `${platforms ? `${platforms} · ` : ''}${plural(webSearches, 'search', 'searches')} · ${plural(webResults, 'match', 'matches')}`,
+    )
     if (planTile?.detail) webDetails.push(planTile.detail)
   } else {
-    webDetails.push('web lookup (LinkedIn, …)')
+    webDetails.push('web lookup (LinkedIn, Facebook, Instagram, X)')
   }
   addNode('tool-web', COL[0], ROW_TOOLS, W, TOOL_H, {
     role: 'tool',

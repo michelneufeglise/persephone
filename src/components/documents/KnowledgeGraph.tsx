@@ -18,15 +18,35 @@ import { AlertCircle, X, ExternalLink, Menu, ChevronUp, ChevronDown, Maximize2, 
 import { clsx } from 'clsx'
 import { buildKnowledgeGraph, layoutKnowledgeGraph, NODE_SIZES } from './kgModel'
 import { layoutForce } from './kgForce'
-import { loadDocConversation, type DocConversationSummary, fetchKnowledgeGraph } from '@/lib/docAgent'
+import { loadDocConversation, type DocConversationSummary, fetchKnowledgeGraph, resetKnowledgeStore } from '@/lib/docAgent'
 import { DocumentNodeComponent, QuestionNodeComponent, DecisionNodeComponent, ModelNodeComponent, DocumentNodeCompactComponent, QuestionNodeCompactComponent, DecisionNodeCompactComponent, ModelNodeCompactComponent, PlannerNodeComponent, WebNodeComponent, ProfileNodeComponent, PlannerNodeCompactComponent, WebNodeCompactComponent, ProfileNodeCompactComponent, EntityNodeComponent, PipelineNodeComponent, PipelineGroupNodeComponent } from './kgNodes'
-import { FloatingEdge } from './kgFloatingEdge'
+import { FloatingEdge, FloatingStraightEdge } from './kgFloatingEdge'
+import { buildEntityGraph, layoutEntities, entitySizeOf, type EntityRelationView } from './kgEntities'
 import { buildPipeline } from './kgPipeline'
 import type { Message } from '@/types'
+
+/** Cheap signature of a doc_run's tiles (id + status) — changes when a step starts/finishes. */
+function tilesSignature(m: Message | null | undefined): string {
+  const tiles = (m?.meta?.tiles as Array<{ id?: string; status?: string }> | undefined) ?? []
+  let sig = String(tiles.length)
+  for (const t of tiles) sig += `|${t?.id ?? ''}:${t?.status ?? ''}`
+  return sig
+}
 
 // Define edgeTypes outside component to avoid re-creation
 const edgeTypesNetwork = { floating: FloatingEdge }
 const edgeTypesLayers = {}
+const edgeTypesEntities = { floatingStraight: FloatingStraightEdge }
+
+/** Entities view: per-relation edge colour (paired with `.kg-entities` CSS in index.css). */
+const ENTITY_EDGE_STYLE: Record<string, { stroke: string; strokeWidth: number; strokeDasharray?: string; opacity?: number }> = {
+  likely_profile: { stroke: 'var(--accent)', strokeWidth: 2 },
+  candidate_profile: { stroke: 'var(--text-muted)', strokeWidth: 1.4, strokeDasharray: '5 4', opacity: 0.6 },
+  has_role: { stroke: 'var(--text-secondary)', strokeWidth: 1.5 },
+  works_at: { stroke: 'var(--text-secondary)', strokeWidth: 1.5 },
+  located_in: { stroke: 'var(--text-secondary)', strokeWidth: 1.5 },
+  mentioned_in: { stroke: 'var(--text-muted)', strokeWidth: 1.5, strokeDasharray: '1.5 4', opacity: 0.8 },
+}
 
 interface KnowledgeGraphProps {
   conversations: DocConversationSummary[]
@@ -159,6 +179,101 @@ function Legend() {
           </div>
         </div>
       )}
+    </div>
+  )
+}
+
+/**
+ * Entities view: detail section for a knowledge-store entity (type, mentions, props, relations).
+ */
+function EntityDetails({ node }: { node: any }) {
+  const props = (node.props || {}) as Record<string, unknown>
+  const str = (v: unknown) => (typeof v === 'string' || typeof v === 'number' ? String(v) : '')
+  const url = str(props.url)
+  const safeUrl = /^https?:\/\//i.test(url) ? url : ''
+  const host = str(node.host) || str(props.host)
+  const filename = str(props.filename)
+  const docKind = str(props.kind)
+  const snippet = str(props.snippet)
+  const mentions = Number(node.mention_count) || 0
+  const relations = (node.relations || []) as EntityRelationView[]
+  const labelCls = 'text-[0.7rem] text-[var(--text-muted)] uppercase font-bold tracking-wider mb-0.5'
+  const valueCls = 'text-[0.75rem] text-[var(--text-secondary)]'
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex flex-wrap items-center gap-1.5 text-[0.7rem]">
+        <span className="px-2 py-0.5 rounded-full bg-[var(--accent-dim)] text-[var(--accent)] font-semibold uppercase tracking-wider text-[0.62rem]">
+          {str(node.entityType) || 'entity'}
+        </span>
+        {node.match === 'likely' ? (
+          <span className="px-2 py-0.5 rounded-full border border-[var(--accent)]/40 text-[var(--accent)] text-[0.62rem] font-semibold">likely match</span>
+        ) : node.match === 'candidate' ? (
+          <span className="px-2 py-0.5 rounded-full border border-dashed border-[var(--border-glass)] text-[var(--text-muted)] text-[0.62rem] font-semibold">candidate</span>
+        ) : null}
+        <span className="text-[var(--text-muted)] font-mono">
+          {mentions} mention{mentions === 1 ? '' : 's'}
+        </span>
+      </div>
+      {url ? (
+        <div>
+          <div className={labelCls}>URL</div>
+          {safeUrl ? (
+            <a
+              href={safeUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[0.72rem] text-[var(--accent)] hover:text-[var(--accent-hover)] inline-flex items-center gap-1 break-all"
+            >
+              {safeUrl}
+              <ExternalLink className="w-3 h-3 flex-shrink-0" />
+            </a>
+          ) : (
+            <div className={clsx(valueCls, 'break-all')}>{url}</div>
+          )}
+        </div>
+      ) : null}
+      {host ? (
+        <div>
+          <div className={labelCls}>Host</div>
+          <div className={valueCls}>{host}</div>
+        </div>
+      ) : null}
+      {filename ? (
+        <div>
+          <div className={labelCls}>File</div>
+          <div className={clsx(valueCls, 'font-mono text-[0.7rem] break-all')}>
+            {filename}
+            {docKind ? <span className="text-[var(--text-muted)]"> · {docKind}</span> : null}
+          </div>
+        </div>
+      ) : null}
+      {snippet ? (
+        <div>
+          <div className={labelCls}>Snippet</div>
+          <div className={clsx(valueCls, 'leading-snug line-clamp-3')}>{snippet}</div>
+        </div>
+      ) : null}
+      {relations.length > 0 ? (
+        <div>
+          <div className={labelCls}>Relations</div>
+          <div className="space-y-0.5">
+            {relations.map(r => (
+              <div key={`${r.id}-${r.direction}`} className={clsx(valueCls, 'text-[0.72rem]')}>
+                {r.direction === 'out' ? (
+                  <>
+                    <span className="text-[var(--text-muted)]">{r.label} →</span> {r.otherName}
+                  </>
+                ) : (
+                  <>
+                    {r.otherName} <span className="text-[var(--text-muted)]">→ {r.label}</span>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -319,6 +434,8 @@ function DetailCard({
         </div>
       )}
 
+      {node.kind === 'entity' && <EntityDetails node={node} />}
+
       {node.kind === 'pipeline' && (
         <div className="space-y-1.5">
           <div className="text-[0.7rem] text-[var(--text-muted)] uppercase font-bold tracking-wider">
@@ -463,6 +580,12 @@ const KnowledgeGraphInner = memo(
     const [graphView, setGraphView] = useState<'pipeline' | 'network' | 'entities' | 'layers'>('pipeline')
     const [containerSize, setContainerSize] = useState<{ width: number; height: number }>({ width: 800, height: 600 })
     const [kgData, setKgData] = useState<any>(null)
+    const [kgLoading, setKgLoading] = useState(false)
+    const [kgReloadKey, setKgReloadKey] = useState(0)
+    const [kgResetting, setKgResetting] = useState(false)
+    const [kgResetError, setKgResetError] = useState<string | null>(null)
+    // 'all' scope: conversations already loaded, keyed by id and valid for one updatedAt.
+    const convCacheRef = useRef<Map<string, { updatedAt: number; conv: { id: string; title: string; messages: Message[] } }>>(new Map())
     // Previous layout = bookkeeping for warm-starting the next force layout; refs, not
     // state, because it is written while computing the layout (state here would loop).
     const previousPositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map())
@@ -531,31 +654,52 @@ const KnowledgeGraphInner = memo(
       }
     }, [selectedKinds])
 
-    // Load all conversations when switching to 'all' scope
+    // Load all conversations when switching to 'all' scope. Loaded conversations are
+    // cached by id + updatedAt, so a conversations-list refresh only fetches the
+    // ones that actually changed — in parallel.
     useEffect(() => {
-      if (scope === 'all' && conversations.length > 0) {
-        setLoadingCount(conversations.length)
-        const load = async () => {
-          const loaded: typeof loadedConversations = []
-          for (const conv of conversations) {
-            try {
-              const msgs = await loadDocConversation(conv.id)
-              loaded.push({
-                id: conv.id,
-                title: conv.title,
-                messages: msgs,
-              })
-            } catch (e) {
-              // skip on error
-            } finally {
-              setLoadingCount(prev => prev - 1)
-            }
-          }
-          setLoadedConversations(loaded)
-        }
-        load()
-      } else {
+      if (scope !== 'all' || conversations.length === 0) {
         setLoadedConversations([])
+        setLoadingCount(0)
+        return
+      }
+      let cancelled = false
+      const cache = convCacheRef.current
+      const missing = conversations.filter(c => cache.get(c.id)?.updatedAt !== c.updatedAt)
+      const assemble = () =>
+        conversations
+          .map(c => {
+            const hit = cache.get(c.id)
+            return hit ? { ...hit.conv, title: c.title } : null
+          })
+          .filter((c): c is { id: string; title: string; messages: Message[] } => c !== null)
+
+      if (missing.length === 0) {
+        setLoadedConversations(assemble())
+        setLoadingCount(0)
+        return
+      }
+      setLoadingCount(missing.length)
+      Promise.all(
+        missing.map(async conv => {
+          try {
+            const msgs = await loadDocConversation(conv.id)
+            cache.set(conv.id, { updatedAt: conv.updatedAt, conv: { id: conv.id, title: conv.title, messages: msgs } })
+          } catch {
+            // skip on error
+          } finally {
+            if (!cancelled) setLoadingCount(prev => Math.max(0, prev - 1))
+          }
+        }),
+      ).then(() => {
+        if (cancelled) return
+        // Drop cache entries for conversations that no longer exist.
+        const live = new Set(conversations.map(c => c.id))
+        for (const id of Array.from(cache.keys())) if (!live.has(id)) cache.delete(id)
+        setLoadedConversations(assemble())
+      })
+      return () => {
+        cancelled = true
       }
     }, [scope, conversations])
 
@@ -622,126 +766,104 @@ const KnowledgeGraphInner = memo(
         return
       }
 
+      let cancelled = false
       const fetchData = async () => {
+        setKgLoading(true)
         try {
           const data = await fetchKnowledgeGraph(
             scope === 'all' ? 'all' : 'conversation',
             scope === 'current' ? currentConversationId : undefined,
           )
-          setKgData(data)
+          if (!cancelled) setKgData(data)
         } catch {
-          setKgData(null)
+          if (!cancelled) setKgData(null)
+        } finally {
+          if (!cancelled) setKgLoading(false)
         }
       }
 
       fetchData()
-    }, [graphView, scope, currentConversationId, runMessage?.id, runMessage?.isStreaming])
-
-    // Build graph from appropriate source
-    const graphData = useMemo(() => {
-      // For Pipeline view: find latest doc_run and build pipeline
-      if (graphView === 'pipeline') {
-        if (!runMessage || !runMessage.meta?.tiles) {
-          return null
-        }
-
-        // Find the preceding user message to extract pipeline question
-        const msgs = liveMessages && liveMessages.length > 0 ? liveMessages : currentMessages
-        let pipelineQuestion = '—'
-        const runIdx = msgs.findIndex(m => m.id === runMessage.id)
-        if (runIdx > 0) {
-          for (let i = runIdx - 1; i >= 0; i--) {
-            if (msgs[i].role === 'user') {
-              pipelineQuestion = msgs[i].content || '—'
-              break
-            }
-          }
-        }
-
-        // Build pipeline nodes/edges
-        const tiles = (runMessage.meta?.tiles || []) as any[]
-        const pipelineData = buildPipeline(
-          {
-            question: pipelineQuestion,
-            tiles,
-            answer: runMessage.content || '',
-            intent: runMessage.meta?.intent as string,
-          },
-          kgData,
-        )
-
-        return pipelineData
+      return () => {
+        cancelled = true
       }
+    }, [graphView, scope, currentConversationId, runMessage?.id, runMessage?.isStreaming, kgReloadKey])
 
-      // For Entities view: render KG entities with force layout
-      if (graphView === 'entities') {
-        if (!kgData || kgData.entities.length === 0) {
-          return null
-        }
-
-        // Build KG nodes
-        const entityNodes = kgData.entities.map((entity: any) => ({
-          id: entity.id,
-          kind: 'entity',
-          label: entity.name,
-          data: {
-            type: entity.type,
-            mention_count: entity.mention_count,
-            ...entity.props,
-          },
-          conversationId: currentConversationId,
-          runIds: [],
-          messageIds: [],
-        }))
-
-        // Build KG edges
-        const entityIds = new Set(entityNodes.map((n: any) => n.id))
-        const entityEdges = kgData.relations
-          .filter((r: any) => entityIds.has(r.src) && entityIds.has(r.dst))
-          .map((rel: any) => ({
-            id: rel.id,
-            source: rel.src,
-            target: rel.dst,
-            label: rel.type.replace(/_/g, ' '),
-            kind: rel.type,
-            style:
-              rel.type === 'candidate_profile' ? { strokeDasharray: '5 4', stroke: 'var(--text-muted)' } :
-              rel.type === 'likely_profile' ? { stroke: 'var(--accent)', strokeWidth: 2 } :
-              undefined,
-          }))
-
-        // Apply force layout
-        const graph = { nodes: entityNodes, edges: entityEdges }
-        const result = layoutForce(graph, {
-          width: containerSize.width,
-          height: containerSize.height,
-          previous: previousPositionsRef.current.size > 0 ? previousPositionsRef.current : undefined,
-          previousVirtualSize: previousVirtualSizeRef.current || undefined,
-        })
-
-        // Store positions and virtual size for next layout
-        const newPrevious = new Map<string, { x: number; y: number }>()
-        for (const node of result.nodes) {
-          const size = NODE_SIZES[node.kind as keyof typeof NODE_SIZES] || NODE_SIZES.entity
-          newPrevious.set(node.id, {
-            x: node.position.x + size.width / 2,
-            y: node.position.y + size.height / 2,
-          })
-        }
-        previousPositionsRef.current = newPrevious
-        previousVirtualSizeRef.current = { width: result.virtualWidth, height: result.virtualHeight }
-
-        return result
+    const handleResetKnowledgeStore = useCallback(async () => {
+      const ok = window.confirm(
+        'Reset the knowledge store? This permanently deletes every person, organisation, role, profile and relation Persephone has learned from your documents. Your documents and conversations are kept.',
+      )
+      if (!ok) return
+      setKgResetting(true)
+      setKgResetError(null)
+      try {
+        await resetKnowledgeStore()
+        setSelectedNode(null)
+        setKgData(null)
+      } catch (e) {
+        setKgResetError(e instanceof Error ? e.message : 'Reset failed')
+      } finally {
+        setKgResetting(false)
+        setKgReloadKey(k => k + 1)
       }
+    }, [])
 
-      // For Network/Layers: use existing logic
-      const msgs = liveMessages && liveMessages.length > 0 ? liveMessages : currentMessages
+    // ── Graph data: one memo per view so each only recomputes on its own inputs ──
+    // `currentMessages` is a new array on every streamed token, so none of these
+    // memos depend on its identity; they key on cheap signatures instead.
+    const msgs = liveMessages && liveMessages.length > 0 ? liveMessages : currentMessages
+    const lastMsg = msgs.length > 0 ? msgs[msgs.length - 1] : undefined
+    const lastStreaming = !!lastMsg?.isStreaming
+    // While the last message streams, only a tile change (step added / status
+    // change) alters this — not each content token. When streaming ends the flag
+    // flips and the final content is picked up.
+    const messagesSig = `${msgs.length}|${lastMsg?.id ?? ''}|${lastStreaming ? 1 : 0}|${tilesSignature(lastMsg)}`
+    const runTilesSig = tilesSignature(runMessage)
+    const runQuestion = useMemo(() => {
+      if (!runMessage) return '—'
+      const runIdx = msgs.findIndex(m => m.id === runMessage.id)
+      for (let i = runIdx - 1; i >= 0; i--) {
+        if (msgs[i].role === 'user') return msgs[i].content || '—'
+      }
+      return '—'
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [runMessage?.id, messagesSig])
+
+    // Pipeline: the selected / latest doc_run + knowledge-store data.
+    const pipelineData = useMemo(() => {
+      if (graphView !== 'pipeline') return null
+      if (!runMessage || !runMessage.meta?.tiles) return null
+      const tiles = (runMessage.meta?.tiles || []) as any[]
+      return buildPipeline(
+        {
+          question: runQuestion,
+          tiles,
+          answer: runMessage.content || '',
+          intent: runMessage.meta?.intent as string,
+        },
+        kgData,
+      )
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [graphView, runMessage?.id, runMessage?.isStreaming, runTilesSig, runQuestion, kgData])
+
+    // Entities: knowledge-store entities, hub-and-spoke layout. Doesn't use messages.
+    // (No warm start from previousPositionsRef — that bookkeeping belongs to Network.)
+    const entitiesData = useMemo(() => {
+      if (graphView !== 'entities') return null
+      if (!kgData || kgData.entities.length === 0) return null
+      const graph = buildEntityGraph(kgData, currentConversationId)
+      return layoutEntities(graph, containerSize)
+    }, [graphView, kgData, containerSize, currentConversationId])
+
+    // Network / Layers: conversation graph. Keyed on messagesSig, not the array.
+    const conversationGraphData = useMemo(() => {
+      if (graphView !== 'network' && graphView !== 'layers') return null
       let convsToUse: { id: string; title: string; messages: Message[] }[] = []
 
       if (scope === 'current') {
         convsToUse = [{ id: currentConversationId, title: 'This conversation', messages: msgs }]
       } else {
-        convsToUse = [...loadedConversations]
+        // Loaded copies can lag behind the live conversation — prefer the live messages.
+        convsToUse = loadedConversations.map(c => (c.id === currentConversationId ? { ...c, messages: msgs } : c))
         // Include current if not already there
         if (!loadedConversations.find(c => c.id === currentConversationId)) {
           convsToUse.unshift({ id: currentConversationId, title: 'This conversation', messages: msgs })
@@ -788,7 +910,11 @@ const KnowledgeGraphInner = memo(
         const effectiveDirection = isExpanded ? 'LR' : graphDirection
         return layoutKnowledgeGraph(graph, { direction: effectiveDirection })
       }
-    }, [graphView, scope, currentConversationId, currentMessages, liveMessages, loadedConversations, selectedMessageId, isExpanded, graphDirection, containerSize, kgData, runMessage?.id, runMessage?.isStreaming])
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [graphView, scope, currentConversationId, messagesSig, loadedConversations, selectedMessageId, isExpanded, graphDirection, containerSize])
+
+    const graphData =
+      graphView === 'pipeline' ? pipelineData : graphView === 'entities' ? entitiesData : conversationGraphData
 
     // Track zoom level for LOD using a ref (useStore requires ReactFlowProvider context)
     const lodZoomRef = useRef(1)
@@ -834,6 +960,47 @@ const KnowledgeGraphInner = memo(
             labelBgPadding: [6, 3],
             labelBgBorderRadius: 999,
           })),
+        )
+        return
+      }
+
+      // Entities: fixed-size entity cards + straight floating edges with SVG pill labels.
+      if ((graphView as string) === 'entities') {
+        setNodes(
+          gd.nodes.map((n: any) => {
+            const size = entitySizeOf(n)
+            return {
+              id: n.id,
+              position: n.position,
+              type: 'entity',
+              data: { label: n.label ?? '', ...n.data, kind: 'entity' },
+              style: { width: size.width, height: size.height },
+              width: size.width,
+              height: size.height,
+              selected: selectedNode != null && selectedNode.entityId === n.id,
+              draggable: true,
+            }
+          }),
+        )
+        setEdges(
+          gd.edges.map((e: any) => {
+            const st = ENTITY_EDGE_STYLE[e.kind] || ENTITY_EDGE_STYLE.has_role
+            return {
+              id: e.id,
+              source: e.source,
+              target: e.target,
+              type: 'floatingStraight',
+              className: `kg-ent-edge kg-ent-edge-${e.kind}`,
+              label: e.label,
+              style: { ...st },
+              markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: st.stroke },
+              labelStyle: { fontSize: 10, fill: 'var(--text-secondary)', fontFamily: 'var(--font-family-body)' },
+              labelShowBg: true,
+              labelBgStyle: { fill: 'var(--bg-glass-strong)', stroke: 'var(--border-glass)', strokeWidth: 1 },
+              labelBgPadding: [6, 3] as [number, number],
+              labelBgBorderRadius: 999,
+            }
+          }),
         )
         return
       }
@@ -1040,36 +1207,20 @@ const KnowledgeGraphInner = memo(
       previousVirtualSizeRef.current = null
     }, [scope, currentConversationId])
 
-    // Empty state — must stay AFTER every hook above (Rules of Hooks).
-    if (!graphData || graphData.nodes.length === 0) {
-      let emptyTitle = 'No runs yet'
-      let emptyMessage = 'Ask something about your documents to build the graph.'
-
-      if (graphView === 'entities') {
-        emptyTitle = 'Knowledge store is empty'
-        emptyMessage = 'Ask about a document (e.g. "who is this document about?") and Persephone will remember the people, roles and organisations it finds.'
-      } else if (graphView === 'pipeline') {
-        emptyTitle = 'No runs in this conversation'
-        emptyMessage = 'Ask something in the Chat tab.'
-      }
-
-      return (
-        <div className="w-full h-full flex flex-col items-center justify-center gap-4 text-[var(--text-muted)] p-8">
-          <div className="relative w-32 h-32 opacity-30">
-            <svg viewBox="0 0 100 100" className="w-full h-full">
-              <circle cx="20" cy="20" r="8" fill="currentColor" />
-              <circle cx="80" cy="80" r="8" fill="currentColor" />
-              <circle cx="20" cy="80" r="8" fill="currentColor" />
-              <line x1="20" y1="20" x2="80" y2="80" stroke="currentColor" strokeWidth="1" opacity="0.5" />
-              <line x1="20" y1="20" x2="20" y2="80" stroke="currentColor" strokeWidth="1" opacity="0.5" />
-            </svg>
-          </div>
-          <div className="text-center">
-            <div className="font-display text-lg font-bold text-[var(--text-primary)] mb-1">{emptyTitle}</div>
-            <div className="text-sm">{emptyMessage}</div>
-          </div>
-        </div>
-      )
+    // Empty state (no hooks below this point). The header stays rendered so the user
+    // can always switch scope/view; only the canvas area shows the empty message.
+    const isEmpty = !graphData || graphData.nodes.length === 0
+    let emptyTitle = 'No runs yet'
+    let emptyMessage = 'Ask something about your documents to build the graph.'
+    if (graphView === 'entities' && kgLoading && !kgData) {
+      emptyTitle = 'Knowledge store'
+      emptyMessage = 'Loading knowledge store…'
+    } else if (graphView === 'entities') {
+      emptyTitle = 'Knowledge store is empty'
+      emptyMessage = 'Ask about a document (e.g. "who is this document about?") and Persephone will remember the people, roles and organisations it finds.'
+    } else if (graphView === 'pipeline') {
+      emptyTitle = 'No runs in this conversation'
+      emptyMessage = 'Ask something in the Chat tab.'
     }
 
     return (
@@ -1077,7 +1228,7 @@ const KnowledgeGraphInner = memo(
         {/* Header */}
         <div className="border-b border-[var(--glass-stroke)] bg-[var(--bg-glass-strong)] backdrop-blur px-3 py-2.5 space-y-2">
           <div className="flex items-center justify-between gap-2">
-            <div className="flex items-center gap-3">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 min-w-0">
               {/* Scope selector */}
               <div className="flex items-center gap-2">
                 <label className="text-[0.75rem] text-[var(--text-muted)] font-semibold uppercase tracking-wider">
@@ -1121,6 +1272,20 @@ const KnowledgeGraphInner = memo(
               </div>
             </div>
 
+            <div className="flex items-center gap-1.5 flex-shrink-0">
+            {/* Reset knowledge store (Entities view) */}
+            {graphView === 'entities' && (
+              <button
+                type="button"
+                onClick={handleResetKnowledgeStore}
+                disabled={kgResetting}
+                className="pill-btn-outline text-[0.7rem]"
+                title="Delete everything the knowledge store has learned (documents and conversations are kept)"
+              >
+                {kgResetting ? 'Resetting…' : 'Reset knowledge store'}
+              </button>
+            )}
+
             {/* Expand button (only show when not already expanded, i.e., in panel view) */}
             {!isExpanded && onExpand && (
               <button
@@ -1131,6 +1296,7 @@ const KnowledgeGraphInner = memo(
                 <Maximize2 className="w-4 h-4" />
               </button>
             )}
+            </div>
           </div>
 
           {/* Filters and unpin button (hidden in Pipeline and Entities views) */}
@@ -1197,13 +1363,44 @@ const KnowledgeGraphInner = memo(
           </div>
           )}
 
+          {graphView === 'entities' && kgResetError && (
+            <div role="alert" className="flex items-center gap-1.5 text-[0.7rem] text-red-500 font-medium">
+              <AlertCircle className="w-3 h-3 flex-shrink-0" />
+              {kgResetError}
+              <button type="button" onClick={() => setKgResetError(null)} className="ml-1 hover:opacity-60" aria-label="Dismiss">
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+          )}
+
+          {graphView === 'entities' && kgLoading && !isEmpty && (
+            <div className="text-[0.7rem] text-[var(--text-muted)] font-medium animate-pulse">Loading knowledge store…</div>
+          )}
+
           {scope === 'all' && loadingCount > 0 && (
             <div className="text-[0.7rem] text-[var(--text-muted)] font-medium">Loading {loadingCount} conversations…</div>
           )}
         </div>
 
         {/* Graph */}
-        <div ref={setContainerNode} className={clsx('flex-1 relative', graphView === 'pipeline' && 'kg-pipeline')}>
+        <div ref={setContainerNode} className={clsx('flex-1 relative', graphView === 'pipeline' && 'kg-pipeline', graphView === 'entities' && 'kg-entities')}>
+          {isEmpty ? (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-[var(--text-muted)] p-8">
+              <div className="relative w-32 h-32 opacity-30">
+                <svg viewBox="0 0 100 100" className="w-full h-full">
+                  <circle cx="20" cy="20" r="8" fill="currentColor" />
+                  <circle cx="80" cy="80" r="8" fill="currentColor" />
+                  <circle cx="20" cy="80" r="8" fill="currentColor" />
+                  <line x1="20" y1="20" x2="80" y2="80" stroke="currentColor" strokeWidth="1" opacity="0.5" />
+                  <line x1="20" y1="20" x2="20" y2="80" stroke="currentColor" strokeWidth="1" opacity="0.5" />
+                </svg>
+              </div>
+              <div className="text-center max-w-md">
+                <div className="font-display text-lg font-bold text-[var(--text-primary)] mb-1">{emptyTitle}</div>
+                <div className={clsx('text-sm', graphView === 'entities' && kgLoading && !kgData && 'animate-pulse')}>{emptyMessage}</div>
+              </div>
+            </div>
+          ) : (
           <ReactFlow
             key={graphView === 'pipeline' ? `pipeline-${runMessage?.id}` : graphView}
             nodes={nodes}
@@ -1216,7 +1413,7 @@ const KnowledgeGraphInner = memo(
             onNodeMouseLeave={handleNodeMouseLeave}
             onMove={handleMove}
             nodeTypes={nodeTypes}
-            edgeTypes={graphView === 'network' ? edgeTypesNetwork : edgeTypesLayers}
+            edgeTypes={graphView === 'network' ? edgeTypesNetwork : graphView === 'entities' ? edgeTypesEntities : edgeTypesLayers}
             fitView
             fitViewOptions={graphView === 'pipeline' ? { padding: 0.08, minZoom: 0.2 } : { padding: 0.15, minZoom: 0.4 }}
             nodesConnectable={graphView !== 'pipeline'}
@@ -1231,7 +1428,7 @@ const KnowledgeGraphInner = memo(
               minZoom={graphView === 'pipeline' ? 0.2 : 0.4}
             />
 
-            {graphView !== 'pipeline' && (
+            {graphView !== 'pipeline' && graphView !== 'entities' && (
               <Panel position="bottom-left" className="pointer-events-none">
                 <div className="pointer-events-auto">
                   <Legend />
@@ -1248,8 +1445,9 @@ const KnowledgeGraphInner = memo(
               />
             </div>
           </ReactFlow>
+          )}
 
-          {selectedNode && (
+          {!isEmpty && selectedNode && (
             <DetailCard node={selectedNode} onClose={() => setSelectedNode(null)} onSelectMessage={onSelectMessage} />
           )}
         </div>

@@ -1,5 +1,6 @@
 import type { Message, OllamaModel } from '@/types'
 import type { Tile, Decision, DocConversationSummary } from '@/lib/docAgent'
+import { SOCIAL_PLATFORMS, isSocialProfileUrl, resolvePlatform } from './socialPlatforms'
 
 export interface KNode {
   id: string
@@ -49,7 +50,16 @@ export const NODE_SIZES = {
   planner: { width: 180, height: 56 },
   web: { width: 180, height: 56 },
   profile: { width: 160, height: 52 },
-  entity: { width: 160, height: 80 },
+  entity: { width: 220, height: 76 },
+}
+
+/** Entities view: per-entity-type node sizes (fallback NODE_SIZES.entity). */
+const ENTITY_TYPE_SIZES: Record<string, { width: number; height: number }> = {
+  person: { width: 240, height: 84 },
+}
+
+export function entityNodeSize(type: string | undefined | null): { width: number; height: number } {
+  return (type && ENTITY_TYPE_SIZES[type]) || NODE_SIZES.entity
 }
 
 const MIN_NODE_SPACING = 18 // pixels between node edges
@@ -524,12 +534,13 @@ export function buildKnowledgeGraph(
             kind: 'web-search',
           })
 
-          // Create profile nodes for LinkedIn results (max 3)
+          // Create profile nodes for social-profile results (LinkedIn, Facebook, Instagram, X — max 3)
           if (webTile.items) {
             let profileCount = 0
             for (let i = 0; i < webTile.items.length && profileCount < 3; i++) {
               const item = webTile.items[i]
-              if (item.kind === 'result' && item.url && item.url.includes('linkedin.com/in/')) {
+              if (item.kind === 'result' && item.url && isSocialProfileUrl(item.url)) {
+                const platform = resolvePlatform(item.platform, item.url)
                 const profileNodeId = `${runId}-profile-${profileCount}`
                 const label = typeof item.label === 'string' ? item.label : String(item.label ?? '')
                 const profileLabel = label.length > 40 ? label.substring(0, 40) + '…' : label
@@ -537,7 +548,7 @@ export function buildKnowledgeGraph(
                 try {
                   profileHost = new URL(item.url).hostname
                 } catch {
-                  profileHost = 'linkedin.com'
+                  profileHost = platform ? SOCIAL_PLATFORMS[platform].domains[0] : ''
                 }
 
                 const profileNode: KNode = {
@@ -547,6 +558,7 @@ export function buildKnowledgeGraph(
                   data: {
                     url: item.url,
                     host: profileHost,
+                    platform,
                     detail: item.detail,
                   },
                   conversationId: conv.id,

@@ -80,45 +80,57 @@ export function ConversationsList({
       {/* List */}
       {!collapsed && (
         <div className="space-y-1 px-2">
-          {conversations.map(conv => (
-            <button
-              key={conv.id}
-              onClick={() => onSwitchConversation(conv.id)}
-              className={clsx(
-                'w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-left text-xs transition-colors group',
-                activeId === conv.id
-                  ? 'bg-[var(--accent-dim)] text-[var(--accent)]'
-                  : 'text-[var(--text-secondary)] hover:bg-[var(--glass-fill-hover)]',
-              )}
-            >
-              <div className="flex-1 min-w-0">
-                <div className="font-medium truncate">{conv.title}</div>
-                <div
-                  className={clsx(
-                    'text-[11px] mt-0.5',
-                    activeId === conv.id
-                      ? 'text-[var(--accent-dim)]'
-                      : 'text-[var(--text-muted)]',
-                  )}
-                >
-                  {formatRelativeTime(conv.updatedAt)}
-                </div>
-              </div>
-
-              <button
-                onClick={(e) => handleDelete(conv.id, e)}
-                disabled={deletingId === conv.id}
+          {conversations.map(conv => {
+            const isActive = activeId === conv.id
+            // Row = select button + sibling delete button (a <button> must not
+            // contain another <button>).
+            return (
+              <div
+                key={conv.id}
                 className={clsx(
-                  'opacity-0 group-hover:opacity-100 p-1.5 rounded transition-all flex-shrink-0',
-                  deletingId === conv.id
-                    ? 'opacity-100'
-                    : 'text-[var(--text-muted)] hover:text-red-400 hover:bg-red-500/10',
+                  'w-full flex items-center gap-1 rounded-lg text-xs transition-colors group',
+                  isActive
+                    ? 'bg-[var(--accent-dim)] text-[var(--accent)]'
+                    : 'text-[var(--text-secondary)] hover:bg-[var(--glass-fill-hover)]',
                 )}
               >
-                <Trash2 className="w-3.5 h-3.5" />
-              </button>
-            </button>
-          ))}
+                <button
+                  type="button"
+                  onClick={() => onSwitchConversation(conv.id)}
+                  aria-current={isActive ? 'true' : undefined}
+                  className="flex-1 min-w-0 px-3 py-2 text-left rounded-lg focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]"
+                >
+                  <div className="font-medium truncate">{conv.title}</div>
+                  <div
+                    className={clsx(
+                      'text-[11px] mt-0.5',
+                      isActive
+                        ? 'text-[var(--accent)] opacity-70'
+                        : 'text-[var(--text-muted)]',
+                    )}
+                  >
+                    {formatRelativeTime(conv.updatedAt)}
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={(e) => handleDelete(conv.id, e)}
+                  disabled={deletingId === conv.id}
+                  title="Delete conversation"
+                  aria-label={`Delete conversation “${conv.title}”`}
+                  className={clsx(
+                    'opacity-0 group-hover:opacity-100 focus-visible:opacity-100 p-1.5 mr-1.5 rounded transition-all flex-shrink-0',
+                    deletingId === conv.id
+                      ? 'opacity-100'
+                      : 'text-[var(--text-muted)] hover:text-red-400 hover:bg-red-500/10',
+                  )}
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )
+          })}
         </div>
       )}
     </div>

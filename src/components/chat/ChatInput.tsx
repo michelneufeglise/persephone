@@ -12,6 +12,8 @@ interface ChatInputProps {
   accept?: string
   enableRoles?: boolean
   largePasteChars?: number
+  /** Pre-fill the textarea; bump `nonce` to re-apply. `select` = substring to pre-select. */
+  prefill?: { text: string; nonce: number; select?: string } | null
 }
 
 export function ChatInput({
@@ -22,6 +24,7 @@ export function ChatInput({
   accept = 'image/*,.pdf,.docx,.doc,.xlsx,.csv,.txt,.md,.rtf,.pptx,.odt,.html,.htm,.json',
   enableRoles,
   largePasteChars,
+  prefill,
 }: ChatInputProps) {
   const [value, setValue] = useState('')
   const [files, setFiles] = useState<File[]>([])
@@ -41,6 +44,22 @@ export function ChatInput({
     ta.style.height = 'auto'
     ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`
   }, [value])
+
+  // Apply an external pre-fill (example prompt chips) and focus the composer.
+  useEffect(() => {
+    if (!prefill) return
+    setValue(prefill.text)
+    const id = requestAnimationFrame(() => {
+      const ta = textareaRef.current
+      if (!ta) return
+      ta.focus()
+      const at = prefill.select ? prefill.text.indexOf(prefill.select) : -1
+      if (at >= 0) ta.setSelectionRange(at, at + (prefill.select?.length ?? 0))
+      else ta.setSelectionRange(prefill.text.length, prefill.text.length)
+    })
+    return () => cancelAnimationFrame(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefill?.nonce])
 
   function handleKeyDown(e: React.KeyboardEvent) {
     if (e.key === 'Enter' && !e.shiftKey) {

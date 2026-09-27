@@ -3,6 +3,7 @@ import {
   BaseEdge,
   EdgeLabelRenderer,
   getBezierPath,
+  getStraightPath,
   useInternalNode,
   type Edge,
   type EdgeProps,
@@ -130,5 +131,83 @@ export function FloatingEdge(props: EdgeProps) {
         </EdgeLabelRenderer>
       )}
     </>
+  )
+}
+
+/** Centre + size of a React Flow internal node (measured size, falling back to style size). */
+function nodeBox(node: any): { cx: number; cy: number; hw: number; hh: number } {
+  const x = Number(node.internals.positionAbsolute.x)
+  const y = Number(node.internals.positionAbsolute.y)
+  const w = Number(node.measured?.width || node.width || node.style?.width || 0)
+  const h = Number(node.measured?.height || node.height || node.style?.height || 0)
+  return { cx: x + w / 2, cy: y + h / 2, hw: w / 2, hh: h / 2 }
+}
+
+/** Point where the ray from the box centre towards (tx, ty) leaves the box (plus a small gap). */
+function borderPoint(box: { cx: number; cy: number; hw: number; hh: number }, tx: number, ty: number, gap = 3) {
+  const dx = tx - box.cx
+  const dy = ty - box.cy
+  if (dx === 0 && dy === 0) return { x: box.cx, y: box.cy }
+  const sx = dx !== 0 ? (box.hw + gap) / Math.abs(dx) : Infinity
+  const sy = dy !== 0 ? (box.hh + gap) / Math.abs(dy) : Infinity
+  const s = Math.min(sx, sy, 1)
+  return { x: box.cx + dx * s, y: box.cy + dy * s }
+}
+
+/**
+ * Straight floating edge: a straight segment between the two nodes' nearest border
+ * points (on the centre-to-centre line), so it never curves through other nodes.
+ * Label is rendered by BaseEdge as an SVG pill (labelStyle / labelBgStyle props).
+ */
+export function FloatingStraightEdge(props: EdgeProps) {
+  const {
+    id,
+    source,
+    target,
+    markerEnd,
+    markerStart,
+    style,
+    label,
+    labelStyle,
+    labelShowBg,
+    labelBgStyle,
+    labelBgPadding,
+    labelBgBorderRadius,
+    interactionWidth,
+  } = props
+
+  const sourceNode = useInternalNode(source)
+  const targetNode = useInternalNode(target)
+  if (!sourceNode || !targetNode) return null
+
+  const a = nodeBox(sourceNode)
+  const b = nodeBox(targetNode)
+  const s = borderPoint(a, b.cx, b.cy)
+  const t = borderPoint(b, a.cx, a.cy, 5) // a little more room for the arrow head
+
+  const [edgePath, labelX, labelY] = getStraightPath({
+    sourceX: s.x,
+    sourceY: s.y,
+    targetX: t.x,
+    targetY: t.y,
+  })
+
+  return (
+    <BaseEdge
+      id={id}
+      path={edgePath}
+      markerEnd={markerEnd}
+      markerStart={markerStart}
+      style={style}
+      label={label}
+      labelX={labelX}
+      labelY={labelY}
+      labelStyle={labelStyle}
+      labelShowBg={labelShowBg}
+      labelBgStyle={labelBgStyle}
+      labelBgPadding={labelBgPadding}
+      labelBgBorderRadius={labelBgBorderRadius}
+      interactionWidth={interactionWidth}
+    />
   )
 }

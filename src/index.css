@@ -685,3 +685,27 @@ input[type='range'] { -webkit-appearance: none; appearance: none; }
 @media (prefers-reduced-motion: reduce) {
   .kg-pipeline .react-flow__edge.kg-edge-active .react-flow__edge-path { animation: none; }
 }
+
+/* Knowledge graph → Entities view edges (same flows.css override story as above). */
+.kg-entities .react-flow__edge.kg-ent-edge .react-flow__edge-path {
+  stroke: var(--text-secondary) !important;
+  stroke-width: 1.5px !important;
+  stroke-linecap: round;
+  filter: none;
+}
+.kg-entities .react-flow__edge.kg-ent-edge-likely_profile .react-flow__edge-path {
+  stroke: var(--accent) !important;
+  stroke-width: 2px !important;
+  filter: drop-shadow(0 0 3px var(--accent-glow));
+}
+.kg-entities .react-flow__edge.kg-ent-edge-candidate_profile .react-flow__edge-path {
+  stroke: var(--text-muted) !important;
+  stroke-width: 1.4px !important;
+  stroke-dasharray: 5 4 !important;
+  opacity: 0.6;
+}
+.kg-entities .react-flow__edge.kg-ent-edge-mentioned_in .react-flow__edge-path {
+  stroke: var(--text-muted) !important;
+  stroke-dasharray: 1.5 4 !important;
+  opacity: 0.8;
+}

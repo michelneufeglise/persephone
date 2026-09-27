@@ -17,6 +17,8 @@ export interface TileItem {
   label: string
   url?: string | null
   detail?: string | null
+  /** Social platform of a result ("linkedin" | "facebook" | "instagram" | "x"), null for web pages. */
+  platform?: string | null
 }
 
 export interface Tile {
@@ -129,6 +131,9 @@ export async function* streamDocAgent(
       signal,
     })
   } catch (e) {
+    // A user-initiated abort (Stop / switching conversation) is not an error.
+    if ((e instanceof Error || e instanceof DOMException) && e.name === 'AbortError') return
+    if (signal?.aborted) return
     yield { error: e instanceof Error ? e.message : 'Network error' }
     return
   }
@@ -275,6 +280,24 @@ export async function deleteDocConversation(id: string): Promise<void> {
     await fetch(`/api/memory/conversations/${encodeURIComponent(id)}`, { method: 'DELETE' })
   } catch {
     /* ignore */
+  }
+}
+
+/**
+ * Reset the knowledge store (DELETE /api/kg): wipes every entity, relation and
+ * mention the doc agent has learned. Throws on failure so the caller can surface it.
+ */
+export async function resetKnowledgeStore(): Promise<void> {
+  const res = await fetch('/api/kg', { method: 'DELETE' })
+  if (!res.ok) {
+    let msg = `Reset failed (HTTP ${res.status})`
+    try {
+      const b = await res.json()
+      if (typeof b?.detail === 'string') msg = b.detail
+    } catch {
+      /* not json */
+    }
+    throw new Error(msg)
   }
 }
 

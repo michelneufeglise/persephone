@@ -5,7 +5,7 @@ import { ThinkingPanel } from './ThinkingPanel'
 import { ToolCallList } from './ToolCallList'
 import type { Message } from '@/types'
 import { Volume2, Copy, Check, Bot, ArrowUpRight, FileDown, Loader2, FileText } from 'lucide-react'
-import { useState } from 'react'
+import { memo, useState } from 'react'
 
 interface MessageBubbleProps {
   message: Message
@@ -16,7 +16,7 @@ interface MessageBubbleProps {
   selected?: boolean
 }
 
-export function MessageBubble({ message, onSpeak, isLatest, renderExtra, onSelect, selected }: MessageBubbleProps) {
+function MessageBubbleImpl({ message, onSpeak, renderExtra, onSelect, selected }: MessageBubbleProps) {
   const [copied, setCopied]       = useState(false)
   const [exportingPdf, setExportingPdf] = useState(false)
   const isUser = message.role === 'user'
@@ -286,6 +286,22 @@ export function MessageBubble({ message, onSpeak, isLatest, renderExtra, onSelec
     </motion.div>
   )
 }
+
+/**
+ * Memoised: while a reply streams, only the message whose object identity changed
+ * re-renders (the store replaces just that one message). Callers must pass stable
+ * callbacks (useCallback / latest-ref wrappers) for this to pay off.
+ */
+export const MessageBubble = memo(
+  MessageBubbleImpl,
+  (prev, next) =>
+    prev.message === next.message &&
+    prev.selected === next.selected &&
+    prev.isLatest === next.isLatest &&
+    prev.renderExtra === next.renderExtra &&
+    prev.onSelect === next.onSelect &&
+    prev.onSpeak === next.onSpeak,
+)
 
 function TypingDots() {
   return (
