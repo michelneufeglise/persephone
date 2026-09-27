@@ -7,10 +7,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 Apply these steps to **every** question or task, in order:
 
 1. **Plan first — on the main thread (Claude Opus or Fable).** Before touching any code, produce a numbered plan and get it approved. The main session already runs Opus.
-2. **Implement via a Claude Haiku 4.5 sub-agent.** Dispatch the approved plan to a sub-agent with `model: haiku` (the Agent tool). Do **not** write code on the main Opus thread.
+2. **Implement via a Claude Opus 5.5 sub-agent.** Dispatch the approved plan to a sub-agent with `model: opus` (the Agent tool). Do **not** write code on the main thread.
 3. **Test via a Claude Haiku 4.5 sub-agent.** Dispatch running/verifying to a sub-agent with `model: haiku`.
 
-Pure questions or trivial one-liners: answer directly, no sub-agents. This workflow is injected automatically on every prompt by a `UserPromptSubmit` hook in `.claude/settings.local.json` — the main thread's model cannot be switched by a hook, so the Haiku phases run as sub-agents by design. If a designated model is unavailable, say so and fall back to the closest available model rather than skipping the phase.
+Pure questions or trivial one-liners: answer directly, no sub-agents. This workflow is injected automatically on every prompt by a `UserPromptSubmit` hook in `.claude/settings.local.json` — the main thread's model cannot be switched by a hook, so the implementation and test phases run as sub-agents by design. If a designated model is unavailable, say so and fall back to the closest available model rather than skipping the phase.
 
 ## What this is
 
