@@ -111,6 +111,52 @@ function charsOf(t: Tile): number {
   return m ? Number(m[1].replace(/,/g, '')) : 0
 }
 
+/** A document that took part in THIS run (not the whole knowledge store). */
+interface RunDoc {
+  id: string
+  name: string
+  /** Laya's role decision (subject / reference / …), when present. */
+  role?: string
+  /** Characters extracted for this doc (0 when the tile detail has no count). */
+  chars: number
+}
+
+/**
+ * The run's documents, from its extract / OCR tiles (`tile.doc`) and Laya's
+ * `role-<docid>` decisions (label "Role (<filename>)"). Deduped by doc id,
+ * in tile order first, then decision order.
+ */
+function runDocuments(extractTiles: Tile[], decisions: { id: string; label: string; value: string }[]): RunDoc[] {
+  const out = new Map<string, RunDoc>()
+  for (const t of extractTiles) {
+    const id = t.doc?.doc_id || t.id.replace(/^(extract|ocr)-/, '')
+    if (!id) continue
+    const prev = out.get(id)
+    const chars = charsOf(t)
+    if (prev) {
+      if (!prev.name && t.doc?.name) prev.name = t.doc.name
+      prev.chars = Math.max(prev.chars, chars)
+    } else {
+      out.set(id, { id, name: t.doc?.name || '', chars })
+    }
+  }
+  for (const d of decisions) {
+    if (!d.id.startsWith('role-')) continue
+    const id = d.id.slice('role-'.length)
+    if (!id) continue
+    const m = /\((.*)\)/.exec(d.label || '')
+    const name = m ? m[1].trim() : ''
+    const prev = out.get(id)
+    if (prev) {
+      prev.role = d.value || prev.role
+      if (!prev.name && name) prev.name = name
+    } else {
+      out.set(id, { id, name, role: d.value || undefined, chars: 0 })
+    }
+  }
+  return [...out.values()].map(d => ({ ...d, name: d.name || d.id }))
+}
+
 export function buildPipeline(
   run: PipelineRun | null,
   kg: KGGraph | null,
@@ -138,6 +184,8 @@ export function buildPipeline(
   const decision = (id: string) => decisions.find(d => d.id === id)
   const intentDecision = decision('intent')
   const intent = runIntent || intentDecision?.value || ''
+
+  const runDocs = runDocuments(extractTiles, decisions)
 
   const extractUsed = extractTiles.some(isUsed)
   const webUsed = isUsed(webTile)
@@ -367,9 +415,21 @@ export function buildPipeline(
 
   // ── Knowledge store band (background) ─────────────────────────────────────
   const stats = kg?.stats
-  const bandStats = stats
-    ? `${plural(stats.entities, 'entity', 'entities')} · ${plural(stats.relations, 'relation')} · ${plural(stats.documents, 'document')}`
-    : 'loading…'
+  const docs = kg?.documents ?? []
+  const storeEmpty =
+    !kg ||
+    ((stats?.entities ?? 0) === 0 &&
+      (stats?.relations ?? 0) === 0 &&
+      (stats?.documents ?? 0) === 0 &&
+      docs.length === 0 &&
+      (kg.entities ?? []).length === 0)
+  const storeDoc = (id: string) => docs.find(d => d.doc_id === id)
+  const runDocsUnlearned = runDocs.some(d => !storeDoc(d.id))
+  let bandStats =
+    storeEmpty || !stats
+      ? 'store empty for this conversation'
+      : `${plural(stats.entities, 'entity', 'entities')} · ${plural(stats.relations, 'relation')} · ${plural(stats.documents, 'document')}`
+  if (runDocsUnlearned) bandStats += ' · run documents not yet learned'
   addNode(
     'kg-band',
     0,
@@ -380,9 +440,22 @@ export function buildPipeline(
     { type: 'pipelineGroup', zIndex: -1, selectable: false, focusable: false },
   )
 
-  const docs = kg?.documents ?? []
-  const lexicalDetails = docs.slice(0, 3).map(d => d.name)
-  if (stats) lexicalDetails.push(plural(stats.chunks, 'chunk'))
+  const lexicalDetails: string[] = []
+  if (runDocs.length) {
+    // This run's documents, with their chunk count in the store (if indexed).
+    for (const d of runDocs.slice(0, 3)) {
+      const chunks = storeDoc(d.id)?.chunk_count ?? 0
+      lexicalDetails.push(`${clip(d.name, 18)} · ${chunks > 0 ? plural(chunks, 'chunk') : 'not indexed yet'}`)
+    }
+    const runChars = runDocs.reduce((s, d) => s + d.chars, 0)
+    const more = runDocs.length > 3 ? `+${runDocs.length - 3} more` : ''
+    const charsNote = runChars ? `(${fmt(runChars)} chars)` : ''
+    if (more || charsNote) lexicalDetails.push([more, charsNote].filter(Boolean).join(' · '))
+  } else {
+    // No documents in this run (e.g. graph_query): show the store contents.
+    lexicalDetails.push(...docs.slice(0, 3).map(d => d.name))
+    if (stats && stats.chunks > 0) lexicalDetails.push(plural(stats.chunks, 'chunk'))
+  }
   if (lexicalDetails.length === 0) lexicalDetails.push('no documents yet')
   addNode('kg-lexical', 40, GRAPH_Y, W, 138, {
     role: 'graph',
@@ -404,14 +477,28 @@ export function buildPipeline(
     maxDetails: 4,
   })
 
-  addNode('source-docs', 40, SRC_Y, W, 78, {
+  const sourceDetails: string[] = []
+  if (runDocs.length) {
+    sourceDetails.push(`${plural(runDocs.length, 'document')} in this run`)
+    for (const d of runDocs.slice(0, 3)) {
+      sourceDetails.push(d.role ? `${clip(d.name, 20)} · ${d.role}` : clip(d.name, 28))
+    }
+  } else if (!storeEmpty && stats) {
+    sourceDetails.push(`${plural(stats.documents, 'document')} in knowledge store`)
+  } else {
+    sourceDetails.push(kg ? 'knowledge store empty' : 'uploaded files')
+  }
+  // One detail line fits in the base 78 px; each extra line adds 19 px
+  // (15 px line + 4 px gap). Both source cards share the height so they align.
+  const srcH = 78 + (sourceDetails.length - 1) * 19
+  addNode('source-docs', 40, SRC_Y, W, srcH, {
     role: 'source',
     kindLabel: 'Source',
     label: 'Documents',
-    details: [stats ? plural(stats.documents, 'document') : 'uploaded files'],
-    maxDetails: 1,
+    details: sourceDetails,
+    maxDetails: sourceDetails.length,
   })
-  addNode('source-data', 520, SRC_Y, W, 78, {
+  addNode('source-data', 520, SRC_Y, W, srcH, {
     role: 'source',
     kindLabel: 'Source',
     label: 'Data',

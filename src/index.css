@@ -709,3 +709,103 @@ input[type='range'] { -webkit-appearance: none; appearance: none; }
   stroke-dasharray: 1.5 4 !important;
   opacity: 0.8;
 }
+
+/* Knowledge graph → structured Network + Layers (KgRunView). The edge paths use
+   their own classes (not .react-flow__edge-path), so flows.css's global
+   `stroke: var(--accent) !important` never applies; everything is scoped here. */
+.kg-network .kg-net-edge { --kg-edge: var(--text-muted); }
+.kg-network .kg-net-edge--document { --kg-edge: var(--text-secondary); }
+.kg-network .kg-net-edge--decision { --kg-edge: var(--gold); }
+.kg-network .kg-net-edge--model { --kg-edge: var(--accent); }
+.kg-network .kg-net-edge--web { --kg-edge: var(--holo); }
+.kg-network .kg-net-edge--store { --kg-edge: #fb923c; }
+.kg-network .kg-net-edge__path {
+  stroke: var(--kg-edge);
+  stroke-width: 1.25px;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+  opacity: 0.45;
+  transition: opacity 200ms ease, stroke-width 200ms ease;
+}
+.kg-network .kg-net-edge__arrow {
+  fill: var(--kg-edge);
+  opacity: 0.55;
+  transition: opacity 200ms ease;
+}
+.kg-network .kg-net-edge.is-hover .kg-net-edge__path { opacity: 0.9; stroke-width: 1.75px; }
+.kg-network .kg-net-edge.is-hover .kg-net-edge__arrow { opacity: 0.9; }
+.kg-network .kg-net-edge.is-active .kg-net-edge__path {
+  stroke-width: 2px;
+  opacity: 1;
+  stroke-dasharray: 6 5;
+  animation: kg-net-dash 0.9s linear infinite;
+  filter: drop-shadow(0 0 3px color-mix(in oklab, var(--kg-edge) 55%, transparent));
+}
+.kg-network .kg-net-edge.is-active .kg-net-edge__arrow { opacity: 1; }
+.kg-network .kg-net-edge.is-dim .kg-net-edge__path { opacity: 0.1; }
+.kg-network .kg-net-edge.is-dim .kg-net-edge__arrow { opacity: 0.12; }
+.kg-network .kg-net-edge.is-failed { --kg-edge: rgb(239 68 68); }
+.kg-network .kg-net-edge.is-failed .kg-net-edge__path { stroke-dasharray: 4 4; }
+@keyframes kg-net-dash {
+  to { stroke-dashoffset: -11; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .kg-network .kg-net-edge.is-active .kg-net-edge__path { animation: none; stroke-dasharray: none; }
+}
+.kg-network .kg-net-edge__label {
+  position: absolute;
+  pointer-events: none;
+  white-space: nowrap;
+  font-size: 10px;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 999px;
+  color: var(--text-secondary);
+  background: var(--bg-glass-strong);
+  border: 1px solid var(--border-glass);
+  box-shadow: var(--shadow-soft);
+  font-family: var(--font-family-body);
+  z-index: 5;
+}
+/* Run panels (Network) and lanes (Layers) */
+.kg-network .kg-run-band {
+  background: color-mix(in oklab, var(--text-muted) 6%, transparent);
+  border: 1px solid color-mix(in oklab, var(--text-muted) 16%, transparent);
+  transition: background 200ms ease, border-color 200ms ease;
+}
+.kg-network .kg-run-band.is-active {
+  background: color-mix(in oklab, var(--accent) 8%, transparent);
+  border-color: color-mix(in oklab, var(--accent) 45%, transparent);
+}
+.kg-network .kg-run-band__label { color: var(--text-muted); height: 18px; }
+.kg-network .kg-run-band.is-active .kg-run-band__label { color: var(--accent); }
+.kg-network button.kg-run-band__label:hover { color: var(--text-primary); }
+.kg-network .kg-lane {
+  background: color-mix(in oklab, var(--text-muted) 5%, transparent);
+  border: 1px solid color-mix(in oklab, var(--text-muted) 14%, transparent);
+  transition: background 200ms ease, border-color 200ms ease;
+}
+.kg-network .kg-lane.is-active {
+  background: color-mix(in oklab, var(--accent) 7%, transparent);
+  border-color: color-mix(in oklab, var(--accent) 45%, transparent);
+}
+.kg-network .kg-lane__label {
+  background: color-mix(in oklab, var(--text-muted) 6%, transparent);
+  border-right: 1px solid color-mix(in oklab, var(--text-muted) 14%, transparent);
+  cursor: pointer;
+}
+.kg-network .kg-lane__label:hover { background: color-mix(in oklab, var(--accent) 8%, transparent); }
+.kg-network .kg-lane.is-active .kg-lane__label { background: color-mix(in oklab, var(--accent) 10%, transparent); }
+/* Legend line swatches */
+.kg-network .kg-legend__line { display: inline-block; width: 14px; height: 2px; border-radius: 2px; background: var(--text-muted); }
+.kg-network .kg-legend__line--document { background: var(--text-secondary); }
+.kg-network .kg-legend__line--decision { background: var(--gold); }
+.kg-network .kg-legend__line--model { background: var(--accent); }
+.kg-network .kg-legend__line--web { background: var(--holo); }
+.kg-network .kg-legend__line--store { background: #fb923c; }
+.kg-network .react-flow__controls.kg-controls-shifted { right: 19.5rem !important; }
+/* Knowledge Graph header view tabs: scroll horizontally at narrow widths, no visible scrollbar */
+.kg-tabs-scroll { scrollbar-width: none; -ms-overflow-style: none; }
+.kg-tabs-scroll::-webkit-scrollbar { display: none; }
+.kg-network .react-flow__node { cursor: default; }
+.kg-network .react-flow__node-runCard { cursor: pointer; }

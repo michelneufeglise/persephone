@@ -23,6 +23,7 @@ import { DocumentNodeComponent, QuestionNodeComponent, DecisionNodeComponent, Mo
 import { FloatingEdge, FloatingStraightEdge } from './kgFloatingEdge'
 import { buildEntityGraph, layoutEntities, entitySizeOf, type EntityRelationView } from './kgEntities'
 import { buildPipeline } from './kgPipeline'
+import { KgRunView } from './KgRunView'
 import type { Message } from '@/types'
 
 /** Cheap signature of a doc_run's tiles (id + status) — changes when a step starts/finishes. */
@@ -290,10 +291,14 @@ function DetailCard({
   onClose: () => void
   onSelectMessage?: (msgId: string) => void
 }) {
+  if (!node || typeof node !== 'object') return null
+  // KNode kinds keep their fields under `.data`; pipeline / entity nodes are flat.
+  const d: any = node.data && typeof node.data === 'object' ? node.data : node
+  const messageIds: string[] = Array.isArray(node.messageIds) ? node.messageIds : []
   return (
     <div className="absolute bottom-2 left-2 right-2 bg-[var(--bg-glass-strong)] backdrop-blur border border-[var(--border-glass)] rounded-[12px] p-3 text-xs max-h-48 overflow-y-auto shadow-[var(--shadow-soft)] animate-in slide-in-from-bottom-2 duration-200">
       <div className="flex items-start justify-between gap-2 mb-2">
-        <div className="font-semibold text-[0.8rem] text-[var(--text-primary)]">{node.label}</div>
+        <div className="font-semibold text-[0.8rem] text-[var(--text-primary)]">{String(node.label ?? '')}</div>
         <button
           onClick={onClose}
           className="flex-shrink-0 text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--glass-fill-hover)] rounded p-1 transition-colors"
@@ -304,24 +309,24 @@ function DetailCard({
 
       {node.kind === 'question' && (
         <div className="space-y-2">
-          {node.data.fullText && (
+          {d?.fullText && (
             <div>
               <div className="text-[0.7rem] text-[var(--text-muted)] uppercase font-bold tracking-wider mb-1">Question</div>
-              <div className="text-[0.75rem] text-[var(--text-secondary)] leading-snug">{node.data.fullText}</div>
+              <div className="text-[0.75rem] text-[var(--text-secondary)] leading-snug">{d?.fullText}</div>
             </div>
           )}
-          {node.data.answer && (
+          {d?.answer && (
             <div>
               <div className="text-[0.7rem] text-[var(--text-muted)] uppercase font-bold tracking-wider mb-1">Answer</div>
-              <div className="text-[0.75rem] text-[var(--text-secondary)] leading-snug">{node.data.answer.preview}</div>
+              <div className="text-[0.75rem] text-[var(--text-secondary)] leading-snug">{d?.answer?.preview}</div>
               <div className="text-[0.65rem] text-[var(--text-muted)] mt-2 font-mono">
-                {node.data.answer.model || '—'} • {node.data.answer.ms}ms
+                {d?.answer?.model || '—'} • {d?.answer?.ms}ms
               </div>
             </div>
           )}
-          {onSelectMessage && node.messageIds?.[1] && (
+          {onSelectMessage && messageIds[1] && (
             <button
-              onClick={() => onSelectMessage(node.messageIds[1])}
+              onClick={() => onSelectMessage(messageIds[1])}
               className="text-[0.7rem] text-[var(--accent)] hover:text-[var(--accent-hover)] flex items-center gap-1 mt-2 transition-colors font-medium"
             >
               Show in chat
@@ -335,31 +340,31 @@ function DetailCard({
         <div className="space-y-1.5">
           <div>
             <div className="text-[0.7rem] text-[var(--text-muted)] uppercase font-bold tracking-wider mb-0.5">Value</div>
-            <div className="text-[0.75rem] text-[var(--text-secondary)]">{node.data.value}</div>
+            <div className="text-[0.75rem] text-[var(--text-secondary)]">{d?.value}</div>
           </div>
-          {node.data.confidence !== null && (
+          {typeof d?.confidence === 'number' && (
             <div>
               <div className="text-[0.7rem] text-[var(--text-muted)] uppercase font-bold tracking-wider mb-0.5">Confidence</div>
-              <div className="text-[0.75rem] text-[var(--text-secondary)]">{Math.round(node.data.confidence * 100)}%</div>
+              <div className="text-[0.75rem] text-[var(--text-secondary)]">{Math.round((d?.confidence as number) * 100)}%</div>
             </div>
           )}
-          {node.data.source && (
+          {d?.source && (
             <div>
               <div className="text-[0.7rem] text-[var(--text-muted)] uppercase font-bold tracking-wider mb-0.5">Source</div>
-              <div className="text-[0.75rem] text-[var(--text-secondary)] capitalize">{node.data.source}</div>
+              <div className="text-[0.75rem] text-[var(--text-secondary)] capitalize">{d?.source}</div>
             </div>
           )}
-          {node.data.note && (
+          {d?.note && (
             <div>
               <div className="text-[0.7rem] text-[var(--text-muted)] uppercase font-bold tracking-wider mb-0.5">Note</div>
-              <div className="text-[0.75rem] text-[var(--text-secondary)]">{node.data.note}</div>
+              <div className="text-[0.75rem] text-[var(--text-secondary)]">{d?.note}</div>
             </div>
           )}
-          {node.data.probabilities && Object.keys(node.data.probabilities).length > 0 && (
+          {d?.probabilities && Object.keys(d?.probabilities ?? {}).length > 0 && (
             <div>
               <div className="text-[0.7rem] text-[var(--text-muted)] uppercase font-bold tracking-wider mb-1">Top matches</div>
               <div className="space-y-0.5">
-                {Object.entries(node.data.probabilities)
+                {Object.entries(d?.probabilities ?? {})
                   .sort((a, b) => (b[1] as number) - (a[1] as number))
                   .slice(0, 3)
                   .map(([label, prob]) => (
@@ -378,13 +383,13 @@ function DetailCard({
         <div className="space-y-1.5">
           <div>
             <div className="text-[0.7rem] text-[var(--text-muted)] uppercase font-bold tracking-wider mb-0.5">Model</div>
-            <div className="text-[0.75rem] text-[var(--text-secondary)] font-mono">{node.data.modelName}</div>
+            <div className="text-[0.75rem] text-[var(--text-secondary)] font-mono">{d?.modelName}</div>
           </div>
-          {node.data.roles?.length > 0 && (
+          {Array.isArray(d?.roles) && d.roles.length > 0 && (
             <div>
               <div className="text-[0.7rem] text-[var(--text-muted)] uppercase font-bold tracking-wider mb-1">Roles</div>
               <div className="flex flex-wrap gap-1">
-                {node.data.roles.map((r: string) => (
+                {d.roles.map((r: string) => (
                   <span key={r} className="px-2 py-1 rounded-full bg-[var(--accent-dim)] text-[0.65rem] text-[var(--accent)] font-semibold">
                     {r}
                   </span>
@@ -392,10 +397,10 @@ function DetailCard({
               </div>
             </div>
           )}
-          {node.data.useCount && (
+          {d?.useCount && (
             <div>
               <div className="text-[0.7rem] text-[var(--text-muted)] uppercase font-bold tracking-wider mb-0.5">Uses</div>
-              <div className="text-[0.75rem] text-[var(--text-secondary)]">×{node.data.useCount}</div>
+              <div className="text-[0.75rem] text-[var(--text-secondary)]">×{d?.useCount}</div>
             </div>
           )}
         </div>
@@ -405,25 +410,25 @@ function DetailCard({
         <div className="space-y-1.5">
           <div>
             <div className="text-[0.7rem] text-[var(--text-muted)] uppercase font-bold tracking-wider mb-0.5">Document ID</div>
-            <div className="text-[0.75rem] text-[var(--text-secondary)] font-mono text-[0.65rem]">{node.data.docId}</div>
+            <div className="text-[0.75rem] text-[var(--text-secondary)] font-mono text-[0.65rem]">{d?.docId}</div>
           </div>
-          {node.data.kind && (
+          {d?.kind && (
             <div>
               <div className="text-[0.7rem] text-[var(--text-muted)] uppercase font-bold tracking-wider mb-0.5">Kind</div>
-              <div className="text-[0.75rem] text-[var(--text-secondary)] capitalize">{node.data.kind}</div>
+              <div className="text-[0.75rem] text-[var(--text-secondary)] capitalize">{d?.kind}</div>
             </div>
           )}
-          {node.data.pages && (
+          {d?.pages && (
             <div>
               <div className="text-[0.7rem] text-[var(--text-muted)] uppercase font-bold tracking-wider mb-0.5">Pages</div>
-              <div className="text-[0.75rem] text-[var(--text-secondary)]">{node.data.pages}</div>
+              <div className="text-[0.75rem] text-[var(--text-secondary)]">{d?.pages}</div>
             </div>
           )}
-          {node.data.roles?.length > 0 && (
+          {Array.isArray(d?.roles) && d.roles.length > 0 && (
             <div>
               <div className="text-[0.7rem] text-[var(--text-muted)] uppercase font-bold tracking-wider mb-1">Roles</div>
               <div className="flex flex-wrap gap-1">
-                {node.data.roles.map((r: string) => (
+                {d.roles.map((r: string) => (
                   <span key={r} className="px-2 py-1 rounded-full bg-[var(--accent-dim)] text-[0.65rem] text-[var(--accent)] font-semibold">
                     {r}
                   </span>
@@ -445,7 +450,7 @@ function DetailCard({
           {node.fullText && node.fullText !== node.label && (
             <div className="text-[0.75rem] text-[var(--text-secondary)] leading-snug whitespace-pre-wrap">{node.fullText}</div>
           )}
-          {node.chips?.length > 0 && (
+          {Array.isArray(node.chips) && node.chips.length > 0 && (
             <div className="flex flex-wrap gap-1">
               {node.chips.map((c: string) => (
                 <span key={c} className="px-2 py-0.5 rounded-full bg-[var(--accent-dim)] text-[0.65rem] text-[var(--accent)] font-semibold">
@@ -454,7 +459,7 @@ function DetailCard({
               ))}
             </div>
           )}
-          {node.details?.map((d: string, i: number) => (
+          {Array.isArray(node.details) && node.details.map((d: string, i: number) => (
             <div key={i} className="text-[0.72rem] text-[var(--text-secondary)]">{d}</div>
           ))}
         </div>
@@ -572,12 +577,24 @@ const KnowledgeGraphInner = memo(
       { id: string; title: string; messages: Message[] }[]
     >([])
     const [loadingCount, setLoadingCount] = useState(0)
-    const [selectedNode, setSelectedNode] = useState<any>(null)
+    // Selection is stored by id and resolved against the current graph data (below),
+    // so DetailCard always gets the view's own node shape (the old code stored React
+    // Flow's flattened node.data and crashed reading `.data.fullText`).
+    const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
     const [selectedKinds, setSelectedKinds] = useState<Set<string>>(new Set(['document', 'question', 'decision', 'model', 'planner', 'web', 'profile']))
     const [nodes, setNodes, onNodesChange] = useNodesState<Node>([])
     const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
     const [graphDirection, setGraphDirection] = useState<'LR' | 'TB'>(isExpanded ? 'LR' : 'TB')
     const [graphView, setGraphView] = useState<'pipeline' | 'network' | 'entities' | 'layers'>('pipeline')
+    // Network layout: 'structured' (ELK layered, KgRunView) or 'organic' (the original force layout).
+    const [netLayout, setNetLayout] = useState<'structured' | 'organic'>(() => {
+      try {
+        return localStorage.getItem('persephone-docs-kg-net-layout') === 'organic' ? 'organic' : 'structured'
+      } catch {
+        return 'structured'
+      }
+    })
+    const useRunView = graphView === 'layers' || (graphView === 'network' && netLayout === 'structured')
     const [containerSize, setContainerSize] = useState<{ width: number; height: number }>({ width: 800, height: 600 })
     const [kgData, setKgData] = useState<any>(null)
     const [kgLoading, setKgLoading] = useState(false)
@@ -644,6 +661,20 @@ const KnowledgeGraphInner = memo(
         // ignore
       }
     }, [graphView])
+
+    // Save network layout preference
+    useEffect(() => {
+      try {
+        localStorage.setItem('persephone-docs-kg-net-layout', netLayout)
+      } catch {
+        // ignore
+      }
+    }, [netLayout])
+
+    // A selection belongs to one view's graph — drop it when the view changes.
+    useEffect(() => {
+      setSelectedNodeId(null)
+    }, [graphView, netLayout])
 
     // Save selectedKinds preference
     useEffect(() => {
@@ -797,7 +828,7 @@ const KnowledgeGraphInner = memo(
       setKgResetError(null)
       try {
         await resetKnowledgeStore()
-        setSelectedNode(null)
+        setSelectedNodeId(null)
         setKgData(null)
       } catch (e) {
         setKgResetError(e instanceof Error ? e.message : 'Reset failed')
@@ -854,11 +885,11 @@ const KnowledgeGraphInner = memo(
       return layoutEntities(graph, containerSize)
     }, [graphView, kgData, containerSize, currentConversationId])
 
-    // Network / Layers: conversation graph. Keyed on messagesSig, not the array.
-    const conversationGraphData = useMemo(() => {
+    // Conversations feeding Network / Layers. Keyed on messagesSig, not the array,
+    // so a streamed token doesn't rebuild (or relayout) the graph.
+    const runConvs = useMemo(() => {
       if (graphView !== 'network' && graphView !== 'layers') return null
       let convsToUse: { id: string; title: string; messages: Message[] }[] = []
-
       if (scope === 'current') {
         convsToUse = [{ id: currentConversationId, title: 'This conversation', messages: msgs }]
       } else {
@@ -869,6 +900,14 @@ const KnowledgeGraphInner = memo(
           convsToUse.unshift({ id: currentConversationId, title: 'This conversation', messages: msgs })
         }
       }
+      return convsToUse
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [graphView, scope, currentConversationId, messagesSig, loadedConversations])
+
+    // Organic Network: the original conversation graph + force layout.
+    const conversationGraphData = useMemo(() => {
+      if (graphView !== 'network' || netLayout !== 'organic' || !runConvs) return null
+      const convsToUse = runConvs
 
       if (convsToUse.length === 0 || convsToUse[0].messages.length === 0) {
         return null
@@ -911,10 +950,20 @@ const KnowledgeGraphInner = memo(
         return layoutKnowledgeGraph(graph, { direction: effectiveDirection })
       }
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [graphView, scope, currentConversationId, messagesSig, loadedConversations, selectedMessageId, isExpanded, graphDirection, containerSize])
+    }, [graphView, netLayout, runConvs, selectedMessageId, isExpanded, graphDirection, containerSize])
 
     const graphData =
       graphView === 'pipeline' ? pipelineData : graphView === 'entities' ? entitiesData : conversationGraphData
+
+    // Selected node in the shape DetailCard expects for the current view.
+    const selectedNode = useMemo(() => {
+      if (!selectedNodeId || !graphData) return null
+      const n = ((graphData as any).nodes || []).find((x: any) => x?.id === selectedNodeId)
+      if (!n) return null
+      if (graphView === 'pipeline') return n.data && typeof n.data === 'object' ? n.data : null
+      if (graphView === 'entities') return { label: n.label ?? '', ...(n.data || {}), kind: 'entity' }
+      return n // KNode: { label, kind, data, messageIds }
+    }, [selectedNodeId, graphData, graphView])
 
     // Track zoom level for LOD using a ref (useStore requires ReactFlowProvider context)
     const lodZoomRef = useRef(1)
@@ -948,7 +997,7 @@ const KnowledgeGraphInner = memo(
           gd.nodes.map((n: any) => ({
             ...n,
             draggable: false,
-            selected: n.type !== 'pipelineGroup' && selectedNode != null && selectedNode === n.data,
+            selected: n.type !== 'pipelineGroup' && selectedNodeId != null && n.id === selectedNodeId,
           })),
         )
         setEdges(
@@ -977,7 +1026,7 @@ const KnowledgeGraphInner = memo(
               style: { width: size.width, height: size.height },
               width: size.width,
               height: size.height,
-              selected: selectedNode != null && selectedNode.entityId === n.id,
+              selected: selectedNodeId != null && n.id === selectedNodeId,
               draggable: true,
             }
           }),
@@ -1075,7 +1124,7 @@ const KnowledgeGraphInner = memo(
               opacity: isDimmed ? 0.3 : 1,
               transition: isDimmed ? 'opacity 200ms ease-in-out' : 'opacity 200ms ease-in-out',
             },
-            selected: selectedNode?.id === n.id,
+            selected: selectedNodeId === n.id,
             draggable: graphView === 'network' && n.kind !== 'pipeline',
           }
         })
@@ -1155,13 +1204,13 @@ const KnowledgeGraphInner = memo(
 
       setNodes(xyNodes)
       setEdges(xyEdges)
-    }, [graphData, selectedNode, selectedKinds, setNodes, setEdges, isExpanded, graphDirection, graphView])
+    }, [graphData, selectedNodeId, selectedKinds, setNodes, setEdges, isExpanded, graphDirection, graphView])
 
 
     const handleNodeClick = (e: React.MouseEvent, node: any) => {
       e.stopPropagation()
       if (node.type === 'pipelineGroup') return // knowledge-store band is background only
-      setSelectedNode(node.data)
+      setSelectedNodeId(node.id)
     }
 
     const handleNodeDragStop = useCallback((_event: any, node: any) => {
@@ -1209,7 +1258,8 @@ const KnowledgeGraphInner = memo(
 
     // Empty state (no hooks below this point). The header stays rendered so the user
     // can always switch scope/view; only the canvas area shows the empty message.
-    const isEmpty = !graphData || graphData.nodes.length === 0
+    const hasRunMessages = !!runConvs && runConvs.some(c => c.messages.some(m => m.meta?.kind === 'doc_user' || m.meta?.kind === 'doc_run'))
+    const isEmpty = useRunView ? !hasRunMessages : !graphData || graphData.nodes.length === 0
     let emptyTitle = 'No runs yet'
     let emptyMessage = 'Ask something about your documents to build the graph.'
     if (graphView === 'entities' && kgLoading && !kgData) {
@@ -1227,10 +1277,10 @@ const KnowledgeGraphInner = memo(
       <div className="w-full h-full flex flex-col">
         {/* Header */}
         <div className="border-b border-[var(--glass-stroke)] bg-[var(--bg-glass-strong)] backdrop-blur px-3 py-2.5 space-y-2">
-          <div className="flex items-center justify-between gap-2">
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 min-w-0">
+          <div className="flex flex-wrap items-center gap-2 min-w-0">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 min-w-0 max-w-full">
               {/* Scope selector */}
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-shrink-0">
                 <label className="text-[0.75rem] text-[var(--text-muted)] font-semibold uppercase tracking-wider">
                   Scope:
                 </label>
@@ -1245,20 +1295,20 @@ const KnowledgeGraphInner = memo(
               </div>
 
               {/* View toggle: Pipeline, Network, Entities, Layers */}
-              <div className="flex items-center gap-1 rounded-lg glass-card p-0.5">
+              <div className="kg-tabs-scroll flex items-center gap-1 rounded-lg glass-card p-0.5 min-w-0 max-w-full overflow-x-auto">
                 {(['pipeline', 'network', 'entities', 'layers'] as const).map(view => {
                   const titles: Record<string, string> = {
                     pipeline: 'Pipeline architecture',
-                    network: 'Force-directed network layout',
+                    network: 'Network: documents → questions → Laya decisions → models → results',
                     entities: 'Entity graph',
-                    layers: 'Layered hierarchical layout',
+                    layers: 'Layers: one swimlane per run',
                   }
                   return (
                     <button
                       key={view}
                       onClick={() => setGraphView(view)}
                       className={clsx(
-                        'px-2.5 py-1 rounded-md text-[0.7rem] font-semibold uppercase tracking-wider transition-all',
+                        'flex-shrink-0 px-2.5 py-1 rounded-md text-[0.7rem] font-semibold uppercase tracking-wider transition-all',
                         graphView === view
                           ? 'bg-[var(--accent)] text-white shadow-[0_0_8px_var(--accent-glow)]'
                           : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]',
@@ -1272,7 +1322,7 @@ const KnowledgeGraphInner = memo(
               </div>
             </div>
 
-            <div className="flex items-center gap-1.5 flex-shrink-0">
+            <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5 min-w-0">
             {/* Reset knowledge store (Entities view) */}
             {graphView === 'entities' && (
               <button
@@ -1286,11 +1336,34 @@ const KnowledgeGraphInner = memo(
               </button>
             )}
 
+            {/* Network layout: Structured (ELK) | Organic (force) */}
+            {graphView === 'network' && (
+              <div className="flex flex-shrink-0 items-center gap-0.5 rounded-lg glass-card p-0.5" role="group" aria-label="Network layout">
+                {(['structured', 'organic'] as const).map(l => (
+                  <button
+                    key={l}
+                    type="button"
+                    onClick={() => setNetLayout(l)}
+                    aria-pressed={netLayout === l}
+                    className={clsx(
+                      'px-2 py-1 rounded-md text-[0.66rem] font-semibold capitalize transition-all',
+                      netLayout === l
+                        ? 'bg-[var(--accent-dim)] text-[var(--accent)]'
+                        : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]',
+                    )}
+                    title={l === 'structured' ? 'Columns with orthogonal edges (ELK)' : 'Force-directed layout'}
+                  >
+                    {l}
+                  </button>
+                ))}
+              </div>
+            )}
+
             {/* Expand button (only show when not already expanded, i.e., in panel view) */}
             {!isExpanded && onExpand && (
               <button
                 onClick={onExpand}
-                className="p-1.5 text-[var(--text-muted)] hover:text-[var(--accent)] rounded-md hover:bg-[var(--glass-fill-hover)] transition-colors"
+                className="flex-shrink-0 p-1.5 text-[var(--text-muted)] hover:text-[var(--accent)] rounded-md hover:bg-[var(--glass-fill-hover)] transition-colors"
                 title="Expand to full screen"
               >
                 <Maximize2 className="w-4 h-4" />
@@ -1300,7 +1373,7 @@ const KnowledgeGraphInner = memo(
           </div>
 
           {/* Filters and unpin button (hidden in Pipeline and Entities views) */}
-          {graphView !== 'pipeline' && graphView !== 'entities' && (
+          {graphView === 'network' && netLayout === 'organic' && (
           <div className="flex items-center gap-1 flex-wrap">
             <span className="text-[0.7rem] text-[var(--text-muted)] font-semibold uppercase tracking-wider">Show:</span>
             {(['document', 'question', 'decision', 'model'] as const).map(kind => {
@@ -1383,8 +1456,18 @@ const KnowledgeGraphInner = memo(
         </div>
 
         {/* Graph */}
-        <div ref={setContainerNode} className={clsx('flex-1 relative', graphView === 'pipeline' && 'kg-pipeline', graphView === 'entities' && 'kg-entities')}>
-          {isEmpty ? (
+        <div ref={setContainerNode} className={clsx('flex-1 relative min-h-0', graphView === 'pipeline' && 'kg-pipeline', graphView === 'entities' && 'kg-entities')}>
+          {!isEmpty && useRunView && runConvs ? (
+            <KgRunView
+              key={graphView}
+              mode={graphView === 'layers' ? 'layers' : 'network'}
+              convs={runConvs}
+              selectedMessageId={selectedMessageId}
+              onSelectMessage={onSelectMessage}
+              isExpanded={isExpanded}
+              widthBucket={Math.round(containerSize.width / 400)}
+            />
+          ) : isEmpty ? (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-[var(--text-muted)] p-8">
               <div className="relative w-32 h-32 opacity-30">
                 <svg viewBox="0 0 100 100" className="w-full h-full">
@@ -1447,8 +1530,8 @@ const KnowledgeGraphInner = memo(
           </ReactFlow>
           )}
 
-          {!isEmpty && selectedNode && (
-            <DetailCard node={selectedNode} onClose={() => setSelectedNode(null)} onSelectMessage={onSelectMessage} />
+          {!useRunView && !isEmpty && selectedNode && (
+            <DetailCard node={selectedNode} onClose={() => setSelectedNodeId(null)} onSelectMessage={onSelectMessage} />
           )}
         </div>
       </div>

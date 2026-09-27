@@ -8,6 +8,8 @@ Tables:
   kg_entities    — lexical and domain entities (persons, orgs, roles, documents, profiles)
   kg_relations   — semantic relations between entities with confidence scores
   kg_mentions    — document mentions of entities with snippets for grounding
+  kg_conversation_docs — documents each conversation used (conversation graph scope)
+  kg_meta        — key/value flags for one-off migrations
 
 Entity types: person, organization, role, document, profile, location
 Relation types: has_role, works_at, mentioned_in, candidate_profile, likely_profile, located_in
@@ -72,6 +74,24 @@ CREATE INDEX IF NOT EXISTS kg_rel_src ON kg_relations(src_id);
 CREATE INDEX IF NOT EXISTS kg_rel_dst ON kg_relations(dst_id);
 CREATE INDEX IF NOT EXISTS kg_ment_ent ON kg_mentions(entity_id);
 CREATE INDEX IF NOT EXISTS kg_ment_conv ON kg_mentions(conversation_id);
+
+-- Which documents a conversation used (every doc-agent run's subject docs),
+-- independent of whether the run learned anything about them.
+CREATE TABLE IF NOT EXISTS kg_conversation_docs (
+  conversation_id TEXT NOT NULL,
+  doc_id TEXT NOT NULL,
+  run_id TEXT,
+  created_at REAL NOT NULL,
+  PRIMARY KEY(conversation_id, doc_id)
+);
+
+CREATE INDEX IF NOT EXISTS kg_conv_docs_doc ON kg_conversation_docs(doc_id);
+
+-- One-off migration flags
+CREATE TABLE IF NOT EXISTS kg_meta (
+  key TEXT PRIMARY KEY,
+  value TEXT
+);
 """
 
 
@@ -137,6 +157,7 @@ def _init_sync() -> None:
             _migrate_profiles(conn)
         except sqlite3.DatabaseError as exc:
             log.warning("kg profile migration failed: %s", exc)
+        _backfill_conversation_docs(conn)
         log.info("kg_store initialised at %s", DB_PATH)
     finally:
         conn.close()
@@ -145,6 +166,82 @@ def _init_sync() -> None:
 async def init_db() -> None:
     """Async wrapper for schema initialization."""
     await asyncio.to_thread(_init_sync)
+
+
+_BACKFILL_CONV_DOCS_KEY = "conv_docs_backfill_v1"
+
+
+def _backfill_conversation_docs(conn: sqlite3.Connection) -> int:
+    """
+    One-off, best-effort: populate kg_conversation_docs from persisted doc-agent
+    runs (messages rows whose meta.kind == 'doc_run', using meta.doc_ids and the
+    message's conversation_id). Only documents that still have a document entity
+    are linked. Guarded by a kg_meta flag so it runs once; on failure the flag is
+    not set and the next start retries. Returns the number of rows inserted.
+    """
+    try:
+        if conn.execute(
+            "SELECT 1 FROM kg_meta WHERE key=?", (_BACKFILL_CONV_DOCS_KEY,)
+        ).fetchone():
+            return 0
+        inserted = 0
+        has_messages = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='messages'"
+        ).fetchone() is not None
+        if has_messages:
+            doc_entities = {
+                r["id"] for r in conn.execute("SELECT id FROM kg_entities WHERE type='document'")
+            }
+            rows = conn.execute(
+                "SELECT conversation_id, meta, timestamp FROM messages "
+                "WHERE meta LIKE '%doc_run%'"
+            ).fetchall()
+            for row in rows:
+                try:
+                    meta = json.loads(row["meta"] or "{}")
+                except Exception:
+                    continue
+                if not isinstance(meta, dict) or meta.get("kind") != "doc_run":
+                    continue
+                conv_id = row["conversation_id"]
+                doc_ids = meta.get("doc_ids") or []
+                if not conv_id or not isinstance(doc_ids, list):
+                    continue
+                for doc_id in doc_ids:
+                    if not isinstance(doc_id, str) or f"document:{doc_id}" not in doc_entities:
+                        continue
+                    cur = conn.execute(
+                        "INSERT OR IGNORE INTO kg_conversation_docs "
+                        "(conversation_id, doc_id, run_id, created_at) VALUES (?, ?, ?, ?)",
+                        (conv_id, doc_id, meta.get("run_id"), row["timestamp"] or time.time()),
+                    )
+                    inserted += cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+        conn.execute(
+            "INSERT OR REPLACE INTO kg_meta (key, value) VALUES (?, ?)",
+            (_BACKFILL_CONV_DOCS_KEY, str(time.time())),
+        )
+        if inserted:
+            log.info("kg migration: backfilled %d conversation-document links", inserted)
+        return inserted
+    except Exception as exc:  # never block startup on a best-effort backfill
+        log.warning("kg conversation-docs backfill failed: %s", exc)
+        return 0
+
+
+def _link_conversation_doc_sync(conversation_id: str, doc_id: str, run_id: Optional[str] = None) -> None:
+    """Record that a conversation used a document (upsert; keeps first created_at)."""
+    if not conversation_id or not doc_id:
+        return
+    conn = _connect()
+    try:
+        conn.execute(
+            "INSERT INTO kg_conversation_docs (conversation_id, doc_id, run_id, created_at) "
+            "VALUES (?, ?, ?, ?) ON CONFLICT(conversation_id, doc_id) DO UPDATE SET "
+            "run_id=COALESCE(excluded.run_id, kg_conversation_docs.run_id)",
+            (conversation_id, doc_id, run_id, time.time()),
+        )
+    finally:
+        conn.close()
 
 
 # ── Sync implementations ──
@@ -396,11 +493,96 @@ def _find_chunk_sync(doc_id: str, text: str) -> tuple[int, str] | None:
         conn.close()
 
 
+_CONV_GRAPH_LIMIT = 500
+
+
+def _conversation_doc_ids(conn: sqlite3.Connection, conversation_id: str) -> list[str]:
+    """Documents this conversation used, oldest link first."""
+    return [
+        r["doc_id"] for r in conn.execute(
+            "SELECT doc_id FROM kg_conversation_docs WHERE conversation_id=? ORDER BY created_at, doc_id",
+            (conversation_id,),
+        ).fetchall()
+    ]
+
+
+def _conversation_entity_ids(
+    conn: sqlite3.Connection, conversation_id: str, conv_doc_ids: list[str],
+    hops: int = 2, limit: int = _CONV_GRAPH_LIMIT,
+) -> set[str]:
+    """
+    Entity ids in a conversation's graph scope:
+      (a) entities with a mention in this conversation, plus the endpoints of
+          this conversation's relations touching them (the original rule);
+      (b) the document entities of the documents this conversation used;
+      (c) everything within `hops` relation hops of those documents, whichever
+          conversation created it (person —mentioned_in→ document,
+          person —works_at→ org, person —likely_profile→ profile, …).
+    Expansion stops once `limit` entities are collected.
+    """
+    entity_ids: set[str] = set()
+    cur = conn.execute(
+        "SELECT DISTINCT entity_id FROM kg_mentions WHERE conversation_id=?",
+        (conversation_id,),
+    )
+    entity_ids.update(r["entity_id"] for r in cur.fetchall())
+
+    if entity_ids:
+        seed = list(entity_ids)
+        placeholders = ",".join("?" * len(seed))
+        cur = conn.execute(
+            f"SELECT src_id, dst_id FROM kg_relations WHERE conversation_id=? "
+            f"AND (src_id IN ({placeholders}) OR dst_id IN ({placeholders}))",
+            [conversation_id] + seed + seed,
+        )
+        for r in cur.fetchall():
+            entity_ids.add(r["src_id"])
+            entity_ids.add(r["dst_id"])
+
+    # Documents the conversation used (only those that still have an entity)
+    doc_entities: list[str] = []
+    if conv_doc_ids:
+        wanted = [f"document:{d}" for d in conv_doc_ids]
+        placeholders = ",".join("?" * len(wanted))
+        existing = {
+            r["id"] for r in conn.execute(
+                f"SELECT id FROM kg_entities WHERE id IN ({placeholders})", wanted
+            ).fetchall()
+        }
+        doc_entities = [e for e in wanted if e in existing]
+    entity_ids.update(doc_entities)
+
+    # Breadth-first expansion from the documents over all relations
+    frontier = list(doc_entities)
+    for _ in range(hops):
+        if not frontier or len(entity_ids) >= limit:
+            break
+        nxt: list[str] = []
+        for i in range(0, len(frontier), 400):
+            batch = frontier[i:i + 400]
+            ph = ",".join("?" * len(batch))
+            cur = conn.execute(
+                f"SELECT src_id, dst_id FROM kg_relations WHERE src_id IN ({ph}) OR dst_id IN ({ph}) "
+                f"ORDER BY confidence DESC",
+                batch + batch,
+            )
+            for r in cur.fetchall():
+                for nb in (r["src_id"], r["dst_id"]):
+                    if nb not in entity_ids and len(entity_ids) < limit:
+                        entity_ids.add(nb)
+                        nxt.append(nb)
+        frontier = nxt
+    return entity_ids
+
+
 def _get_graph_sync(scope: str = "all", conversation_id: Optional[str] = None) -> dict:
     """
     Get the knowledge graph as JSON.
 
-    scope: "all" (everything, cap 500 entities by mention count) or "conversation" (only for this conv)
+    scope: "all" (everything, cap 500 entities by mention count) or
+    "conversation" — the entities this conversation produced, the documents it
+    used (kg_conversation_docs) and everything within two relation hops of
+    those documents, regardless of which conversation created it.
 
     Returns:
     {
@@ -410,32 +592,14 @@ def _get_graph_sync(scope: str = "all", conversation_id: Optional[str] = None) -
       "stats": {"entities": N, "relations": N, "mentions": N, "documents": N, "chunks": N}
     }
     """
+    conv_scope = scope == "conversation" and bool(conversation_id)
     conn = _connect()
     try:
+        conv_doc_ids: list[str] = []
         # Get entities
-        if scope == "conversation" and conversation_id:
-            # Only entities mentioned in this conversation
-            entity_ids = set()
-            cur = conn.execute(
-                "SELECT DISTINCT entity_id FROM kg_mentions WHERE conversation_id=?",
-                (conversation_id,),
-            )
-            entity_ids.update(r["entity_id"] for r in cur.fetchall())
-
-            # Also include entities with relations to those entities
-            if entity_ids:
-                placeholders = ",".join("?" * len(entity_ids))
-                cur = conn.execute(
-                    f"SELECT DISTINCT src_id FROM kg_relations WHERE conversation_id=? AND (src_id IN ({placeholders}) OR dst_id IN ({placeholders}))",
-                    [conversation_id] + list(entity_ids) + list(entity_ids),
-                )
-                entity_ids.update(r["src_id"] for r in cur.fetchall())
-
-                cur = conn.execute(
-                    f"SELECT DISTINCT dst_id FROM kg_relations WHERE conversation_id=? AND (src_id IN ({placeholders}) OR dst_id IN ({placeholders}))",
-                    [conversation_id] + list(entity_ids) + list(entity_ids),
-                )
-                entity_ids.update(r["dst_id"] for r in cur.fetchall())
+        if conv_scope:
+            conv_doc_ids = _conversation_doc_ids(conn, conversation_id)
+            entity_ids = _conversation_entity_ids(conn, conversation_id, conv_doc_ids)
 
             # Query just these entities
             if entity_ids:
@@ -455,23 +619,29 @@ def _get_graph_sync(scope: str = "all", conversation_id: Optional[str] = None) -
                 LIMIT 500
             """)
 
+        entity_rows = cur.fetchall()
         entities = []
         entity_ids_set = set()
-        for row in cur.fetchall():
+        conv_doc_ph = ",".join("?" * len(conv_doc_ids))
+        for row in entity_rows:
             entity_id = row["id"]
             entity_ids_set.add(entity_id)
             mention_count = row["mention_count"] if scope == "all" else 0
 
-            if scope == "conversation" and conversation_id:
-                # Count mentions in this conversation
-                cur2 = conn.execute(
-                    "SELECT COUNT(*) as cnt FROM kg_mentions WHERE entity_id=? AND conversation_id=?",
-                    (entity_id, conversation_id),
-                )
+            if conv_scope:
+                # Mentions made in this conversation or found in its documents
+                if conv_doc_ids:
+                    cur2 = conn.execute(
+                        f"SELECT COUNT(*) as cnt FROM kg_mentions WHERE entity_id=? "
+                        f"AND (conversation_id=? OR doc_id IN ({conv_doc_ph}))",
+                        [entity_id, conversation_id] + conv_doc_ids,
+                    )
+                else:
+                    cur2 = conn.execute(
+                        "SELECT COUNT(*) as cnt FROM kg_mentions WHERE entity_id=? AND conversation_id=?",
+                        (entity_id, conversation_id),
+                    )
                 mention_count = cur2.fetchone()["cnt"]
-            elif scope == "all":
-                # Already have mention_count from above
-                pass
 
             entities.append({
                 "id": entity_id,
@@ -511,7 +681,7 @@ def _get_graph_sync(scope: str = "all", conversation_id: Optional[str] = None) -
         for entity in entities:
             if entity["type"] == "document":
                 doc_id = entity["props"].get("doc_id") or entity["id"].split(":", 1)[1]
-                filename = entity["props"].get("filename", doc_id)
+                filename = entity["props"].get("filename") or entity["name"] or doc_id
 
                 # Count chunks and mentions for this document
                 chunk_count = 0
@@ -539,6 +709,11 @@ def _get_graph_sync(scope: str = "all", conversation_id: Optional[str] = None) -
                     "mention_count": mention_count,
                 })
 
+        if conv_scope:
+            # The conversation's own documents first (in the order it used them)
+            order = {d: i for i, d in enumerate(conv_doc_ids)}
+            documents.sort(key=lambda d: (order.get(d["doc_id"], len(order)), d["name"]))
+
         # Stats
         stats = {
             "entities": len(entities),
@@ -548,8 +723,21 @@ def _get_graph_sync(scope: str = "all", conversation_id: Optional[str] = None) -
             "chunks": 0,  # Count below
         }
 
-        # Count total mentions and chunks
-        if entity_ids_set:
+        if conv_scope:
+            # Stats of the returned subgraph: mentions of its entities within
+            # its documents, chunks of its documents.
+            doc_ids_in_graph = [d["doc_id"] for d in documents]
+            if entity_ids_set and doc_ids_in_graph:
+                eph = ",".join("?" * len(entity_ids_set))
+                dph = ",".join("?" * len(doc_ids_in_graph))
+                cur = conn.execute(
+                    f"SELECT COUNT(*) as cnt FROM kg_mentions WHERE entity_id IN ({eph}) AND doc_id IN ({dph})",
+                    list(entity_ids_set) + doc_ids_in_graph,
+                )
+                stats["mentions"] = cur.fetchone()["cnt"]
+            stats["chunks"] = sum(d["chunk_count"] for d in documents)
+        elif entity_ids_set:
+            # Count total mentions and chunks
             placeholders = ",".join("?" * len(entity_ids_set))
             cur = conn.execute(
                 f"SELECT COUNT(*) as cnt FROM kg_mentions WHERE entity_id IN ({placeholders})",
@@ -856,8 +1044,9 @@ def _delete_document_sync(doc_id: str) -> int:
             "SELECT 1 FROM kg_entities WHERE id=?", (doc_entity_id,)
         ).fetchone() is not None
 
-        # Delete mentions in this document
+        # Delete mentions in this document and its conversation links
         conn.execute("DELETE FROM kg_mentions WHERE doc_id=?", (doc_id,))
+        conn.execute("DELETE FROM kg_conversation_docs WHERE doc_id=?", (doc_id,))
 
         # Delete relations touching the document entity
         conn.execute("DELETE FROM kg_relations WHERE src_id=? OR dst_id=?", (doc_entity_id, doc_entity_id))
@@ -871,8 +1060,9 @@ def _delete_document_sync(doc_id: str) -> int:
 
 
 def _delete_conversation_sync(conversation_id: str) -> int:
-    """Remove the mentions and relations a conversation produced, then GC
-    orphans. Document entities are kept (the documents still exist).
+    """Remove the mentions and relations a conversation produced and its
+    document links, then GC orphans. Document entities are kept (the documents
+    still exist).
     Returns the number of entities garbage-collected."""
     if not conversation_id:
         return 0
@@ -880,6 +1070,7 @@ def _delete_conversation_sync(conversation_id: str) -> int:
     try:
         conn.execute("DELETE FROM kg_mentions WHERE conversation_id=?", (conversation_id,))
         conn.execute("DELETE FROM kg_relations WHERE conversation_id=?", (conversation_id,))
+        conn.execute("DELETE FROM kg_conversation_docs WHERE conversation_id=?", (conversation_id,))
         return _gc_orphans(conn)
     finally:
         conn.close()
@@ -892,6 +1083,7 @@ def _reset_sync() -> None:
         conn.execute("DELETE FROM kg_mentions")
         conn.execute("DELETE FROM kg_relations")
         conn.execute("DELETE FROM kg_entities")
+        conn.execute("DELETE FROM kg_conversation_docs")
     finally:
         conn.close()
 
@@ -1357,6 +1549,10 @@ async def ingest_run(
                 {"doc_id": doc_id, "filename": filename, "kind": kind},
                 entity_id=f"document:{doc_id}",
             )
+            # Link the document to the conversation even when the run learns
+            # nothing else about it (e.g. general_question) — drives the
+            # conversation graph scope.
+            await asyncio.to_thread(_link_conversation_doc_sync, conversation_id, doc_id, run_id)
 
             for pers in people:
                 if pers.get("doc_id") and pers["doc_id"] != doc_id:
