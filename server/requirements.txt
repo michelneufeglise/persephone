@@ -20,3 +20,6 @@ laya>=0.3.20
 PyMuPDF>=1.24.0
 python-docx>=1.1.0
 openpyxl>=3.1.0
+pandas>=2.0.0
+xlrd>=2.0.1
+odfpy>=1.4.1

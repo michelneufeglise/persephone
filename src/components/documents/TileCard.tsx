@@ -2,10 +2,10 @@ import { useState } from 'react'
 import { motion } from 'framer-motion'
 import {
   Loader2, CheckCircle2, AlertCircle, SkipForward, Eye, FileText, ScanLine, Bot, Brain, Sparkles,
-  ChevronDown, ChevronRight, ListChecks, Globe, Search, Database, DatabaseZap,
+  ChevronDown, ChevronRight, ListChecks, Globe, Search, Database, DatabaseZap, Table2,
 } from 'lucide-react'
 import { clsx } from 'clsx'
-import type { Tile } from '@/lib/docAgent'
+import type { Tile, TileItem } from '@/lib/docAgent'
 import { SOCIAL_PLATFORMS, resolvePlatform } from './socialPlatforms'
 
 /** Small coloured platform badge next to a search result (in / f / IG / 𝕏). */
@@ -42,6 +42,80 @@ const ICON_BY_KIND: Record<Tile['kind'], React.ElementType> = {
   web: Globe,
   query: DatabaseZap,
   store: Database,
+  table: Table2,
+}
+
+function fmtCell(v: unknown): string {
+  if (v === null || v === undefined) return '—'
+  if (typeof v === 'number') return Number.isInteger(v) ? v.toLocaleString() : v.toLocaleString(undefined, { maximumFractionDigits: 4 })
+  if (typeof v === 'boolean') return v ? 'TRUE' : 'FALSE'
+  return String(v)
+}
+
+/** Table-query tile body: the query summary + a compact result table. */
+function TableQueryItems({ items }: { items: TileItem[] }) {
+  const query = items.find(i => i.kind === 'query')
+  const rows = items.filter(i => i.kind === 'result')
+  const notes = items.filter(i => i.kind === 'note')
+  const columns = query?.columns ?? []
+  const hasRows = columns.length > 0 && rows.some(r => Array.isArray(r.row))
+  const numericCol = columns.map((_, j) => rows.some(r => typeof r.row?.[j] === 'number'))
+  return (
+    <div className="space-y-1.5 border-t border-[var(--glass-stroke)] pt-2">
+      {query && (
+        <div className="flex items-center gap-1.5 px-2 py-1 rounded glass-card text-xs" title={query.label}>
+          <Search className="w-3 h-3 text-[var(--text-muted)] flex-shrink-0" />
+          <span className="text-[var(--text-primary)] truncate flex-1 font-mono text-[11px]">{query.label}</span>
+        </div>
+      )}
+      {hasRows ? (
+        <div className="overflow-x-auto rounded border border-[var(--glass-stroke)] max-h-56 overflow-y-auto" style={{ scrollbarWidth: 'thin' }}>
+          <table className="text-[11px] min-w-full border-separate border-spacing-0">
+            <thead>
+              <tr>
+                {columns.map((c, j) => (
+                  <th
+                    key={j}
+                    className={clsx(
+                      'sticky top-0 px-2 py-1 font-medium text-[var(--text-secondary)] whitespace-nowrap border-b border-[var(--glass-stroke)]',
+                      numericCol[j] ? 'text-right' : 'text-left',
+                    )}
+                    style={{ background: 'var(--bg-glass-strong)' }}
+                  >
+                    {c}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => (
+                <tr key={i} className={i % 2 === 1 ? 'bg-[var(--glass-fill)]' : undefined}>
+                  {columns.map((_, j) => (
+                    <td
+                      key={j}
+                      className={clsx(
+                        'px-2 py-0.5 text-[var(--text-primary)] whitespace-nowrap max-w-[180px] truncate',
+                        numericCol[j] && 'text-right tabular-nums',
+                      )}
+                    >
+                      {fmtCell(r.row?.[j])}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        rows.map((r, i) => (
+          <div key={i} className="text-xs text-[var(--text-primary)] px-2 py-0.5 truncate" title={r.label}>{r.label}</div>
+        ))
+      )}
+      {notes.map((n, i) => (
+        <div key={i} className="text-xs text-[var(--text-muted)] italic px-2 py-0.5">{n.label}</div>
+      ))}
+    </div>
+  )
 }
 
 interface BadgeStyle {
@@ -312,8 +386,11 @@ export function TileCard({ tile, now }: TileCardProps) {
         </div>
       )}
 
+      {/* Table query: summary + compact result table */}
+      {tile.kind === 'table' && tile.items && tile.items.length > 0 && <TableQueryItems items={tile.items} />}
+
       {/* Tile items (queries, results, notes) */}
-      {tile.items && tile.items.length > 0 && (
+      {tile.kind !== 'table' && tile.items && tile.items.length > 0 && (
         <div className="space-y-1.5 border-t border-[var(--glass-stroke)] pt-2">
           {tile.items.slice(0, 8).map((item, idx) => (
             <div key={idx}>

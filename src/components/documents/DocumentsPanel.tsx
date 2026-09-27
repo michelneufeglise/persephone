@@ -5,7 +5,7 @@ import {
   Table as TableIcon, Tags, MessageCircle, Eye, Shield, Download,
   ChevronLeft, RefreshCw, Loader2, Wand2, Copy, Check,
   CheckSquare, Square, Layers, Send, ScanLine, ChevronDown, ChevronRight, Brain, StopCircle,
-  Maximize2, Minimize2,
+  Maximize2, Minimize2, FileSpreadsheet,
 } from 'lucide-react'
 import { clsx } from 'clsx'
 import { useAppStore } from '@/store/appStore'
@@ -27,6 +27,8 @@ import { ConversationsList } from './ConversationsList'
 import { MultiDocTab } from './MultiDocTab'
 import { KnowledgeGraph } from './KnowledgeGraph'
 import { PanelErrorBoundary } from '@/components/ui/PanelErrorBoundary'
+import { SpreadsheetPreview } from './SpreadsheetPreview'
+import { SHEET_ACCEPT, sheetSummary, sheetSummaryLabel } from '@/lib/docAgent'
 
 type Tab = 'overview' | 'ocr' | 'summarize' | 'qa' | 'tables' | 'entities' | 'translate' | 'redact' | 'humanize' | 'export'
 type Mode = 'chat' | 'tools' | 'graph'
@@ -140,6 +142,7 @@ export function DocumentsPanel() {
   const setActiveDocId = useAppStore(s => s.setActiveDocId)
   const [docs, setDocs] = useState<IDPDocument[]>([])
   const [activeDoc, setActiveDoc] = useState<IDPDocument | null>(null)
+  const activeIsSheet = !!(activeDoc && sheetSummary(activeDoc))
   const [tab, setTab] = useState<Tab>('overview')
   const [mode, setMode] = useState<Mode>('chat')
   const [uploading, setUploading] = useState(false)
@@ -554,7 +557,7 @@ export function DocumentsPanel() {
                   e.target.value = '' // allow re-selecting the same file
                   if (files.length > 0) void handleUploadFiles(files)
                 }}
-                accept=".pdf,.docx,.doc,.xlsx,.csv,.txt,.md,.rtf,.pptx,.odt,.html,.htm,.json,.xml,.eml,.png,.jpg,.jpeg,.webp,.gif"
+                accept={`.pdf,.docx,.doc,${SHEET_ACCEPT},.txt,.md,.rtf,.pptx,.odt,.html,.htm,.json,.xml,.eml,.png,.jpg,.jpeg,.webp,.gif`}
               />
               {uploading ? (
                 <div className="flex flex-col items-center gap-2 text-[var(--accent)]">
@@ -648,7 +651,9 @@ export function DocumentsPanel() {
                   >
                     <ChevronLeft className="w-4 h-4" />
                   </button>
-                  <FileText className="w-4 h-4 text-[var(--accent)] flex-shrink-0" />
+                  {sheetSummary(activeDoc)
+                    ? <FileSpreadsheet className="w-4 h-4 text-[var(--accent)] flex-shrink-0" />
+                    : <FileText className="w-4 h-4 text-[var(--accent)] flex-shrink-0" />}
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium text-[var(--text-primary)] truncate" title={activeDoc.filename}>
                       {activeDoc.filename}
@@ -735,6 +740,8 @@ export function DocumentsPanel() {
               >
                 {TABS.map(t => {
                   const Icon = t.icon
+                  // A spreadsheet's "Tables" tab is its native table view.
+                  const label = t.id === 'tables' && activeIsSheet && selectedDocIds.length <= 1 ? 'Table' : t.label
                   return (
                     <button
                       key={t.id}
@@ -748,7 +755,7 @@ export function DocumentsPanel() {
                       )}
                     >
                       <Icon className="w-3.5 h-3.5" />
-                      {t.label}
+                      {label}
                     </button>
                   )
                 })}
@@ -791,10 +798,11 @@ export function DocumentsPanel() {
                       {activeDoc ? (
                         <>
                           {tab === 'overview' && <OverviewTab doc={activeDoc} />}
+                          {tab === 'tables' && activeIsSheet && <SheetTableView doc={activeDoc} />}
                           {tab === 'ocr' && <ActionTab doc={activeDoc} run={d => idp.ocr(d.id)} label="Run OCR" hint="Reads images using your configured OCR model." />}
                           {tab === 'summarize' && <SummarizeTab doc={activeDoc} />}
                           {tab === 'qa' && <QATab doc={activeDoc} />}
-                          {tab === 'tables' && <TablesTab doc={activeDoc} />}
+                          {tab === 'tables' && !activeIsSheet && <TablesTab doc={activeDoc} />}
                           {tab === 'entities' && <EntitiesTab doc={activeDoc} />}
                           {tab === 'translate' && <TranslateTab doc={activeDoc} />}
                           {tab === 'redact' && <RedactTab doc={activeDoc} />}
@@ -900,6 +908,7 @@ function PanelHeader() {
 function DocLibItem({ doc, checked, onToggle, onSelect, onDelete }: {
   doc: IDPDocument; checked: boolean; onToggle: () => void; onSelect: () => void; onDelete: () => void
 }) {
+  const sheet = sheetSummary(doc)
   return (
     <div
       className={clsx(
@@ -915,13 +924,24 @@ function DocLibItem({ doc, checked, onToggle, onSelect, onDelete }: {
         {checked ? <CheckSquare className="w-4 h-4 text-[var(--accent)]" /> : <Square className="w-4 h-4" />}
       </button>
       <div onClick={onSelect} className="flex items-center gap-3 flex-1 min-w-0 cursor-pointer">
-        <FileText className="w-4 h-4 text-[var(--accent)] flex-shrink-0" />
+        {sheet
+          ? <FileSpreadsheet className="w-4 h-4 text-[var(--accent)] flex-shrink-0" />
+          : <FileText className="w-4 h-4 text-[var(--accent)] flex-shrink-0" />}
         <div className="flex-1 min-w-0">
           <div className="text-sm font-medium text-[var(--text-primary)] truncate" title={doc.filename}>
             {doc.filename}
           </div>
-          <div className="text-xs text-[var(--text-muted)] mt-0.5">
-            {doc.pages} page{doc.pages === 1 ? '' : 's'} · {formatBytes(doc.size)}
+          <div className="text-xs text-[var(--text-muted)] mt-0.5 truncate">
+            {sheet ? (
+              <>
+                <span className="text-[10px] font-medium px-1 py-px rounded bg-[var(--accent-dim)] text-[var(--accent)] mr-1.5">
+                  {sheet.format}
+                </span>
+                {sheetSummaryLabel(sheet)} · {formatBytes(doc.size)}
+              </>
+            ) : (
+              <>{doc.pages} page{doc.pages === 1 ? '' : 's'} · {formatBytes(doc.size)}</>
+            )}
           </div>
         </div>
       </div>
@@ -1075,6 +1095,7 @@ function OverviewTab({ doc }: { doc: IDPDocument }) {
   const [routeLoaded, setRouteLoaded] = useState(false)
   const [layaReady, setLayaReady] = useState<boolean | null>(null)
   const hasImg = doc.has_images && doc.pages > 0
+  const isSheet = !!sheetSummary(doc)
 
   useEffect(() => {
     if (!routeLoaded) {
@@ -1092,7 +1113,8 @@ function OverviewTab({ doc }: { doc: IDPDocument }) {
             className="w-full max-h-96 object-contain" />
         </div>
       )}
-      {doc.text && (
+      {isSheet && <SpreadsheetPreview docId={doc.id} filename={doc.filename} maxHeight={384} />}
+      {doc.text && !isSheet && (
         <div className="rounded-xl glass-card p-5">
           <div className="text-xs text-[var(--text-muted)] uppercase tracking-wider mb-2.5 font-medium">Extracted text</div>
           <pre className="text-sm text-[var(--text-primary)] whitespace-pre-wrap font-sans leading-relaxed max-h-96 overflow-y-auto">
@@ -1101,7 +1123,7 @@ function OverviewTab({ doc }: { doc: IDPDocument }) {
           </pre>
         </div>
       )}
-      {!hasImg && !doc.text && (
+      {!hasImg && !doc.text && !isSheet && (
         <div className="text-sm text-[var(--text-muted)] text-center py-10">No preview available</div>
       )}
 
@@ -1370,6 +1392,25 @@ function QATab({ doc, runSignal, onRunComplete, question: overrideQuestion }: { 
 }
 
 // ── Tables ──────────────────────────────────────────────────────────
+// ── Spreadsheet table view (Tools → Table for .xlsx/.xls/.ods/.csv) ──
+function SheetTableView({ doc }: { doc: IDPDocument }) {
+  return (
+    <div className="p-6 space-y-4 max-w-6xl mx-auto">
+      <SpreadsheetPreview docId={doc.id} filename={doc.filename} maxHeight="calc(100vh - 320px)" />
+      <p className="text-xs text-[var(--text-muted)]">
+        Questions in Chat about totals, averages, rankings or counts are computed exactly over every row
+        of the sheet — the model only phrases the result.
+      </p>
+      <details className="group">
+        <summary className="cursor-pointer text-xs text-[var(--text-muted)] hover:text-[var(--text-secondary)] select-none">
+          Extract tables with a model instead
+        </summary>
+        <TablesTab doc={doc} />
+      </details>
+    </div>
+  )
+}
+
 function TablesTab({ doc, runSignal, onRunComplete }: { doc: IDPDocument; runSignal?: number; onRunComplete?: () => void }) {
   const [busy, setBusy] = useState(false)
   const [tables, setTables] = useState<{ title?: string; headers?: string[]; rows?: string[][] }[]>([])

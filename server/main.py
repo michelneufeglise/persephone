@@ -4762,6 +4762,20 @@ async def idp_page_image(doc_id: str, page_num: int):
     return FileResponse(doc.page_images[page_num - 1], media_type="image/png")
 
 
+@app.get("/api/idp/documents/{doc_id}/sheets")
+async def idp_sheet_preview(doc_id: str, sheet: str | None = None, offset: int = 0, limit: int = 200,
+                            include_hidden: bool = False):
+    """Rows of one sheet of a spreadsheet document (paged) + the sheet list.
+    Hidden sheets are neither listed nor served (404 "sheet is hidden") unless
+    ?include_hidden=1; the listing always carries a `hidden_sheets` count."""
+    try:
+        return await asyncio.to_thread(_idp.sheet_preview, doc_id, sheet, offset, limit, include_hidden)
+    except LookupError as exc:
+        raise HTTPException(404, str(exc).strip("'\""))
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+
+
 class IDPRequest(BaseModel):
     doc_id: str
     options: dict = {}
@@ -5241,6 +5255,7 @@ async def idp_agent(req: AgentRequest):
             kg_search=_kg_store.search_entities,
             kg_neighborhood=_kg_store.neighborhood,
             kg_ingest=_kg_store.ingest_run,
+            sheet_frames=_idp.sheet_frames,
             ollama_base=OLLAMA_BASE,
         )
     )

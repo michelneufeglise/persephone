@@ -11,12 +11,15 @@ Never imports main.py; uses injected hooks for all integrations.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
 from typing import Any, AsyncIterator, Callable, Optional
+
+import table_query as _tq
 
 log = logging.getLogger("doc_agent")
 
@@ -174,7 +177,7 @@ class Decision:
 class Tile:
     """A UI tile representing a processing step."""
     id: str  # Unique identifier (e.g., "laya", "extract-doc1", "answer")
-    kind: str  # "laya" | "extract" | "ocr" | "llm" | "vision" | "web" | "planner"
+    kind: str  # "laya" | "extract" | "ocr" | "llm" | "vision" | "web" | "planner" | "table"
     title: str
     status: str  # "pending" | "running" | "done" | "skipped" | "error"
     model: Optional[str] = None  # Model name if applicable
@@ -294,6 +297,7 @@ class AgentHooks:
     kg_neighborhood: Optional[Callable[[str], Any]] = None  # (entity_id) -> awaitable dict with entities/relations
     kg_ingest: Optional[Callable[..., Any]] = None  # (conversation_id, run_id, intent, ...) -> awaitable dict
     retrieve_chunks: Optional[Callable[[str, str, int], Any]] = None  # (doc_id, query, k) -> awaitable list[str] (RAG over the doc)
+    sheet_frames: Optional[Callable[[Any], Any]] = None  # (doc) -> list[dict] parsed sheets (sheets.py) | None; sync/blocking
     now_ms: Callable[[], int] = field(default_factory=lambda: lambda: int(time.time() * 1000))
 
 # ── Pure functions for intent & role resolution ─────────────────────────────
@@ -404,6 +408,11 @@ def rules_intent(message: str, files: list[dict]) -> tuple[Optional[str], list[s
     # With attachments, only an explicit cross-scope marker makes it a graph
     # query ("tell me everything about this invoice" is about the invoice).
     scope_hits = _kw_hits(msg_lower, CROSS_SCOPE_MARKERS)
+    if "across" in scope_hits and any(
+        (f.get("kind") == "xlsx") or (f.get("name") or "").lower().endswith(SHEET_EXTS) for f in files
+    ):
+        # "total across Q1..Q4" on a spreadsheet is about its columns
+        scope_hits.remove("across")
     graph_hits = _kw_hits(msg_lower, GRAPH_QUERY_PHRASES) + scope_hits
     if graph_hits and (not files or scope_hits):
         return "graph_query", graph_hits
@@ -1351,6 +1360,16 @@ async def run_agent(
                     extract_tile.detail = f"Short text layer ({text_len} chars) — OCR skipped"
                 if len(doc.text) > doc_budget and intent != "verify_signature":
                     extract_tile.detail = f"{len(doc.text):,} chars · excerpts used"
+                sheet_list = None
+                if isinstance(meta, dict) and meta.get("sheets"):
+                    import sheets as _sheets_mod
+                    sheet_list = _sheets_mod.normalize_meta_sheets(meta)[0]   # legacy dict form too
+                if isinstance(sheet_list, list) and sheet_list:
+                    vis = [x for x in sheet_list if isinstance(x, dict) and not x.get("hidden")]
+                    n_rows = sum(int(x.get("rows") or 0) for x in vis)
+                    extract_tile.detail = (
+                        f"Spreadsheet · {len(vis)} sheet{'s' if len(vis) != 1 else ''} · {n_rows:,} rows"
+                    )
                 extract_tile.output_preview = doc.text[:300]
                 yield {"tile": extract_tile.to_dict()}
                 tiles_emitted[extract_tile.id] = extract_tile
@@ -1602,6 +1621,101 @@ async def run_agent(
             ))
             yield {"tile": laya_tile.to_dict()}
 
+            # Spreadsheet questions: compute the numbers with a deterministic
+            # table query (pandas) before the answer — the model only writes
+            # the JSON spec and then phrases the computed result.
+            message_for_table = message_for_intent if web_targets else message
+            sheet_overrides: dict[str, str] = {}
+            computed_result: Optional[str] = None
+            sheet_notes: list[str] = []
+            sheet_rows_not_sent: dict[str, int] = {}
+            sheet_docs = [d for d in subject_docs if is_sheet_doc(d)] if intent != "verify_signature" else []
+            if sheet_docs and hooks.sheet_frames:
+                loaded: list[tuple[Any, list[dict]]] = []
+                for d in sheet_docs:
+                    try:
+                        frames = await asyncio.to_thread(hooks.sheet_frames, d)
+                    except Exception as e:
+                        log.debug(f"sheet_frames failed for {d.id}: {e}")
+                        frames = None
+                    if frames:
+                        loaded.append((d, frames))
+                tq_hits = table_question_hits(message_for_table)
+                cols_hit = _mentioned_columns(message_for_table, loaded[0][1]) if loaded else []
+                # A hidden sheet named by the user: tell the answer model it is
+                # hidden (never its contents) so it doesn't claim it's missing.
+                hidden_hits = list(dict.fromkeys(
+                    h for _d, frames in loaded for h in hidden_sheets_mentioned(message_for_table, frames)
+                ))
+                if hidden_hits:
+                    sheet_notes.append(HIDDEN_SHEET_NOTE.format(names=", ".join(f"'{h}'" for h in hidden_hits)))
+                visible_named = any(
+                    _visible_sheet_mentioned(message_for_table, frames) for _d, frames in loaded
+                )
+                wants_query = bool(loaded) and (
+                    (intent in TABLE_QUERY_INTENTS and (tq_hits or cols_hit or intent == "extract_data"))
+                    or (intent == "identify_person" and tq_hits)
+                ) and not (hidden_hits and not cols_hit and not visible_named)
+                if wants_query:
+                    reason = []
+                    if tq_hits:
+                        reason.append("keywords: " + ", ".join(tq_hits[:5]))
+                    if cols_hit:
+                        reason.append("columns: " + ", ".join(cols_hit[:4]))
+                    laya_tile.decisions.append(Decision(
+                        id="table_question",
+                        label="Table query",
+                        value="yes",
+                        source="rules",
+                        note=("table_question — " + "; ".join(reason)) if reason else f"spreadsheet · {intent}",
+                    ))
+                    yield {"tile": laya_tile.to_dict()}
+                    q_doc, q_sheets = loaded[0]
+                    tq_state: dict[str, Any] = {}
+                    tq_tile = Tile(id="table-query", kind="table", title="Table query", status="pending")
+                    tiles_emitted["table-query"] = tq_tile
+                    async for ev in _table_query_step(
+                        hooks, llm_model, q_doc, message_for_table, q_sheets, tq_state, tq_tile,
+                        history=history,
+                    ):
+                        yield ev
+                    result = tq_state.get("result")
+                    if result:
+                        computed_result = (
+                            f"Sheet: {result['sheet']} of {q_doc.filename} · query: {_tq.spec_summary(result['spec'])}"
+                            f" · {result['matched_rows']} matching source rows · {result['row_count']} result rows\n"
+                            + result["markdown"]
+                        )
+                    for d, frames in loaded:
+                        if result:
+                            sheet_overrides[d.id] = _sheet_overview(frames, TABLE_PROMPT_HEAD_ROWS)
+                            sheet_rows_not_sent[d.id] = _rows_not_sent(frames, TABLE_PROMPT_HEAD_ROWS)
+                        else:
+                            sheet_overrides[d.id] = _sheet_fallback_content(frames)
+                            if _visible_rows(frames) > TEXT_ROW_CAP_FOR_PROMPT:
+                                sheet_rows_not_sent[d.id] = _rows_not_sent(frames, TABLE_FALLBACK_HEAD_ROWS)
+                else:
+                    # No computation needed — but a large sheet is never
+                    # dumped whole into the prompt.
+                    for d, frames in loaded:
+                        total = _visible_rows(frames)
+                        if total > TEXT_ROW_CAP_FOR_PROMPT and intent not in ("translate", "redact"):
+                            sheet_overrides[d.id] = _sheet_fallback_content(frames)
+                            sheet_rows_not_sent[d.id] = _rows_not_sent(frames, TABLE_FALLBACK_HEAD_ROWS)
+                # Tiles say when the prompt got the schema (+ result) instead of the sheet
+                for d, _frames in loaded:
+                    n_not_sent = sheet_rows_not_sent.get(d.id)
+                    if n_not_sent is None or n_not_sent <= 0:
+                        continue
+                    what = "computed result" if computed_result else "stats"
+                    label = f"Used table schema + {what} ({n_not_sent:,} rows not sent)"
+                    answer_tile.detail = label
+                    ext = tiles_emitted.get(f"extract-{d.id}")
+                    if ext is not None:
+                        base = (ext.detail or "").split(" · Used table schema")[0]
+                        ext.detail = f"{base} · {label}" if base else label
+                        yield {"tile": ext.to_dict()}
+
             answer_tile.status = "running"
             yield {"tile": answer_tile.to_dict()}
 
@@ -1615,6 +1729,8 @@ async def run_agent(
                 budget = _doc_budget(len([d for d in subject_docs if d.text]) or 1)
                 if intent in RAG_INTENTS and hooks.retrieve_chunks:
                     for d in subject_docs:
+                        if d.id in sheet_overrides:
+                            continue
                         if d.text and len(d.text) > budget:
                             try:
                                 chunks = await hooks.retrieve_chunks(d.id, message_for_answer, RAG_TOP_K)
@@ -1628,6 +1744,9 @@ async def run_agent(
                     intent, subject_docs, message_for_answer, history,
                     max_chars=PROMPT_MAX_CHARS, retrieved=retrieved,
                     web_lookup_on=bool(web_targets),
+                    doc_overrides=sheet_overrides or None,
+                    computed_result=computed_result,
+                    task_notes=sheet_notes or None,
                 )
                 if excerpts:
                     longest = max(v["chars"] for v in excerpts.values())
@@ -1905,10 +2024,10 @@ def _mime_to_kind(mime: str) -> str:
         return "file"
     if "pdf" in mime:
         return "pdf"
+    if "sheet" in mime or "csv" in mime or "excel" in mime or "tab-separated" in mime:
+        return "xlsx"
     if "word" in mime or "document" in mime:
         return "docx"
-    if "sheet" in mime or "csv" in mime:
-        return "xlsx"
     if mime.startswith("image"):
         return "image"
     if mime == "message/rfc822" or "email" in mime:
@@ -2078,6 +2197,324 @@ async def _stream_answer(
                 yield {"content": out}
 
 
+# ── Spreadsheet table queries ───────────────────────────────────────────────
+
+SHEET_EXTS = (".xlsx", ".xlsm", ".xls", ".ods", ".csv", ".tsv")
+TABLE_QUERY_INTENTS = {"general_question", "extract_data"}
+# Words that make a question about a spreadsheet a computation ("table_question")
+TABLE_QUESTION_KWS = [
+    "total", "totals", "sum", "sums", "average", "averages", "avg", "mean", "median",
+    "highest", "lowest", "top", "bottom", "how many", "how much", "count", "number of",
+    "per", "by", "group*", "max", "maximum", "min", "minimum", "rank*", "largest",
+    "smallest", "biggest", "most", "least", "trend*", "compare", "comparison",
+    "greater than", "more than", "less than", "above", "below", "between", "sort*",
+    "gemiddeld*", "totaal", "hoogste", "laagste", "hoeveel", "aantal", "grootste", "kleinste",
+    "moyenne", "somme", "combien",
+]
+TABLE_RESULT_ITEMS = 10
+TABLE_PROMPT_HEAD_ROWS = 5
+TABLE_FALLBACK_HEAD_ROWS = 20
+TABLE_QUERY_NUM_PREDICT = 512
+TEXT_ROW_CAP_FOR_PROMPT = 300   # sheets.TEXT_ROW_CAP
+
+TABLE_QUERY_PROMPT = """You translate a question about a spreadsheet into a JSON query. The query is executed exactly with pandas, so you never calculate anything yourself.
+
+Output ONLY one JSON object — no prose, no code fences, no comments. Keys (all optional):
+{{
+  "sheet": "<sheet name>" | null,
+  "filters": [{{"column": "<column>", "op": "==|!=|>|>=|<|<=|contains|in|between", "value": <value | [values] | [low, high]>}}],
+  "row_total": {{"columns": ["<col>", "..."], "as": "<name>"}},
+  "derive": [{{"as": "<new column>", "expr": {{"op": "mul|div|add|sub", "left": <column | number | expr>, "right": <column | number | expr>}}}}],
+  "group_by": ["<column>"],
+  "aggregate": [{{"column": "<column>", "fn": "sum|mean|min|max|count|median|nunique"}}],
+  "select": ["<column>"],
+  "sort": [{{"column": "<column or aggregate like sum(Sales)>", "desc": true}}],
+  "limit": <integer> | null
+}}
+
+Order of execution: filters → row_total → derive → group_by/aggregate → sort → limit → select.
+
+Rules:
+- Use column and sheet names exactly as listed below.
+- "row_total" ONLY adds columns: a per-row sum across several columns of a wide table (e.g. Q1..Q4 → Total); you can then select, sort or aggregate "Total". If the sheet already has a matching total/formula column, use that column instead.
+- Use "derive" for multiplication/division (products, ratios, percentages, price × quantity, value per unit): e.g. stock value = {{"derive": [{{"as": "Value", "expr": {{"op": "mul", "left": "Stock", "right": "Unit price"}}}}]}}, then "aggregate": [{{"column": "Value", "fn": "sum"}}] for the total. Expressions nest (max 3 levels), e.g. a percentage = {{"op": "mul", "left": {{"op": "div", "left": "A", "right": "B"}}, "right": 100}}. Never use row_total for a product or ratio.
+- Totals/averages/counts use "aggregate"; "per X" / "by X" uses "group_by": ["X"].
+- "highest"/"top N" = sort desc + limit; "lowest" = sort asc + limit. You may sort by a column that is not in "select".
+- Dates are ISO strings (yyyy-mm-dd): compare them with >=, <= or between.
+- To list matching rows use filters + select (+ sort/limit).
+- Hidden sheets are not available; never query them.
+{context}
+SHEETS:
+{schema}
+
+QUESTION: {question}
+
+JSON:"""
+
+TABLE_CONTEXT_TURNS = 4          # the last 2 user/assistant exchanges
+TABLE_CONTEXT_TURN_CHARS = 300
+
+
+def _table_conversation_context(history: Optional[list[dict]], question: str) -> str:
+    """The last 2 user/assistant turns (short) for the spec prompt, so a
+    follow-up like "and the maximum?" is resolved against the previous
+    question. A turn may carry the previous query ("table_query")."""
+    turns = [t for t in (history or []) if isinstance(t, dict) and t.get("role") in ("user", "assistant")]
+    # the current message is never its own context
+    if turns and turns[-1].get("role") == "user" and (turns[-1].get("content") or "").strip() == (question or "").strip():
+        turns = turns[:-1]
+    turns = turns[-TABLE_CONTEXT_TURNS:]
+    if not turns:
+        return ""
+    lines = []
+    prev_question = ""
+    for t in turns:
+        content = re.sub(r"\s+", " ", str(t.get("content") or "")).strip()
+        if len(content) > TABLE_CONTEXT_TURN_CHARS:
+            content = content[:TABLE_CONTEXT_TURN_CHARS - 1] + "…"
+        lines.append(f"{t['role']}: {content}")
+        spec = t.get("table_query")
+        if spec:
+            spec_text = spec if isinstance(spec, str) else json.dumps(spec, ensure_ascii=False, default=str)
+            lines.append(f"(previous table query: {spec_text[:TABLE_CONTEXT_TURN_CHARS]})")
+        if t["role"] == "user" and content:
+            prev_question = content
+    out = "\nCONVERSATION CONTEXT (earlier turns):\n" + "\n".join(lines)
+    if prev_question:
+        out += f"\nPrevious question: {prev_question}"
+    out += (
+        "\nResolve references like 'and the maximum?' using the previous question: keep its sheet, "
+        "columns, filters and grouping and change only what the new question asks.\n"
+    )
+    return out
+
+
+def is_sheet_doc(doc: Any) -> bool:
+    """A spreadsheet document: parsed sheet meta, a spreadsheet extension or MIME."""
+    meta = getattr(doc, "meta", None)
+    if isinstance(meta, dict) and isinstance(meta.get("sheets"), (list, dict)) and meta["sheets"]:
+        return True
+    name = (getattr(doc, "filename", "") or "").lower()
+    if name.endswith(SHEET_EXTS):
+        return True
+    return _mime_to_kind(getattr(doc, "mime", "") or "") == "xlsx"
+
+
+def table_question_hits(message: str) -> list[str]:
+    """Rule-detected "table_question" keywords (totals, averages, top, per, …)."""
+    return _kw_hits((message or "").lower(), TABLE_QUESTION_KWS)
+
+
+def _mentioned_columns(message: str, sheets: list[dict]) -> list[str]:
+    msg = (message or "").lower()
+    found: list[str] = []
+    for sh in sheets or []:
+        if sh.get("hidden"):
+            continue
+        for c in list(sh["df"].columns):
+            name = str(c).strip().lower()
+            if len(name) >= 3 and re.search(r"(?<!\w)" + re.escape(name) + r"(?!\w)", msg):
+                found.append(str(c))
+    return list(dict.fromkeys(found))
+
+
+def _stream_kwargs(stream_fn: Any, **wanted: Any) -> dict[str, Any]:
+    """Only the keyword arguments the stream_llm hook accepts (temperature, …)."""
+    import inspect
+    try:
+        params = inspect.signature(stream_fn).parameters
+    except (TypeError, ValueError):
+        return {}
+    if any(p.kind == p.VAR_KEYWORD for p in params.values()):
+        return dict(wanted)
+    return {k: v for k, v in wanted.items() if k in params}
+
+
+async def _collect_llm(hooks: Any, model: str, prompt: str) -> str:
+    """Run the model once, non-thinking, low temperature; return its content."""
+    kwargs = _stream_kwargs(hooks.stream_llm, temperature=0.0, num_predict=TABLE_QUERY_NUM_PREDICT)
+    out = ""
+    async for delta in hooks.stream_llm(model, prompt, think=False, **kwargs):
+        if "content" in delta:
+            out += delta["content"] or ""
+        elif delta.get("done"):
+            break
+    return out
+
+
+def _sheet_overview(sheets: list[dict], head_rows: int) -> str:
+    """Schema + first rows + per-column stats of every visible sheet (never the
+    whole sheet)."""
+    import sheets as _sheets
+    blocks: list[str] = []
+    for sh in sheets or []:
+        if sh.get("hidden"):
+            continue
+        df = sh["df"]
+        dtypes = sh.get("dtypes") or {}
+        lines = [_sheets.sheet_title(sh)]
+        lines.extend(sh.get("preamble") or [])
+        lines.append("Columns: " + ", ".join(f"{c} ({dtypes.get(c, 'text')})" for c in df.columns))
+        if len(df.columns):
+            shown = min(head_rows, len(df))
+            lines.append(f"First {shown} of {len(df)} rows:")
+            lines.append(_sheets.markdown_table(
+                [str(c) for c in df.columns], df.head(head_rows).itertuples(index=False, name=None),
+                set(_sheets.numeric_columns(sh)),
+            ))
+        st = _sheets.stats_line(sh)
+        if st:
+            lines.append(st)
+        if sh.get("formula_columns"):
+            lines.append("Formula columns: " + ", ".join(sh["formula_columns"]))
+        blocks.append("\n".join(lines))
+    note = _tq.hidden_sheet_note(sheets or [])
+    if note:
+        blocks.append(note)
+    return "\n\n".join(blocks)
+
+
+def _sheet_fallback_content(sheets: list[dict]) -> str:
+    """Current behaviour when no query result is available: the sheet tables
+    with per-column stats — but a large sheet (> TEXT_ROW_CAP rows) is never
+    dumped whole (schema + sample + stats only)."""
+    import sheets as _sheets
+    total = sum(len(sh["df"]) for sh in sheets or [] if not sh.get("hidden"))
+    if total <= _sheets.TEXT_ROW_CAP:
+        pages = "\n\n".join(_sheets.render_pages(sheets))
+        note = _tq.hidden_sheet_note(sheets or [])
+        return pages + ("\n\n" + note if note else "")
+    return _sheet_overview(sheets, TABLE_FALLBACK_HEAD_ROWS)
+
+
+def _visible_rows(sheets: list[dict]) -> int:
+    return sum(len(sh["df"]) for sh in sheets or [] if not sh.get("hidden"))
+
+
+def _rows_not_sent(sheets: list[dict], head_rows: int) -> int:
+    """Rows of the visible sheets left out of an overview with `head_rows`."""
+    return sum(max(0, len(sh["df"]) - head_rows) for sh in sheets or [] if not sh.get("hidden"))
+
+
+def _visible_sheet_mentioned(message: str, sheets: list[dict]) -> bool:
+    msg = (message or "").lower()
+    for sh in sheets or []:
+        if sh.get("hidden"):
+            continue
+        name = str(sh.get("name") or "").strip().lower()
+        if len(name) >= 2 and re.search(r"(?<!\w)" + re.escape(name) + r"(?!\w)", msg):
+            return True
+    return False
+
+
+def hidden_sheets_mentioned(message: str, sheets: list[dict]) -> list[str]:
+    """Hidden sheets the user names in the message (word-bounded, case-
+    insensitive; "the Secret sheet", "sheet secret", "'Secret'")."""
+    msg = (message or "").lower()
+    out = []
+    for sh in sheets or []:
+        if not sh.get("hidden"):
+            continue
+        name = str(sh.get("name") or "").strip()
+        if name and re.search(r"(?<!\w)" + re.escape(name.lower()) + r"(?!\w)", msg):
+            out.append(name)
+    return out
+
+
+HIDDEN_SHEET_NOTE = (
+    "The user asks about a sheet named {names}. That sheet exists in the workbook but is HIDDEN: "
+    "its contents are deliberately not provided. Say that the sheet is hidden and its contents are "
+    "not shown — do not claim the sheet does not exist, and do not guess what it contains."
+)
+
+
+async def _table_query_step(
+    hooks: Any, model: str, doc: Any, question: str, sheets: list[dict], state: dict,
+    tile: Optional[Tile] = None, history: Optional[list[dict]] = None,
+) -> AsyncIterator[dict]:
+    """The "Table query" tile: the answer model writes a JSON query spec,
+    table_query executes it with pandas (one retry with the validation error).
+    On success state["result"] holds the execute() result; on failure
+    state["error"] holds the reason."""
+    if tile is None:
+        tile = Tile(id="table-query", kind="table", title="Table query", status="pending")
+    tile.status = "running"
+    tile.model = model
+    tile.started_ms = hooks.now_ms()
+    tile.doc = {"doc_id": doc.id, "name": doc.filename}
+    tile.detail = "Writing a query for the sheet"
+    yield {"tile": tile.to_dict()}
+
+    base_prompt = TABLE_QUERY_PROMPT.format(
+        schema=_tq.schema_text(sheets), question=question.strip(),
+        context=_table_conversation_context(history, question),
+    )
+    prompt = base_prompt
+    error: Optional[str] = None
+    result: Optional[dict] = None
+    raw = ""
+    for attempt in range(2):
+        try:
+            raw = await _collect_llm(hooks, model, prompt)
+        except Exception as e:
+            error = f"Model error: {str(e)[:160]}"
+            break
+        try:
+            spec = _tq.parse_spec(raw)
+            _tq.check_spec_for_question(question, spec)
+            result = await asyncio.to_thread(_tq.execute, sheets, spec)
+            error = None
+            break
+        except _tq.QueryError as e:
+            error = str(e)
+        except Exception as e:  # pandas edge case — report, don't crash the run
+            error = f"Query failed: {str(e)[:160]}"
+        if attempt == 0:
+            tile.items.append({"kind": "note", "label": f"Retrying: {error[:140]}"})
+            yield {"tile": tile.to_dict()}
+            prompt = (
+                base_prompt + "\n" + raw.strip()[:800]
+                + f"\n\nThat query failed: {error}\n"
+                + "Return a corrected JSON object only.\n\nJSON:"
+            )
+
+    tile.ms = hooks.now_ms() - tile.started_ms
+    if result is None:
+        tile.status = "error"
+        tile.detail = "Query failed — answering from the sheet data instead"
+        tile.items.append({"kind": "note", "label": (error or "No query produced")[:200]})
+        state["error"] = error or "No query produced"
+        yield {"tile": tile.to_dict()}
+        return
+
+    n = result["row_count"]
+    tile.status = "done"
+    tile.detail = f"{n} row{'s' if n != 1 else ''} · sheet {result['sheet']}"
+    tile.items = [{
+        "kind": "query",
+        "label": _tq.spec_summary(result["spec"]),
+        "columns": result["columns"],
+    }]
+    for row in result["rows"][:TABLE_RESULT_ITEMS]:
+        tile.items.append({
+            "kind": "result",
+            "label": _tq.render_row(result["columns"], row),
+            "row": row,
+        })
+    if n > TABLE_RESULT_ITEMS:
+        tile.items.append({"kind": "note", "label": f"+{n - TABLE_RESULT_ITEMS} more rows in the result"})
+    tile.output_preview = result["markdown"][:300]
+    state["result"] = result
+    yield {"tile": tile.to_dict()}
+
+
+COMPUTED_RESULT_NOTE = (
+    "The COMPUTED RESULT above is part of the document content: it was calculated exactly from the full spreadsheet. "
+    "Use the COMPUTED RESULT for all numbers; do not recalculate, re-add or estimate them from "
+    "the sample rows (they show only part of the sheet). Quote the figures as given and "
+    "mention the relevant column/sheet. If the result does not answer the question, say what it shows."
+)
+
 ONLINE_LOOKUP_NOTE = (
     "An online lookup is performed separately after your answer — "
     "do not say you lack internet access."
@@ -2230,12 +2667,19 @@ def _build_prompt_ex(
     max_chars: int = PROMPT_MAX_CHARS,
     retrieved: Optional[dict[str, list[Any]]] = None,
     web_lookup_on: bool = False,
+    doc_overrides: Optional[dict[str, str]] = None,
+    computed_result: Optional[str] = None,
+    task_notes: Optional[list[str]] = None,
 ) -> tuple[str, dict[str, dict[str, Any]]]:
     """
     Build the LLM prompt. Returns (prompt, excerpts) where excerpts maps
     doc_id → {"chars": N, "mode": "rag"|"head_tail"|"sampled"} for every
     document that did not fit its budget (max_chars // number of docs).
+    `doc_overrides` (doc_id → content) replaces a document's text as-is
+    (spreadsheet schema/sample); `computed_result` is an exact table-query
+    result the model must use for all numbers.
     """
+    doc_overrides = doc_overrides or {}
     retrieved = retrieved or {}
     budget = _doc_budget(len([d for d in docs if getattr(d, "text", "")]) or 1, max_chars)
     doc_texts = []
@@ -2243,6 +2687,10 @@ def _build_prompt_ex(
     any_paged = False
     for doc in docs:
         text = getattr(doc, "text", "") or ""
+        override = doc_overrides.get(getattr(doc, "id", None))
+        if override is not None:
+            doc_texts.append(_doc_block(doc.filename, override[: budget + 2000]))
+            continue
         if not text:
             continue
         # Page markers help page questions; translate/redact reproduce the
@@ -2303,12 +2751,21 @@ def _build_prompt_ex(
         )
     if web_lookup_on:
         prompt_template = (prompt_template + "\n" + ONLINE_LOOKUP_NOTE) if prompt_template else ONLINE_LOOKUP_NOTE
+    if computed_result:
+        prompt_template = (prompt_template + "\n" if prompt_template else "") + COMPUTED_RESULT_NOTE
+    for note in task_notes or []:
+        prompt_template = (prompt_template + "\n" if prompt_template else "") + note
 
     # Build final prompt
     parts = []
     if history_text:
         parts.append("PRIOR CONVERSATION (context for pronouns only — do not use as a source of facts):\n" + history_text)
     parts.append("DOCUMENT CONTENT:\n" + full_context)
+    if computed_result:
+        parts.append(
+            "COMPUTED RESULT (exact — computed with pandas over every row of the sheet):\n"
+            + computed_result
+        )
     if prompt_template:
         parts.append("TASK:\n" + prompt_template)
     parts.append("USER REQUEST:\n" + message)

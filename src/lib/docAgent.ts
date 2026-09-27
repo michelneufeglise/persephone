@@ -15,6 +15,9 @@ export interface Decision {
 export interface TileItem {
   kind: 'query' | 'result' | 'note'
   label: string
+  /** Table-query tiles: result columns (on the query item) and one result row (on result items). */
+  columns?: string[]
+  row?: (string | number | boolean | null)[]
   url?: string | null
   detail?: string | null
   /** Social platform of a result ("linkedin" | "facebook" | "instagram" | "x"), null for web pages. */
@@ -23,7 +26,7 @@ export interface TileItem {
 
 export interface Tile {
   id: string
-  kind: 'laya' | 'extract' | 'ocr' | 'llm' | 'vision' | 'planner' | 'web' | 'query' | 'store'
+  kind: 'laya' | 'extract' | 'ocr' | 'llm' | 'vision' | 'planner' | 'web' | 'query' | 'store' | 'table'
   title: string
   status: 'pending' | 'running' | 'done' | 'skipped' | 'error'
   model: string | null
@@ -356,7 +359,96 @@ export function docKindFromName(name: string): 'pdf' | 'image' | 'email' | 'docx
   if (/\.(png|jpg|jpeg|gif|webp|svg)$/i.test(lower)) return 'image'
   if (/\.(eml|msg)$/i.test(lower)) return 'email'
   if (/\.(docx?|odt|rtf)$/i.test(lower)) return 'docx'
-  if (/\.(xlsx?|csv|ods)$/i.test(lower)) return 'sheet'
+  if (/\.(xlsx|xlsm|xls|ods|csv|tsv)$/i.test(lower)) return 'sheet'
   if (/\.(txt|md)$/i.test(lower)) return 'text'
   return 'other'
+}
+
+// ── Spreadsheets ───────────────────────────────────────────────────────────
+
+/** Upload `accept` list for spreadsheets (kept in one place for all inputs). */
+export const SHEET_ACCEPT = '.xlsx,.xlsm,.xls,.ods,.csv,.tsv'
+
+export type SheetCell = string | number | boolean | null
+
+export interface SheetListEntry {
+  name: string
+  rows: number
+  cols: number
+  hidden: boolean
+}
+
+export interface SheetPreview {
+  sheets: SheetListEntry[]
+  sheet: string | null
+  columns: string[]
+  /** Per column: number | date | bool | text | mixed | empty */
+  dtypes: string[]
+  rows: SheetCell[][]
+  offset: number
+  total: number
+  formula_columns?: string[]
+  /** Hidden sheets in the workbook: counted only, never listed or served. */
+  hidden_sheets?: number
+}
+
+/** Rows of one sheet of a spreadsheet document (GET /api/idp/documents/{id}/sheets). */
+export async function fetchSheetPreview(
+  docId: string,
+  sheet?: string | null,
+  offset = 0,
+  limit = 200,
+  signal?: AbortSignal,
+): Promise<SheetPreview> {
+  const params = new URLSearchParams({ offset: String(offset), limit: String(limit) })
+  if (sheet) params.set('sheet', sheet)
+  const res = await fetch(`/api/idp/documents/${encodeURIComponent(docId)}/sheets?${params}`, { signal })
+  if (!res.ok) {
+    let msg = `Could not load the sheet (HTTP ${res.status})`
+    try {
+      const b = await res.json()
+      if (typeof b?.detail === 'string') msg = b.detail
+    } catch {
+      /* not json */
+    }
+    throw new Error(msg)
+  }
+  return (await res.json()) as SheetPreview
+}
+
+export interface SheetSummary {
+  /** File format label, e.g. "XLSX" */
+  format: string
+  /** Visible sheets */
+  sheets: number
+  hidden: number
+  /** Rows across visible sheets */
+  rows: number
+}
+
+/** Sheet counts from a document's meta (list format; legacy {name: {rows, cols}} maps too). */
+export function sheetSummary(doc: { filename: string; meta?: Record<string, unknown> | null }): SheetSummary | null {
+  if (docKindFromName(doc.filename) !== 'sheet') return null
+  const raw = (doc.meta ?? {})['sheets']
+  let list: { rows: number; hidden: boolean }[] = []
+  if (Array.isArray(raw)) {
+    list = raw.map((s: any) => ({ rows: Number(s?.rows) || 0, hidden: !!s?.hidden }))
+  } else if (raw && typeof raw === 'object') {
+    list = Object.values(raw as Record<string, any>).map(s => ({ rows: Number(s?.rows) || 0, hidden: false }))
+  }
+  const visible = list.filter(s => !s.hidden)
+  const format = (doc.filename.split('.').pop() || 'sheet').toUpperCase()
+  return {
+    format,
+    sheets: visible.length,
+    hidden: list.length - visible.length,
+    rows: visible.reduce((n, s) => n + s.rows, 0),
+  }
+}
+
+/** "3 sheets · 1,240 rows" (or "1 sheet" when the row count is unknown). */
+export function sheetSummaryLabel(s: SheetSummary): string {
+  const parts = [`${s.sheets} sheet${s.sheets === 1 ? '' : 's'}`]
+  if (s.rows > 0) parts.push(`${s.rows.toLocaleString()} row${s.rows === 1 ? '' : 's'}`)
+  return parts.join(' · ')
 }

@@ -1,7 +1,7 @@
 """
 Intelligent Document Processing engine for Persephone.
 
-Supports: PDF, DOCX, XLSX, CSV, TXT, MD, PNG/JPEG.
+Supports: PDF, DOCX, XLSX/XLSM/XLS/ODS/CSV/TSV (see sheets.py), TXT, MD, PNG/JPEG.
 Pipeline: upload → extract text + images → store → on-demand operations
   (OCR, Q&A, summarize, classify, translate, extract entities, tables, export).
 Operations that need vision call the user-configured vision/OCR model in Ollama.
@@ -226,6 +226,16 @@ async def save_registry_async() -> None:
 
 
 def _doc_from_dict(d: dict) -> Document:
+    meta = d.get("meta", {})
+    if isinstance(meta, dict) and "sheets" in meta:
+        # tolerate older uploads: legacy dict-style meta["sheets"], hidden
+        # sheets with columns/samples → current list form (in memory; the
+        # next registry save persists it)
+        try:
+            import sheets as _sheets
+            _sheets.normalize_meta(meta)
+        except Exception as exc:  # pragma: no cover - never block loading
+            log.debug("sheet meta normalise failed for %s: %s", d.get("id"), exc)
     return Document(
         id=d["id"], filename=d["filename"], mime=d["mime"], size=d["size"],
         uploaded_at=d["uploaded_at"] if isinstance(d["uploaded_at"], float) else d["uploaded_at"] / 1000,
@@ -233,7 +243,7 @@ def _doc_from_dict(d: dict) -> Document:
         text=d.get("text", ""),
         page_texts=d.get("page_texts", []),
         page_images=d.get("page_images", []),
-        meta=d.get("meta", {}),
+        meta=meta,
     )
 
 
@@ -304,7 +314,20 @@ async def delete_document_async(doc_id: str) -> bool:
 
 
 # ── File extraction ────────────────────────────────────────────────────────────
+SHEET_MIMES = {
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12",
+    "xls": "application/vnd.ms-excel",
+    "ods": "application/vnd.oasis.opendocument.spreadsheet",
+    "csv": "text/csv",
+    "tsv": "text/tab-separated-values",
+}
+
+
 def _detect_mime(filename: str) -> str:
+    ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+    if ext in SHEET_MIMES:
+        return SHEET_MIMES[ext]
     mime, _ = mimetypes.guess_type(filename)
     if not mime:
         ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
@@ -312,6 +335,9 @@ def _detect_mime(filename: str) -> str:
             "pdf": "application/pdf",
             "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            "xlsm": "application/vnd.ms-excel.sheet.macroEnabled.12",
+            "xls": "application/vnd.ms-excel",
+            "ods": "application/vnd.oasis.opendocument.spreadsheet",
             "csv": "text/csv",
             "md": "text/markdown",
             "txt": "text/plain",
@@ -440,32 +466,19 @@ def _extract_docx(path: Path) -> list[str]:
     return ["\n".join(lines)] if lines else [""]
 
 
-def _extract_xlsx(path: Path) -> tuple[list[str], dict]:
-    from openpyxl import load_workbook  # type: ignore[import-not-found]
-    wb = load_workbook(path, data_only=True, read_only=True)
-    pages: list[str] = []
-    sheets_meta = {}
-    for ws_name in wb.sheetnames:
-        ws = wb[ws_name]
-        rows: list[str] = []
-        row_count = 0
-        col_count = 0
-        for row in ws.iter_rows(values_only=True):
-            row_count += 1
-            if row:
-                col_count = max(col_count, len(row))
-                rows.append("\t".join("" if c is None else str(c) for c in row))
-        sheets_meta[ws_name] = {"rows": row_count, "cols": col_count}
-        pages.append(f"### Sheet: {ws_name}\n\n" + "\n".join(rows))
-    wb.close()
-    return pages, {"sheets": sheets_meta}
+def _extract_xlsx(path: Path, doc_dir: Path | None = None) -> tuple[list[str], dict]:
+    """Spreadsheet (.xlsx/.xlsm/.xls/.ods/.csv/.tsv) → one markdown page per
+    visible sheet + structured meta (see sheets.py). With `doc_dir` the parsed
+    frames are cached next to the raw file for table queries."""
+    import sheets as _sheets
+    cache = (Path(doc_dir) / _sheets.CACHE_NAME) if doc_dir is not None else None
+    return _sheets.extract(path, cache)
 
 
 def _extract_csv(path: Path) -> list[str]:
-    import pandas as pd  # type: ignore[import-not-found]
     try:
-        df = pd.read_csv(path)
-        return [df.to_string(index=False, max_rows=10000)]
+        pages, _meta = _extract_xlsx(path)
+        return pages
     except Exception:
         return [path.read_text(errors="ignore")]
 
@@ -683,8 +696,108 @@ def _extract_email(path: Path) -> str:
         return f"[email extract error: {exc}]"
 
 
-REEXTRACTABLE_EXTS = (".docx", ".pptx", ".odt", ".rtf", ".doc", ".html", ".htm", ".xlsx", ".csv", ".txt", ".md", ".eml")
+SHEET_EXTS = (".xlsx", ".xlsm", ".xls", ".ods", ".csv", ".tsv")
+REEXTRACTABLE_EXTS = (".docx", ".pptx", ".odt", ".rtf", ".doc", ".html", ".htm", ".xlsx", ".xlsm", ".xls", ".ods", ".csv", ".tsv", ".txt", ".md", ".eml")
 _REEXTRACT_TRIED: set[str] = set()
+
+
+def is_sheet_file(filename: str, mime: str = "") -> bool:
+    """Spreadsheet by extension, or by a spreadsheet MIME type."""
+    if (filename or "").lower().endswith(SHEET_EXTS):
+        return True
+    m = (mime or "").lower()
+    return m in SHEET_MIMES.values() or m.endswith("spreadsheetml.sheet")
+
+
+def _sheet_path(raw_path: Path, filename: str, mime: str) -> Path:
+    """sheets.py dispatches on the suffix; a spreadsheet MIME with an
+    unexpected name maps onto the matching suffix (via a sibling link/copy)."""
+    if raw_path.suffix.lower() in SHEET_EXTS:
+        return raw_path
+    m = (mime or "").lower()
+    ext = next((e for e, v in SHEET_MIMES.items() if v == m), "xlsx")
+    alias = raw_path.with_name(raw_path.name + "." + ext)
+    if not alias.exists():
+        shutil.copyfile(raw_path, alias)
+    return alias
+
+
+def sheet_cache_path(doc: "Document") -> Path:
+    import sheets as _sheets
+    return STORAGE_DIR / doc.id / _sheets.CACHE_NAME
+
+
+def _refresh_sheet_meta(doc: "Document", frames: list[dict]) -> bool:
+    """Bring an older upload's meta["sheets"] up to date from its parsed
+    frames: the legacy {name: {rows, cols}} map (or a list that still carries
+    a hidden sheet's columns/samples) is replaced by the current list form.
+    Returns True when doc.meta changed."""
+    import sheets as _sheets
+    meta = doc.meta if isinstance(doc.meta, dict) else None
+    if meta is None:
+        return False
+    raw = meta.get("sheets")
+    stale = not isinstance(raw, list) or not raw
+    if not stale:
+        _norm, changed = _sheets.normalize_meta_sheets(meta)
+        stale = changed
+    if not stale:
+        return False
+    fmt = Path(doc.filename or "").suffix.lower().lstrip(".") or "sheet"
+    fresh = _sheets.build_meta(frames, fmt)
+    for key in ("sheets", "sheet_count", "hidden_sheets", "table_rows", "sheet_format"):
+        meta[key] = fresh.get(key)
+    if "uncomputed_formulas" in fresh:
+        meta["uncomputed_formulas"] = fresh["uncomputed_formulas"]
+    return True
+
+
+def sheet_frames(doc: "Document") -> list[dict] | None:
+    """Parsed sheets of a spreadsheet document (cached pickle, regenerated
+    from the raw file when missing). None for non-spreadsheets / on failure.
+    An older upload's meta["sheets"] is refreshed to the list form (and the
+    registry persisted) once the frames are available."""
+    if doc is None or not is_sheet_file(doc.filename, doc.mime):
+        return None
+    import sheets as _sheets
+    raw_path = STORAGE_DIR / doc.id / doc.filename
+    try:
+        frames = _sheets.load_sheets(_sheet_path(raw_path, doc.filename, doc.mime) if raw_path.exists() else raw_path,
+                                     sheet_cache_path(doc))
+    except Exception as exc:
+        log.warning("sheet load failed for %s: %s", doc.id, exc)
+        return None
+    try:
+        if _refresh_sheet_meta(doc, frames) and REGISTRY.get(doc.id) is doc:
+            _save_registry()   # sync: sheet_frames runs on a worker thread
+    except Exception as exc:  # meta refresh is best-effort
+        log.debug("sheet meta refresh failed for %s: %s", doc.id, exc)
+    return frames
+
+
+def sheet_preview(doc_id: str, sheet: str | None = None, offset: int = 0, limit: int = 200,
+                  include_hidden: bool = False) -> dict:
+    """GET /api/idp/documents/{id}/sheets: {sheets:[{name, rows, cols, hidden}],
+    sheet, columns, dtypes, rows, offset, total, hidden_sheets}. Hidden sheets
+    are neither listed nor served unless `include_hidden` (query param
+    include_hidden=1). LookupError when the doc or sheet is unknown or the
+    sheet is hidden ("sheet is hidden"), ValueError when it is not a readable
+    spreadsheet."""
+    import sheets as _sheets
+    doc = get_document(doc_id)
+    if doc is None:
+        raise LookupError("Document not found")
+    if not is_sheet_file(doc.filename, doc.mime):
+        raise ValueError("Not a spreadsheet document")
+    frames = sheet_frames(doc)
+    if frames is None:
+        raise ValueError("Could not read the spreadsheet")
+    try:
+        return _sheets.preview(frames, sheet, offset, limit, include_hidden=bool(include_hidden))
+    except PermissionError:
+        raise LookupError("sheet is hidden") from None
+    except KeyError:
+        raise LookupError(f"Sheet not found: {sheet}") from None
 
 
 def _extract_file(
@@ -702,11 +815,9 @@ def _extract_file(
         page_texts, page_images = _extract_pdf(raw_path, doc_dir)
     elif mime.endswith("wordprocessingml.document") or filename.lower().endswith(".docx"):
         page_texts = _extract_docx(raw_path)
-    elif mime.endswith("spreadsheetml.sheet") or filename.lower().endswith(".xlsx"):
-        page_texts, sheet_meta = _extract_xlsx(raw_path)
+    elif is_sheet_file(filename, mime):
+        page_texts, sheet_meta = _extract_xlsx(_sheet_path(raw_path, filename, mime), doc_dir)
         meta.update(sheet_meta)
-    elif mime == "text/csv" or filename.lower().endswith(".csv"):
-        page_texts = _extract_csv(raw_path)
     elif mime == "application/vnd.openxmlformats-officedocument.presentationml.presentation" or filename.lower().endswith(".pptx"):
         page_texts = _extract_pptx(raw_path)
     elif mime == "application/vnd.oasis.opendocument.text" or filename.lower().endswith(".odt"):
@@ -1053,7 +1164,10 @@ async def _prepare_text_model(model: str) -> str:
     return model
 
 
-async def stream_text(model: str, prompt: str, *, think: bool = False, num_predict: int = 1536):
+async def stream_text(
+    model: str, prompt: str, *, think: bool = False, num_predict: int = 1536,
+    temperature: float | None = None,
+):
     """Stream a text generation over Ollama /api/chat.
 
     Yields dicts: {'thinking': str} and/or {'content': str} deltas, then a final
@@ -1066,7 +1180,7 @@ async def stream_text(model: str, prompt: str, *, think: bool = False, num_predi
         "stream":   True,
         "think":    bool(think),
         "options":  {
-            "temperature": 0.3,
+            "temperature": 0.3 if temperature is None else float(temperature),
             "num_predict": num_predict,
             "num_ctx":     _num_ctx_for(prompt, num_predict),
             "num_thread":  _hw.recommended_num_thread(),

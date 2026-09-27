@@ -7,6 +7,7 @@ import { SelectedDocsStrip } from './SelectedDocsStrip'
 import type { Message, SendOpts } from '@/types'
 import type { IDPDocument } from '@/types'
 import type { UseDocChatReturn } from './useDocChat'
+import { SHEET_ACCEPT } from '@/lib/docAgent'
 
 interface DocChatProps {
   chat: UseDocChatReturn
@@ -188,7 +189,7 @@ export function DocChat({
         onStop={chat.stop}
         enableRoles={true}
         largePasteChars={1500}
-        accept="image/*,.pdf,.docx,.doc,.xlsx,.csv,.txt,.md,.rtf,.pptx,.odt,.html,.htm,.json,.xml,.eml"
+        accept={`image/*,.pdf,.docx,.doc,${SHEET_ACCEPT},.txt,.md,.rtf,.pptx,.odt,.html,.htm,.json,.xml,.eml`}
         placeholder={selectedDocIds.length > 0 ? `Ask about the ${selectedDocIds.length} selected document${selectedDocIds.length === 1 ? '' : 's'}…` : "Ask about your documents — attach files with the paperclip, paste an email, or drop files here"}
         resetKey={chat.activeId}
         selectedMessageId={selectedMessageId}

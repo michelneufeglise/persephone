@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { motion } from 'framer-motion'
-import { X, ChevronDown, ChevronUp } from 'lucide-react'
+import { X, ChevronDown, ChevronUp, FileSpreadsheet, Table2 } from 'lucide-react'
 import { clsx } from 'clsx'
 import type { IDPDocument } from '@/types'
 import { pageImageUrl } from '@/lib/idp'
+import { sheetSummary, sheetSummaryLabel } from '@/lib/docAgent'
+import { SpreadsheetPreview } from './SpreadsheetPreview'
 
 interface SelectedDoc {
   doc_id: string
@@ -29,6 +31,7 @@ export function SelectedDocsStrip({
   onClear,
 }: SelectedDocsStripProps) {
   const [expanded, setExpanded] = useState(false)
+  const [tableOpen, setTableOpen] = useState(false)
 
   const selectedDocs = selectedDocIds
     .map(id => docs.find(d => d.id === id))
@@ -45,6 +48,8 @@ export function SelectedDocsStrip({
   }
 
   const isCollapsed = selectedDocs.length > 4 && !expanded
+  // A single selected spreadsheet can be previewed inline above the chat.
+  const sheetDoc = selectedDocs.length === 1 && sheetSummary(selectedDocs[0]) ? selectedDocs[0] : null
 
   return (
     <div className="border-b border-[var(--glass-stroke)] ">
@@ -54,12 +59,31 @@ export function SelectedDocsStrip({
           <span className="font-medium">Selected documents ({selectedDocs.length})</span>
           <span className="text-[var(--text-muted)] ml-1.5">— the chat will work on these</span>
         </div>
-        <button
-          onClick={onClear}
-          className="flex-shrink-0 text-xs text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
-        >
-          Clear
-        </button>
+        <div className="flex items-center gap-3 flex-shrink-0">
+          {sheetDoc && (
+            <button
+              onClick={() => setTableOpen(o => !o)}
+              aria-expanded={tableOpen}
+              className={clsx(
+                'flex items-center gap-1 text-xs px-2 py-1 rounded-md transition-colors',
+                tableOpen
+                  ? 'bg-[var(--accent-dim)] text-[var(--accent)]'
+                  : 'text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--glass-fill-hover)]',
+              )}
+              title={tableOpen ? 'Hide the table preview' : 'Preview the spreadsheet'}
+            >
+              <Table2 className="w-3.5 h-3.5" />
+              Preview table
+              {tableOpen ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+            </button>
+          )}
+          <button
+            onClick={onClear}
+            className="text-xs text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
+          >
+            Clear
+          </button>
+        </div>
       </div>
 
       {/* Toggle button for many docs */}
@@ -104,6 +128,13 @@ export function SelectedDocsStrip({
           )}
         </div>
       </div>
+
+      {/* Inline spreadsheet preview (single selected sheet, collapsible) */}
+      {sheetDoc && tableOpen && (
+        <div className="px-4 pb-3">
+          <SpreadsheetPreview docId={sheetDoc.id} filename={sheetDoc.filename} maxHeight="min(340px, 38vh)" />
+        </div>
+      )}
     </div>
   )
 }
@@ -121,12 +152,13 @@ function DocChip({
   onDeselect: () => void
   isCollapsed: boolean
 }) {
+  const sheet = sheetSummary(doc)
   if (isCollapsed) {
     // Compact chip mode: just filename and page count
     return (
       <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg glass-card text-xs text-[var(--text-primary)] whitespace-nowrap group relative">
         <span className="truncate max-w-[120px]">{doc.filename}</span>
-        <span className="text-[var(--text-muted)]">· {doc.pages}p</span>
+        <span className="text-[var(--text-muted)]">· {sheet ? `${sheet.sheets} sh` : `${doc.pages}p`}</span>
         <button
           onClick={onDeselect}
           className="opacity-0 group-hover:opacity-100 transition-opacity ml-0.5"
@@ -167,14 +199,21 @@ function DocChip({
         </div>
       ) : (
         <div className="relative w-full h-24 flex items-center justify-center">
-          <div className="text-center px-2">
-            <div className="text-[11px] text-[var(--text-muted)] font-mono">
-              {doc.filename.split('.').pop()?.toUpperCase() || 'FILE'}
+          {sheet ? (
+            <div className="text-center px-2 flex flex-col items-center gap-1">
+              <FileSpreadsheet className="w-6 h-6 text-[var(--accent)]" />
+              <div className="text-[11px] text-[var(--text-muted)] font-mono">{sheet.format}</div>
             </div>
-            <div className="text-[10px] text-[var(--text-muted)] mt-1 line-clamp-2">
-              {doc.preview?.slice(0, 30)}…
+          ) : (
+            <div className="text-center px-2">
+              <div className="text-[11px] text-[var(--text-muted)] font-mono">
+                {doc.filename.split('.').pop()?.toUpperCase() || 'FILE'}
+              </div>
+              <div className="text-[10px] text-[var(--text-muted)] mt-1 line-clamp-2">
+                {doc.preview?.slice(0, 30)}…
+              </div>
             </div>
-          </div>
+          )}
           <button
             onClick={onDeselect}
             className="absolute top-1 right-1 opacity-0 group-hover:opacity-100 transition-opacity p-1 bg-black/50 rounded hover:bg-black/70"
@@ -190,7 +229,9 @@ function DocChip({
         <div className="text-[11px] font-medium text-[var(--text-primary)] truncate" title={doc.filename}>
           {doc.filename}
         </div>
-        <div className="text-[10px] text-[var(--text-muted)]">· {doc.pages}p</div>
+        <div className="text-[10px] text-[var(--text-muted)] truncate">
+          {sheet ? sheetSummaryLabel(sheet) : `· ${doc.pages}p`}
+        </div>
 
         {/* Role selector — menu is portalled so the overflow-x-auto strip can't clip it */}
         <RoleSelect role={role} onChange={onRoleChange} />

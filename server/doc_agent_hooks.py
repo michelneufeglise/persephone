@@ -64,6 +64,7 @@ class HookDeps:
     kg_search: Optional[Callable[[str], Any]] = None  # (text) -> awaitable list[dict] of entities
     kg_neighborhood: Optional[Callable[[str], Any]] = None  # (entity_id) -> awaitable dict with entities/relations
     kg_ingest: Optional[Callable[..., Any]] = None  # (...) -> awaitable dict
+    sheet_frames: Optional[Callable[[Any], Any]] = None  # (doc) -> list[dict] parsed sheets | None (sync)
     ollama_base: str = "http://127.0.0.1:11434"  # Ollama base URL
 
 
@@ -608,6 +609,7 @@ async def build_hooks(deps: HookDeps) -> "AgentHooks":
         prompt: str,
         think: bool,
         num_predict: int = 1536,
+        temperature: Optional[float] = None,
     ) -> AsyncIterator[dict]:
         """Stream LLM output with optional thinking.
 
@@ -616,8 +618,12 @@ async def build_hooks(deps: HookDeps) -> "AgentHooks":
             prompt: Input prompt
             think: Enable thinking/reasoning mode
             num_predict: Max tokens to generate (default 1536)
+            temperature: Sampling temperature (None → the backend default)
         """
-        async for event in deps.stream_text(model, prompt, think=think, num_predict=num_predict):
+        kwargs: dict[str, Any] = {"think": think, "num_predict": num_predict}
+        if temperature is not None:
+            kwargs["temperature"] = temperature
+        async for event in deps.stream_text(model, prompt, **kwargs):
             yield event
 
     # Helper: Laya intent decision (SYNC function, called via asyncio.to_thread)
@@ -1034,6 +1040,7 @@ async def build_hooks(deps: HookDeps) -> "AgentHooks":
         kg_search=deps.kg_search,
         kg_neighborhood=deps.kg_neighborhood,
         kg_ingest=deps.kg_ingest,
+        sheet_frames=deps.sheet_frames,
         pick_tool_model=pick_tool_model_fn,
         chat_tools=chat_tools_fn,
         now_ms=now_ms_fn,
