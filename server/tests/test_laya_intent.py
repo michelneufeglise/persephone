@@ -343,7 +343,7 @@ class TestIntentsConstant:
         assert isinstance(_laya.INTENTS, OrderedDict)
 
     def test_intents_has_all_required_categories(self):
-        """INTENTS contains all 7 expected intent categories."""
+        """INTENTS contains all expected intent categories."""
         expected = {
             "verify_signature",
             "identify_person",
@@ -352,6 +352,7 @@ class TestIntentsConstant:
             "translate",
             "redact",
             "general_question",
+            "graph_query",
         }
         assert set(_laya.INTENTS.keys()) == expected
 

@@ -130,6 +130,11 @@ async def agent_sse(
     conv_id = req.get("conversation_id") or _gen_conv_id()
     run_id = str(uuid.uuid4()).replace("-", "")[:16]
 
+    # Early intent detection for graph_query
+    from doc_agent import rules_intent as _rules_intent
+    early_rules_result = _rules_intent(message, [])
+    early_intent = early_rules_result[0] if early_rules_result else None
+
     # State for finally block
     collector = RunCollector()
     cancelled = False
@@ -141,53 +146,56 @@ async def agent_sse(
         is_new_conv = existing_conv is None
 
         # ── Phase 2: Validate attachments or carry-over ──
+        # For graph_query, we don't require attachments
         doc_ids = []
         carried_over = False
         final_attachments = attachments
 
-        if attachments:
-            # Explicit attachments provided; validate each one
-            for att in attachments:
-                doc_id = att.get("doc_id")
-                if not doc_id:
-                    continue
-                doc = hooks.get_doc(doc_id)
-                if not doc:
-                    yield f'data: {json.dumps({"error": f"Document not found: {doc_id}"})}\n\n'
-                    yield "data: [DONE]\n\n"
-                    return
-                doc_ids.append(doc_id)
-        elif existing_conv:
-            # No explicit attachments; try to carry over from most recent user message
-            prior_user_msg = None
-            for msg in reversed(existing_conv.get("messages", [])):
-                if msg.get("role") == "user":
-                    msg_meta = msg.get("meta", {})
-                    if msg_meta.get("kind") == "doc_user" and msg_meta.get("attachments"):
-                        prior_user_msg = msg
-                        break
-
-            if prior_user_msg:
-                # Found prior attachments; try to carry them over
-                prior_attachments = prior_user_msg.get("meta", {}).get("attachments", [])
-                carried_over_docs = []
-                for att in prior_attachments:
+        if early_intent != "graph_query":
+            # Normal flow: require attachments
+            if attachments:
+                # Explicit attachments provided; validate each one
+                for att in attachments:
                     doc_id = att.get("doc_id")
-                    if doc_id:
-                        doc = hooks.get_doc(doc_id)
-                        if doc:  # Only keep if doc still exists
-                            doc_ids.append(doc_id)
-                            carried_over_docs.append({"doc_id": doc_id, "role": att.get("role", "auto")})
+                    if not doc_id:
+                        continue
+                    doc = hooks.get_doc(doc_id)
+                    if not doc:
+                        yield f'data: {json.dumps({"error": f"Document not found: {doc_id}"})}\n\n'
+                        yield "data: [DONE]\n\n"
+                        return
+                    doc_ids.append(doc_id)
+            elif existing_conv:
+                # No explicit attachments; try to carry over from most recent user message
+                prior_user_msg = None
+                for msg in reversed(existing_conv.get("messages", [])):
+                    if msg.get("role") == "user":
+                        msg_meta = msg.get("meta", {})
+                        if msg_meta.get("kind") == "doc_user" and msg_meta.get("attachments"):
+                            prior_user_msg = msg
+                            break
 
-                if doc_ids:
-                    carried_over = True
-                    final_attachments = carried_over_docs
+                if prior_user_msg:
+                    # Found prior attachments; try to carry them over
+                    prior_attachments = prior_user_msg.get("meta", {}).get("attachments", [])
+                    carried_over_docs = []
+                    for att in prior_attachments:
+                        doc_id = att.get("doc_id")
+                        if doc_id:
+                            doc = hooks.get_doc(doc_id)
+                            if doc:  # Only keep if doc still exists
+                                doc_ids.append(doc_id)
+                                carried_over_docs.append({"doc_id": doc_id, "role": att.get("role", "auto")})
 
-        # Final validation: must have at least one doc
-        if not doc_ids:
-            yield f'data: {json.dumps({"error": "Attach at least one document."})}\n\n'
-            yield "data: [DONE]\n\n"
-            return
+                    if doc_ids:
+                        carried_over = True
+                        final_attachments = carried_over_docs
+
+            # Final validation: must have at least one doc (for non-graph_query)
+            if not doc_ids:
+                yield f'data: {json.dumps({"error": "Attach at least one document."})}\n\n'
+                yield "data: [DONE]\n\n"
+                return
 
         # ── Phase 3: Mark validation as passed (now we'll persist things) ──
         validation_passed = True
@@ -249,15 +257,42 @@ async def agent_sse(
         # ── Phase 6: Emit metadata event ──
         yield f'data: {json.dumps({"meta": {"conversation_id": conv_id, "run_id": run_id, "user_message_id": user_message_id, "assistant_message_id": assistant_message_id}})}\n\n'
 
-        # ── Phase 7: Load history (last 6 messages, trimmed) ──
+        # ── Phase 7: Load history (last 6 messages, trimmed, only from same document set) ──
+        # Only include history where the user's attachments match the current request's documents.
+        # This prevents cross-document information leakage (e.g., answers about signatures
+        # leaking into questions about CVs).
         history = []
         if existing_conv:
             all_msgs = existing_conv.get("messages", [])
+            current_ids = {a["doc_id"] for a in final_attachments}
+            turn_ids = None  # Track the most recent user message's doc_ids (None = unknown/no attachments)
+
             for msg in all_msgs:
                 role = msg.get("role")
-                if role in ("user", "assistant"):
+                if role == "user":
+                    # Extract doc_ids from this user message's attachments
+                    meta = msg.get("meta", {})
+                    if isinstance(meta, str):
+                        try:
+                            meta = json.loads(meta)
+                        except Exception:
+                            meta = {}
+                    attachments = meta.get("attachments", [])
+                    if attachments:
+                        # Message has explicit attachments
+                        turn_ids = {a["doc_id"] for a in attachments}
+                    else:
+                        # Message has no attachment info (pre-attachment tracking era)
+                        turn_ids = None
+
+                # Include this message if:
+                # 1. turn_ids is None (backward compat: no attachment info recorded), OR
+                # 2. turn_ids matches current_ids (same documents)
+                should_include = (turn_ids is None or turn_ids == current_ids)
+                if should_include and role in ("user", "assistant"):
                     content = (msg.get("content") or "")[:1500]
                     history.append({"role": role, "content": content})
+
             # Keep only last 6
             history = history[-6:]
 
@@ -267,6 +302,8 @@ async def agent_sse(
             "attachments": final_attachments,
             "history": history,
             "model_override": model_override,
+            "conversation_id": conv_id,
+            "run_id": run_id,
         }
 
         async for event in run_agent(agent_req, hooks):

@@ -25,9 +25,11 @@ import { useDocChat } from './useDocChat'
 import { SelectedDocsStrip } from './SelectedDocsStrip'
 import { ConversationsList } from './ConversationsList'
 import { MultiDocTab } from './MultiDocTab'
+import { KnowledgeGraph } from './KnowledgeGraph'
+import { PanelErrorBoundary } from '@/components/ui/PanelErrorBoundary'
 
 type Tab = 'overview' | 'ocr' | 'summarize' | 'qa' | 'tables' | 'entities' | 'translate' | 'redact' | 'humanize' | 'export'
-type Mode = 'chat' | 'tools'
+type Mode = 'chat' | 'tools' | 'graph'
 
 // ── Streaming state hook ────────────────────────────────────────────────────
 interface StreamState {
@@ -97,7 +99,7 @@ function ThinkingBlock({ text }: { text: string }) {
   const [open, setOpen] = useState(false)
   if (!text.trim()) return null
   return (
-    <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-secondary)]/60 overflow-hidden">
+    <div className="rounded-lg border border-[var(--glass-stroke)]  overflow-hidden">
       <button onClick={() => setOpen(o => !o)}
         className="w-full flex items-center gap-1.5 px-3 py-2 text-xs text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors">
         {open ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronRight className="w-3.5 h-3.5" />}
@@ -105,7 +107,7 @@ function ThinkingBlock({ text }: { text: string }) {
         Thinking {open ? '' : '(tap to expand)'}
       </button>
       {open && (
-        <pre className="text-xs text-[var(--text-muted)] whitespace-pre-wrap font-sans leading-relaxed px-3 pb-3 max-h-56 overflow-y-auto border-t border-[var(--border)] pt-2">
+        <pre className="text-xs text-[var(--text-muted)] whitespace-pre-wrap font-sans leading-relaxed px-3 pb-3 max-h-56 overflow-y-auto border-t border-[var(--glass-stroke)] pt-2">
           {text}
         </pre>
       )}
@@ -418,22 +420,22 @@ export function DocumentsPanel() {
         <div className="flex-1 flex min-h-0 overflow-hidden">
           {/* LEFT COLUMN: Document library (collapsible) */}
           {!leftCollapsed && (
-            <div className="flex flex-col w-72 flex-shrink-0 border-r border-[var(--border)] bg-[var(--bg-secondary)]/40 overflow-hidden">
+            <div className="flex flex-col w-72 flex-shrink-0 border-r border-[var(--glass-stroke)]  overflow-hidden">
             {/* Library header */}
-            <div className="flex-shrink-0 px-4 py-3 border-b border-[var(--border)] flex items-center justify-between">
+            <div className="flex-shrink-0 px-4 py-3 border-b border-[var(--glass-stroke)] flex items-center justify-between">
               <span className="text-xs font-medium text-[var(--text-muted)] uppercase tracking-wider">
                 Library ({docs.length})
               </span>
               <div className="flex items-center gap-1">
                 <button
                   onClick={refresh}
-                  className="p-1.5 text-[var(--text-muted)] hover:text-[var(--accent)] rounded-md hover:bg-[var(--bg-tertiary)] transition-colors"
+                  className="p-1.5 text-[var(--text-muted)] hover:text-[var(--accent)] rounded-md hover:bg-[var(--glass-fill-hover)] transition-colors"
                 >
                   <RefreshCw className="w-3.5 h-3.5" />
                 </button>
                 <button
                   onClick={() => saveLeftCollapsed(true)}
-                  className="p-1.5 text-[var(--text-muted)] hover:text-[var(--accent)] rounded-md hover:bg-[var(--bg-tertiary)] transition-colors"
+                  className="p-1.5 text-[var(--text-muted)] hover:text-[var(--accent)] rounded-md hover:bg-[var(--glass-fill-hover)] transition-colors"
                 >
                   <ChevronLeft className="w-3.5 h-3.5" />
                 </button>
@@ -447,10 +449,10 @@ export function DocumentsPanel() {
               onDragLeave={() => setDragOver(false)}
               onClick={() => fileRef.current?.click()}
               className={clsx(
-                'mx-3 mt-3 mb-2 p-5 rounded-xl border-2 border-dashed cursor-pointer transition-all text-center bg-[var(--bg-secondary)]/40 text-xs',
+                'mx-3 mt-3 mb-2 p-5 rounded-xl border-2 border-dashed cursor-pointer transition-all text-center  text-xs',
                 dragOver
                   ? 'border-[var(--accent)] bg-[var(--accent-dim)]'
-                  : 'border-[var(--border)] hover:border-[var(--accent)] hover:bg-[var(--accent-dim)]',
+                  : 'border-[var(--glass-stroke)] hover:border-[var(--accent)] hover:bg-[var(--accent-dim)]',
               )}
             >
               <input
@@ -531,7 +533,7 @@ export function DocumentsPanel() {
         {leftCollapsed && (
           <button
             onClick={() => saveLeftCollapsed(false)}
-            className="flex-shrink-0 w-8 py-4 text-[var(--text-muted)] hover:text-[var(--accent)] border-r border-[var(--border)] flex items-center justify-center"
+            className="flex-shrink-0 w-8 py-4 text-[var(--text-muted)] hover:text-[var(--accent)] border-r border-[var(--glass-stroke)] flex items-center justify-center"
             title="Show library"
           >
             <ChevronRight className="w-4 h-4" />
@@ -541,13 +543,13 @@ export function DocumentsPanel() {
         {/* CENTER COLUMN: Chat or Tools */}
         <div className="flex-1 flex flex-col min-w-[380px] min-h-0">
           {/* Mode switcher at top */}
-          <div className="flex-shrink-0 px-4 py-3 border-b border-[var(--border)] flex items-center justify-between bg-[var(--bg-secondary)]/40">
+          <div className="flex-shrink-0 px-4 py-3 border-b border-[var(--glass-stroke)] flex items-center justify-between ">
             <div className="flex items-center gap-2 min-w-0 flex-1">
               {mode === 'tools' && activeDoc && (
                 <>
                   <button
                     onClick={() => setActiveDocId(null)}
-                    className="p-1.5 text-[var(--text-muted)] hover:text-[var(--accent)] rounded-md hover:bg-[var(--bg-tertiary)] transition-colors flex-shrink-0"
+                    className="p-1.5 text-[var(--text-muted)] hover:text-[var(--accent)] rounded-md hover:bg-[var(--glass-fill-hover)] transition-colors flex-shrink-0"
                     title="Back to library"
                   >
                     <ChevronLeft className="w-4 h-4" />
@@ -573,7 +575,7 @@ export function DocumentsPanel() {
                     'px-3 py-1.5 rounded-md text-sm font-medium transition-colors',
                     mode === 'chat'
                       ? 'bg-[var(--accent-dim)] text-[var(--accent)]'
-                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
+                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--glass-fill-hover)]'
                   )}
                 >
                   Chat
@@ -586,10 +588,23 @@ export function DocumentsPanel() {
                     'px-3 py-1.5 rounded-md text-sm font-medium transition-colors',
                     mode === 'tools'
                       ? 'bg-[var(--accent-dim)] text-[var(--accent)]'
-                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--bg-tertiary)]'
+                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--glass-fill-hover)]'
                   )}
                 >
                   Tools
+                </button>
+                <button
+                  onClick={() => saveMode('graph')}
+                  role="tab"
+                  aria-selected={mode === 'graph'}
+                  className={clsx(
+                    'px-3 py-1.5 rounded-md text-sm font-medium transition-colors',
+                    mode === 'graph'
+                      ? 'bg-[var(--accent-dim)] text-[var(--accent)]'
+                      : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)] hover:bg-[var(--glass-fill-hover)]'
+                  )}
+                >
+                  Graph
                 </button>
               </div>
 
@@ -597,7 +612,7 @@ export function DocumentsPanel() {
               {mode === 'chat' && (
                 <button
                   onClick={() => setFlowDrawerOpen(!flowDrawerOpen)}
-                  className="lg:hidden p-1.5 text-[var(--text-muted)] hover:text-[var(--accent)] rounded-md hover:bg-[var(--bg-tertiary)] transition-colors"
+                  className="lg:hidden p-1.5 text-[var(--text-muted)] hover:text-[var(--accent)] rounded-md hover:bg-[var(--glass-fill-hover)] transition-colors"
                   title="Show flow"
                 >
                   <Maximize2 className="w-4 h-4" />
@@ -621,12 +636,23 @@ export function DocumentsPanel() {
               }}
               onClear={clearSelected}
             />
+          ) : mode === 'graph' ? (
+            <PanelErrorBoundary label="Knowledge graph" resetKey={`graph-${chat.activeId}`}>
+              <KnowledgeGraph
+                conversations={chat.conversations}
+                currentConversationId={chat.activeId || ''}
+                currentMessages={chat.messages}
+                liveMessages={undefined}
+                selectedMessageId={chat.selectedMessageId}
+                onSelectMessage={chat.selectMessage}
+              />
+            </PanelErrorBoundary>
           ) : (
             <>
               {/* Tools mode content */}
               {/* Tab strip for tools */}
               <div
-                className="flex-shrink-0 flex items-center px-4 py-2 border-b border-[var(--border)] gap-1 overflow-x-auto bg-[var(--bg-secondary)]/60"
+                className="flex-shrink-0 flex items-center px-4 py-2 border-b border-[var(--glass-stroke)] gap-1 overflow-x-auto "
                 style={{ scrollbarWidth: 'none' }}
               >
                 {TABS.map(t => {
@@ -640,7 +666,7 @@ export function DocumentsPanel() {
                         'flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-xs font-medium transition-colors whitespace-nowrap',
                         tab === t.id
                           ? 'bg-[var(--accent-dim)] text-[var(--accent)]'
-                          : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]',
+                          : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)] hover:bg-[var(--glass-fill-hover)]',
                       )}
                     >
                       <Icon className="w-3.5 h-3.5" />
@@ -683,7 +709,7 @@ export function DocumentsPanel() {
                     />
                   ) : (
                     // Single doc view
-                    <div className="flex-1 overflow-y-auto bg-[var(--bg-secondary)]/40" style={{ scrollbarWidth: 'thin' }}>
+                    <div className="flex-1 overflow-y-auto " style={{ scrollbarWidth: 'thin' }}>
                       {activeDoc ? (
                         <>
                           {tab === 'overview' && <OverviewTab doc={activeDoc} />}
@@ -719,17 +745,12 @@ export function DocumentsPanel() {
         />
       )}
 
-      {/* RIGHT CARD: Knowledge graph and model flow (chat mode only) */}
+      {/* RIGHT CARD: Model flow (chat mode only) */}
       {mode === 'chat' && !rightCollapsed && (
         <div className="glass rounded-3xl overflow-hidden flex flex-col flex-shrink-0" style={{ width: `${effectiveRightWidth}px` }}>
           <RightPanel
             tiles={chat.selectedTiles}
             running={chat.isGenerating}
-            conversations={chat.conversations}
-            currentConversationId={chat.activeId || ''}
-            currentMessages={chat.messages}
-            selectedMessageId={chat.selectedMessageId}
-            onSelectMessage={chat.selectMessage}
             collapsed={rightCollapsed}
             onCollapsedChange={handleRightCollapsedChange}
           />
@@ -742,11 +763,6 @@ export function DocumentsPanel() {
           <RightPanel
             tiles={chat.selectedTiles}
             running={chat.isGenerating}
-            conversations={chat.conversations}
-            currentConversationId={chat.activeId || ''}
-            currentMessages={chat.messages}
-            selectedMessageId={chat.selectedMessageId}
-            onSelectMessage={chat.selectMessage}
             collapsed={rightCollapsed}
             onCollapsedChange={handleRightCollapsedChange}
           />
@@ -760,18 +776,13 @@ export function DocumentsPanel() {
               initial={{ x: 340 }}
               animate={{ x: 0 }}
               exit={{ x: 340 }}
-              className="absolute right-0 top-0 h-full w-80 glass rounded-3xl overflow-hidden flex flex-col border-l border-[var(--border)] m-4"
+              className="absolute right-0 top-0 h-full w-80 glass rounded-3xl overflow-hidden flex flex-col border-l border-[var(--glass-stroke)] m-4"
               onClick={e => e.stopPropagation()}
             >
-              {/* Mobile drawer with two tabs (forceVisible to show on mobile) */}
+              {/* Mobile drawer with model flow (forceVisible to show on mobile) */}
               <RightPanel
                 tiles={chat.selectedTiles}
                 running={chat.isGenerating}
-                conversations={chat.conversations}
-                currentConversationId={chat.activeId || ''}
-                currentMessages={chat.messages}
-                selectedMessageId={chat.selectedMessageId}
-                onSelectMessage={chat.selectMessage}
                 collapsed={false}
                 onCollapsedChange={() => {}}
                 forceVisible={true}
@@ -797,7 +808,7 @@ export function DocumentsPanel() {
 // ── Header ──────────────────────────────────────────────────────────
 function PanelHeader() {
   return (
-    <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--border)] bg-[var(--bg-glass-strong)]">
+    <div className="flex items-center justify-between px-6 py-4 border-b border-[var(--glass-stroke)] bg-[var(--bg-glass-strong)]">
       <div className="flex items-center gap-2.5">
         <FileText className="w-4 h-4 text-[var(--accent)]" />
         <span className="text-base font-medium text-[var(--text-primary)] tracking-tight">Documents</span>
@@ -813,8 +824,8 @@ function DocLibItem({ doc, checked, onToggle, onSelect, onDelete }: {
   return (
     <div
       className={clsx(
-        'group flex items-center gap-2.5 px-3 py-2.5 rounded-lg bg-[var(--bg-tertiary)]/40 hover:bg-[var(--bg-tertiary)] border transition-colors',
-        checked ? 'border-[var(--accent)]' : 'border-transparent hover:border-[var(--border)]',
+        'group flex items-center gap-2.5 px-3 py-2.5 rounded-lg glass-card glass-card-hover transition-colors',
+        checked && 'glass-card-active',
       )}
     >
       <button
@@ -875,8 +886,8 @@ function MultiDocChat({ docIds, docs }: { docIds: string[]; docs: IDPDocument[] 
   }, [st.phase])
 
   return (
-    <div className="h-full flex flex-col rounded-2xl border border-[var(--border)] bg-[var(--bg-secondary)]/50 overflow-hidden">
-      <div className="px-4 py-3 border-b border-[var(--border)] bg-[var(--bg-glass-strong)] flex items-center gap-2.5">
+    <div className="h-full flex flex-col rounded-2xl glass overflow-hidden">
+      <div className="px-4 py-3 border-b border-[var(--glass-stroke)] flex items-center gap-2.5">
         <Layers className="w-4 h-4 text-[var(--accent)]" />
         <span className="text-sm font-medium text-[var(--text-primary)]">Query across documents</span>
         {docIds.length > 0 && (
@@ -904,9 +915,9 @@ function MultiDocChat({ docIds, docs }: { docIds: string[]; docs: IDPDocument[] 
                 <div className="text-sm text-[var(--text-primary)] bg-[var(--accent-dim)] rounded-xl px-4 py-2.5 ml-6 leading-relaxed">
                   <span className="font-medium">Q: </span>{h.q}
                 </div>
-                <div className="text-sm text-[var(--text-primary)] bg-[var(--bg-tertiary)] rounded-xl px-4 py-2.5 mr-6 leading-relaxed border border-[var(--border)] space-y-2">
+                <div className="text-sm text-[var(--text-primary)] glass-card rounded-xl px-4 py-2.5 mr-6 leading-relaxed space-y-2">
                   <div className="whitespace-pre-wrap">{h.res.text}</div>
-                  <div className="text-[11px] text-[var(--text-muted)] font-mono pt-1.5 border-t border-[var(--border)] flex flex-wrap gap-x-3 gap-y-1">
+                  <div className="text-[11px] text-[var(--text-muted)] font-mono pt-1.5 border-t border-[var(--glass-stroke)] flex flex-wrap gap-x-3 gap-y-1">
                     <span>via {h.res.model || 'auto'}</span>
                     <span>· {h.res.chunks_used} passage{h.res.chunks_used === 1 ? '' : 's'}</span>
                     <span>· {h.res.sources.length} doc{h.res.sources.length === 1 ? '' : 's'}</span>
@@ -926,7 +937,7 @@ function MultiDocChat({ docIds, docs }: { docIds: string[]; docs: IDPDocument[] 
                   <ModelActivity running={st.running} phase={st.phase} tokPerSec={st.tokPerSec} />
                   <ThinkingBlock text={st.thinking} />
                   {st.content && (
-                    <div className="text-sm text-[var(--text-primary)] bg-[var(--bg-tertiary)] rounded-xl px-4 py-2.5 leading-relaxed border border-[var(--border)] whitespace-pre-wrap">
+                    <div className="text-sm text-[var(--text-primary)] glass-card rounded-xl px-4 py-2.5 leading-relaxed whitespace-pre-wrap">
                       {st.content}
                     </div>
                   )}
@@ -941,14 +952,14 @@ function MultiDocChat({ docIds, docs }: { docIds: string[]; docs: IDPDocument[] 
             </div>
           )}
 
-          <div className="p-3 border-t border-[var(--border)] space-y-2.5">
+          <div className="p-3 border-t border-[var(--glass-stroke)] space-y-2.5">
             <button
               onClick={() => setAutoOcr(v => !v)}
               className={clsx(
                 'flex items-center gap-1.5 text-xs px-2.5 py-1.5 rounded-md border transition-colors',
                 autoOcr
                   ? 'border-[var(--accent)] text-[var(--accent)] bg-[var(--accent-dim)]/40'
-                  : 'border-[var(--border)] text-[var(--text-muted)] hover:border-[var(--border-bright)]',
+                  : 'border-[var(--glass-stroke)] text-[var(--text-muted)] hover:border-[var(--border-bright)]',
               )}
               title="When on, image-only documents are OCR'd automatically before answering."
             >
@@ -961,7 +972,7 @@ function MultiDocChat({ docIds, docs }: { docIds: string[]; docs: IDPDocument[] 
                 onChange={e => setQ(e.target.value)}
                 onKeyDown={e => e.key === 'Enter' && ask()}
                 placeholder="Ask across selected documents…"
-                className="flex-1 px-3.5 py-2.5 rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]"
+                className="flex-1 px-3.5 py-2.5 rounded-lg glass-input text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]"
               />
               <button
                 onClick={st.running ? st.cancel : ask}
@@ -995,13 +1006,13 @@ function OverviewTab({ doc }: { doc: IDPDocument }) {
   return (
     <div className="p-6 space-y-5 max-w-4xl mx-auto">
       {hasImg && (
-        <div className="rounded-xl overflow-hidden border border-[var(--border)] bg-black/40 shadow-lg">
+        <div className="rounded-xl overflow-hidden border border-[var(--glass-stroke)] bg-black/40 shadow-lg">
           <img src={pageImageUrl(doc.id, 1)} alt="Page 1"
             className="w-full max-h-96 object-contain" />
         </div>
       )}
       {doc.text && (
-        <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-tertiary)] p-5">
+        <div className="rounded-xl glass-card p-5">
           <div className="text-xs text-[var(--text-muted)] uppercase tracking-wider mb-2.5 font-medium">Extracted text</div>
           <pre className="text-sm text-[var(--text-primary)] whitespace-pre-wrap font-sans leading-relaxed max-h-96 overflow-y-auto">
             {doc.text.slice(0, 4000)}
@@ -1118,7 +1129,7 @@ function ErrorBox({ text }: { text: string }) {
 
 function ResultBlock({ text, model }: { text: string; model: string }) {
   return (
-    <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-tertiary)] p-5">
+    <div className="rounded-xl glass-card p-5">
       <div className="text-xs text-[var(--text-muted)] mb-2 font-mono">via {model}</div>
       <pre className="text-sm text-[var(--text-primary)] whitespace-pre-wrap font-sans leading-relaxed max-h-[32rem] overflow-y-auto">
         {text}
@@ -1162,10 +1173,10 @@ function SummarizeTab({ doc, runSignal, onRunComplete }: { doc: IDPDocument; run
       <div className="flex gap-2">
         {(['brief','detailed','bullets'] as const).map(s => (
           <button key={s} onClick={() => setStyle(s)} disabled={st.running}
-            className={clsx('flex-1 px-3 py-2 rounded-lg text-sm border transition-colors capitalize',
+            className={clsx('flex-1 px-3 py-2 rounded-lg text-sm transition-colors capitalize',
               style === s
-                ? 'border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--accent)]'
-                : 'border-[var(--border)] bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:border-[var(--border-bright)]')}>{s}</button>
+                ? 'glass-card-active'
+                : 'glass-card glass-card-hover')}>{s}</button>
         ))}
       </div>
       <button onClick={st.running ? st.cancel : go}
@@ -1176,7 +1187,7 @@ function SummarizeTab({ doc, runSignal, onRunComplete }: { doc: IDPDocument; run
       <ThinkingBlock text={st.thinking} />
       {st.error && <ErrorBox text={st.error} />}
       {st.content && (
-        <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-tertiary)] p-5">
+        <div className="rounded-xl glass-card p-5">
           {st.model && <div className="text-xs text-[var(--text-muted)] mb-2 font-mono">via {st.model}</div>}
           <pre className="text-sm text-[var(--text-primary)] whitespace-pre-wrap font-sans leading-relaxed max-h-[32rem] overflow-y-auto">{st.content}</pre>
         </div>
@@ -1237,7 +1248,7 @@ function QATab({ doc, runSignal, onRunComplete, question: overrideQuestion }: { 
             <div className="text-sm text-[var(--text-primary)] bg-[var(--accent-dim)] rounded-xl px-4 py-2.5 ml-8 leading-relaxed">
               <span className="font-medium">Q: </span>{h.q}
             </div>
-            <div className="text-sm text-[var(--text-primary)] bg-[var(--bg-tertiary)] rounded-xl px-4 py-2.5 mr-8 leading-relaxed border border-[var(--border)]">
+            <div className="text-sm text-[var(--text-primary)] glass-card rounded-xl px-4 py-2.5 mr-8 leading-relaxed">
               {h.a}
             </div>
           </div>
@@ -1251,7 +1262,7 @@ function QATab({ doc, runSignal, onRunComplete, question: overrideQuestion }: { 
               <ModelActivity running={st.running} phase={st.phase} tokPerSec={st.tokPerSec} />
               <ThinkingBlock text={st.thinking} />
               {st.content && (
-                <div className="text-sm text-[var(--text-primary)] bg-[var(--bg-tertiary)] rounded-xl px-4 py-2.5 leading-relaxed border border-[var(--border)] whitespace-pre-wrap">
+                <div className="text-sm text-[var(--text-primary)] glass-card rounded-xl px-4 py-2.5 leading-relaxed whitespace-pre-wrap">
                   {st.content}
                 </div>
               )}
@@ -1265,7 +1276,7 @@ function QATab({ doc, runSignal, onRunComplete, question: overrideQuestion }: { 
           <input value={q} onChange={e => setQ(e.target.value)}
             onKeyDown={e => e.key === 'Enter' && ask()}
             placeholder="Ask about this document…"
-            className="flex-1 px-3.5 py-2.5 rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)]
+            className="flex-1 px-3.5 py-2.5 rounded-lg glass-input
               text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)]" />
           <button onClick={st.running ? st.cancel : ask} disabled={!q.trim() && !st.running}
             className="px-5 py-2.5 rounded-lg bg-[var(--accent)] text-white text-sm font-medium hover:bg-[var(--accent-hover)] disabled:opacity-50 flex items-center gap-1.5">
@@ -1328,18 +1339,18 @@ function TablesTab({ doc, runSignal, onRunComplete }: { doc: IDPDocument; runSig
       <ModelActivity running={busy} phase="working" />
       {err && <div className="text-sm text-amber-400 bg-amber-500/10 border border-amber-500/30 rounded-lg px-4 py-2.5">{err}</div>}
       {tables.map((t, i) => (
-        <div key={i} className="rounded-xl border border-[var(--border)] bg-[var(--bg-tertiary)] overflow-hidden">
-          {t.title && <div className="text-sm text-[var(--accent)] font-medium px-4 py-2.5 border-b border-[var(--border)] bg-[var(--bg-secondary)]">{t.title}</div>}
+        <div key={i} className="rounded-xl glass-card overflow-hidden">
+          {t.title && <div className="text-sm text-[var(--accent)] font-medium px-4 py-2.5 border-b border-[var(--glass-stroke)]">{t.title}</div>}
           <div className="overflow-x-auto max-h-96">
             <table className="text-sm w-full">
               {t.headers && (
-                <thead className="bg-[var(--bg-secondary)] sticky top-0">
+                <thead className="sticky top-0">
                   <tr>{t.headers.map((h, j) => <th key={j} className="px-3 py-2 text-left text-[var(--text-secondary)] font-medium">{h}</th>)}</tr>
                 </thead>
               )}
               <tbody>
                 {(t.rows ?? []).map((row, j) => (
-                  <tr key={j} className="border-t border-[var(--border)]">
+                  <tr key={j} className="border-t border-[var(--glass-stroke)]">
                     {row.map((c, k) => <td key={k} className="px-3 py-2 text-[var(--text-primary)]">{c}</td>)}
                   </tr>
                 ))}
@@ -1392,11 +1403,11 @@ function EntitiesTab({ doc, runSignal, onRunComplete }: { doc: IDPDocument; runS
       {entities && (
         <div className="space-y-3">
           {Object.entries(entities).map(([k, vals]) => vals && vals.length > 0 && (
-            <div key={k} className="rounded-xl border border-[var(--border)] bg-[var(--bg-tertiary)] p-4">
+            <div key={k} className="rounded-xl glass-card p-4">
               <div className="text-xs text-[var(--accent)] uppercase tracking-wider mb-2.5 font-medium">{k.replace(/_/g, ' ')}</div>
               <div className="flex flex-wrap gap-1.5">
                 {vals.map((v, i) => (
-                  <span key={i} className="text-xs px-2 py-1 rounded-md bg-[var(--bg-secondary)] text-[var(--text-primary)] border border-[var(--border)]">
+                  <span key={i} className="text-xs px-2 py-1 rounded-md glass-card text-[var(--text-primary)]">
                     {v}
                   </span>
                 ))}
@@ -1445,7 +1456,7 @@ function TranslateTab({ doc, runSignal, onRunComplete, target: overrideTarget }:
     <div className="p-6 space-y-4 max-w-4xl mx-auto">
       {overrideTarget === undefined && (
         <select value={lang} onChange={e => setLang(e.target.value)} disabled={st.running}
-          className="w-full px-3.5 py-2.5 rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] disabled:opacity-50">
+          className="w-full px-3.5 py-2.5 rounded-lg glass-input text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] disabled:opacity-50">
           {LANGS.map(l => <option key={l} value={l}>{l}</option>)}
         </select>
       )}
@@ -1460,7 +1471,7 @@ function TranslateTab({ doc, runSignal, onRunComplete, target: overrideTarget }:
       <ThinkingBlock text={st.thinking} />
       {st.error && <ErrorBox text={st.error} />}
       {st.content && (
-        <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-tertiary)] p-5">
+        <div className="rounded-xl glass-card p-5">
           {st.model && <div className="text-xs text-[var(--text-muted)] mb-2 font-mono">via {st.model}</div>}
           <pre className="text-sm text-[var(--text-primary)] whitespace-pre-wrap font-sans leading-relaxed max-h-[32rem] overflow-y-auto">{st.content}</pre>
         </div>
@@ -1512,10 +1523,10 @@ function RedactTab({ doc, runSignal, onRunComplete, categories: overrideCategori
           {ALL.map(c => (
             <button key={c} onClick={() => toggle(c)} disabled={st.running}
               className={clsx(
-                'px-3 py-1.5 rounded-full text-xs border transition-colors disabled:opacity-50',
+                'px-3 py-1.5 rounded-full text-xs transition-colors disabled:opacity-50',
                 cats.includes(c)
-                  ? 'border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--accent)]'
-                  : 'border-[var(--border)] bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:border-[var(--border-bright)]',
+                  ? 'glass-card-active'
+                  : 'glass-card glass-card-hover',
               )}>{c}</button>
           ))}
         </div>
@@ -1535,7 +1546,7 @@ function RedactTab({ doc, runSignal, onRunComplete, categories: overrideCategori
       <ThinkingBlock text={st.thinking} />
       {st.error && <ErrorBox text={st.error} />}
       {st.content && (
-        <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-tertiary)] p-5">
+        <div className="rounded-xl glass-card p-5">
           {st.model && <div className="text-xs text-[var(--text-muted)] mb-2 font-mono">via {st.model}</div>}
           <pre className="text-sm text-[var(--text-primary)] whitespace-pre-wrap font-sans leading-relaxed max-h-[32rem] overflow-y-auto">{st.content}</pre>
         </div>
@@ -1615,10 +1626,10 @@ function HumanizeTab({ doc, runSignal, onRunComplete, tone: overrideTone, intens
             {TONES.map(t => (
               <button key={t.id} onClick={() => setTone(t.id)} disabled={st.running}
                 className={clsx(
-                  'px-3 py-2 rounded-lg text-sm border transition-colors disabled:opacity-50',
+                  'px-3 py-2 rounded-lg text-sm transition-colors disabled:opacity-50',
                   tone === t.id
-                    ? 'border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--accent)]'
-                    : 'border-[var(--border)] bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:border-[var(--border-bright)]',
+                    ? 'glass-card-active'
+                    : 'glass-card glass-card-hover',
                 )}>{t.label}</button>
             ))}
           </div>
@@ -1634,10 +1645,10 @@ function HumanizeTab({ doc, runSignal, onRunComplete, tone: overrideTone, intens
             {INTENSITIES.map(i => (
               <button key={i.id} onClick={() => setIntensity(i.id)} disabled={st.running}
                 className={clsx(
-                  'px-3 py-2.5 rounded-lg text-sm border transition-colors text-left disabled:opacity-50',
+                  'px-3 py-2.5 rounded-lg text-sm transition-colors text-left disabled:opacity-50',
                   intensity === i.id
-                    ? 'border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--accent)]'
-                    : 'border-[var(--border)] bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:border-[var(--border-bright)]',
+                    ? 'glass-card-active'
+                    : 'glass-card glass-card-hover',
                 )}>
                 <div className="font-medium">{i.label}</div>
                 <div className="text-xs text-[var(--text-muted)] mt-0.5">{i.hint}</div>
@@ -1677,11 +1688,11 @@ function HumanizeTab({ doc, runSignal, onRunComplete, tone: overrideTone, intens
       <ThinkingBlock text={st.thinking} />
       {st.error && <ErrorBox text={st.error} />}
       {st.content && (
-        <div className="rounded-xl border border-[var(--border)] bg-[var(--bg-tertiary)] p-5">
+        <div className="rounded-xl glass-card p-5">
           <div className="flex items-center justify-between mb-2">
             <div className="text-xs text-[var(--text-muted)] font-mono">via {st.model}</div>
             <button onClick={copy}
-              className="flex items-center gap-1.5 text-xs text-[var(--text-muted)] hover:text-[var(--accent)] px-2.5 py-1 rounded-md hover:bg-[var(--bg-secondary)] transition-colors">
+              className="flex items-center gap-1.5 text-xs text-[var(--text-muted)] hover:text-[var(--accent)] px-2.5 py-1 rounded-md hover:bg-[var(--glass-fill-hover)] transition-colors">
               {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
               {copied ? 'Copied' : 'Copy'}
             </button>
@@ -1724,8 +1735,7 @@ function ExportTab({ doc }: { doc: IDPDocument }) {
     <div className="p-6 space-y-2.5 max-w-4xl mx-auto">
       {FORMATS.map(f => (
         <button key={f.fmt} onClick={() => go(f.fmt)} disabled={busy === f.fmt}
-          className="w-full flex items-center justify-between p-4 rounded-xl border border-[var(--border)] bg-[var(--bg-tertiary)]
-            hover:border-[var(--accent)] hover:bg-[var(--accent-dim)] transition-colors disabled:opacity-50">
+          className="w-full flex items-center justify-between p-4 rounded-xl glass-card glass-card-hover transition-colors disabled:opacity-50">
           <div className="text-left">
             <div className="text-sm font-medium text-[var(--text-primary)]">{f.label}</div>
             <div className="text-xs text-[var(--text-muted)] mt-0.5">{f.hint}</div>

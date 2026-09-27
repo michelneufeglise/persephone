@@ -35,7 +35,7 @@ export function SelectedDocsStrip({
 
   if (selectedDocs.length === 0) {
     return (
-      <div className="px-4 py-3 border-b border-[var(--border)] bg-[var(--bg-secondary)]/60">
+      <div className="px-4 py-3 border-b border-[var(--glass-stroke)] ">
         <div className="text-sm text-[var(--text-muted)] text-center">
           Select documents in the library (or attach files with 📎) to ask about them
         </div>
@@ -46,7 +46,7 @@ export function SelectedDocsStrip({
   const isCollapsed = selectedDocs.length > 4 && !expanded
 
   return (
-    <div className="border-b border-[var(--border)] bg-[var(--bg-secondary)]/60">
+    <div className="border-b border-[var(--glass-stroke)] ">
       {/* Header */}
       <div className="px-4 py-3 flex items-center justify-between">
         <div className="text-sm text-[var(--text-secondary)]">
@@ -97,7 +97,7 @@ export function SelectedDocsStrip({
             />
           ))}
           {isCollapsed && selectedDocs.length > 4 && (
-            <div className="flex items-center px-2 py-1 rounded-lg bg-[var(--bg-tertiary)] text-xs text-[var(--text-muted)] whitespace-nowrap">
+            <div className="flex items-center px-2 py-1 rounded-lg glass-card text-xs text-[var(--text-muted)] whitespace-nowrap">
               +{selectedDocs.length - 4} more
             </div>
           )}
@@ -125,7 +125,7 @@ function DocChip({
   if (isCollapsed) {
     // Compact chip mode: just filename and page count
     return (
-      <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg bg-[var(--bg-tertiary)] text-xs text-[var(--text-primary)] whitespace-nowrap group relative">
+      <div className="flex items-center gap-1.5 px-2 py-1 rounded-lg glass-card text-xs text-[var(--text-primary)] whitespace-nowrap group relative">
         <span className="truncate max-w-[120px]">{doc.filename}</span>
         <span className="text-[var(--text-muted)]">· {doc.pages}p</span>
         <button
@@ -148,7 +148,7 @@ function DocChip({
       initial={{ opacity: 0, scale: 0.95 }}
       animate={{ opacity: 1, scale: 1 }}
       exit={{ opacity: 0, scale: 0.95 }}
-      className="flex-shrink-0 w-32 rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] overflow-hidden group"
+      className="flex-shrink-0 w-32 rounded-lg glass-card overflow-hidden group"
     >
       {/* Thumbnail */}
       {thumbnailUrl ? (
@@ -167,7 +167,7 @@ function DocChip({
           </button>
         </div>
       ) : (
-        <div className="relative w-full h-24 bg-[var(--bg-secondary)] flex items-center justify-center">
+        <div className="relative w-full h-24 flex items-center justify-center">
           <div className="text-center px-2">
             <div className="text-[11px] text-[var(--text-muted)] font-mono">
               {doc.filename.split('.').pop()?.toUpperCase() || 'FILE'}
@@ -198,17 +198,17 @@ function DocChip({
           <button
             onClick={() => setShowRoleMenu(!showRoleMenu)}
             className={clsx(
-              'w-full text-[10px] font-medium px-1.5 py-1 rounded border transition-colors',
+              'w-full text-[10px] font-medium px-1.5 py-1 rounded transition-colors',
               role === 'auto'
-                ? 'border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--accent)]'
-                : 'border-[var(--border)] bg-[var(--bg-secondary)] text-[var(--text-muted)] hover:border-[var(--border-bright)]',
+                ? 'glass-card-active'
+                : 'glass-card glass-card-hover',
             )}
           >
             {role === 'auto' ? 'Auto' : role === 'subject' ? 'Document' : 'Reference'}
           </button>
 
           {showRoleMenu && (
-            <div className="absolute top-full left-0 right-0 mt-1 bg-[var(--bg)] border border-[var(--border)] rounded-lg shadow-lg z-10 overflow-hidden">
+            <div className="absolute top-full left-0 right-0 mt-1 glass-strong rounded-lg shadow-lg z-10 overflow-hidden">
               {(['auto', 'subject', 'reference'] as const).map(r => (
                 <button
                   key={r}
@@ -220,7 +220,7 @@ function DocChip({
                     'w-full text-[10px] px-2 py-1.5 text-left transition-colors',
                     role === r
                       ? 'bg-[var(--accent-dim)] text-[var(--accent)] font-medium'
-                      : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]',
+                      : 'text-[var(--text-secondary)] hover:bg-[var(--glass-fill-hover)]',
                   )}
                 >
                   {r === 'auto' ? 'Auto' : r === 'subject' ? 'Document' : 'Reference'}

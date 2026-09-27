@@ -12,7 +12,7 @@ export interface LayoutForceOptions {
 
 export interface LayoutForceNode {
   id: string
-  kind: 'document' | 'question' | 'decision' | 'model' | 'answer'
+  kind: 'document' | 'question' | 'decision' | 'model' | 'answer' | 'planner' | 'web' | 'profile' | 'entity' | 'pipeline'
   x: number
   y: number
   vx?: number
@@ -107,10 +107,13 @@ export function layoutForce(
     } else {
       // Initialize with layered positions based on kind
       const kindPositions: Record<string, number> = {
-        document: margin + innerWidth * 0.12,
-        question: margin + innerWidth * 0.36,
-        decision: margin + innerWidth * 0.62,
-        model: margin + innerWidth * 0.88,
+        document: margin + innerWidth * 0.08,
+        question: margin + innerWidth * 0.25,
+        decision: margin + innerWidth * 0.42,
+        planner: margin + innerWidth * 0.58,
+        web: margin + innerWidth * 0.72,
+        profile: margin + innerWidth * 0.85,
+        model: margin + innerWidth * 0.95,
       }
       x = kindPositions[node.kind] || (margin + innerWidth / 2)
 
@@ -143,9 +146,21 @@ export function layoutForce(
     distance?: number
   }
 
-  const links: LinkWithDistance[] = graph.edges.map(edge => {
-    const sourceNode = nodes.find(n => n.id === edge.source)!
-    const targetNode = nodes.find(n => n.id === edge.target)!
+  // Build a map of id → node for efficient lookups
+  const nodeMap = new Map(nodes.map(n => [n.id, n]))
+
+  // Filter edges to only those with valid endpoints, warn about dropped edges
+  const droppedEdges: Array<{ id: string; source: string; target: string }> = []
+  const links: LinkWithDistance[] = []
+
+  for (const edge of graph.edges) {
+    const sourceNode = nodeMap.get(edge.source)
+    const targetNode = nodeMap.get(edge.target)
+
+    if (!sourceNode || !targetNode) {
+      droppedEdges.push({ id: edge.id, source: edge.source, target: edge.target })
+      continue
+    }
 
     // Distance depends on edge kind
     let distance = 90
@@ -154,12 +169,16 @@ export function layoutForce(
     else if (edge.kind === 'answer-model' || edge.kind === 'laya-classify') distance = 110
     else if (edge.kind === 'ocr-model' || edge.kind === 'vision-fallback') distance = 85
 
-    return {
+    links.push({
       source: sourceNode,
       target: targetNode,
       distance,
-    }
-  })
+    })
+  }
+
+  if (droppedEdges.length > 0) {
+    console.warn('[KG Force] dropped edges with missing endpoints', droppedEdges.map(e => ({ id: e.id, source: e.source, target: e.target })))
+  }
 
   simulation.force(
     'link',

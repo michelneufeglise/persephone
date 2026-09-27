@@ -242,13 +242,91 @@ def _extract_pdf(path: Path, doc_dir: Path) -> tuple[list[str], list[str]]:
 
 
 def _extract_docx(path: Path) -> list[str]:
-    from docx import Document as DocxDocument   # type: ignore[import-not-found]
-    doc = DocxDocument(path)
-    paras = [p.text for p in doc.paragraphs if p.text.strip()]
-    for tbl in doc.tables:
-        for row in tbl.rows:
-            paras.append("\t".join(cell.text.strip() for cell in row.cells))
-    return ["\n".join(paras)] if paras else [""]
+    """Extract text from DOCX, including text boxes, headers, and footers.
+
+    Walks the XML body to collect all w:p paragraphs in document order, including
+    those nested in text boxes (w:txbxContent). Skips duplicate paragraphs from
+    the VML Fallback alternative representation. Includes header/footer text.
+    """
+    from docx import Document as DocxDocument  # type: ignore[import-not-found]
+
+    try:
+        doc = DocxDocument(path)
+    except Exception as exc:
+        log.warning("Failed to open DOCX: %s", exc)
+        return [""]
+
+    lines = []
+    w_ns = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    mc_ns = "{http://schemas.openxmlformats.org/markup-compatibility/2006}"
+
+    def _is_in_fallback(elem) -> bool:
+        """Check if element is inside an mc:Fallback."""
+        try:
+            for ancestor in elem.iterancestors():
+                if ancestor.tag == f"{mc_ns}Fallback":
+                    return True
+        except (AttributeError, TypeError):
+            pass
+        return False
+
+    def _get_para_text(p_elem) -> str:
+        """Extract all text from a w:p element."""
+        text_parts = []
+        for t_elem in p_elem.iter(f"{w_ns}t"):
+            if t_elem.text:
+                text_parts.append(t_elem.text)
+        return "".join(text_parts).strip()
+
+    # Collect all w:p elements from body (includes those in text boxes)
+    seen_paras = set()  # Use id() to track uniqueness
+    for p_elem in doc.element.body.iter(f"{w_ns}p"):
+        # Skip if in Fallback (VML duplicate)
+        if _is_in_fallback(p_elem):
+            continue
+
+        # Avoid duplicates
+        p_id = id(p_elem)
+        if p_id in seen_paras:
+            continue
+        seen_paras.add(p_id)
+
+        # Extract text
+        para_text = _get_para_text(p_elem)
+        if para_text:
+            lines.append(para_text)
+
+    # Extract header/footer text (deduped)
+    seen_header_footer = set()
+    try:
+        for section in doc.sections:
+            # Headers
+            try:
+                if section.header._element is not None:
+                    for p_elem in section.header._element.iter(f"{w_ns}p"):
+                        if not _is_in_fallback(p_elem):
+                            para_text = _get_para_text(p_elem)
+                            if para_text and para_text not in seen_header_footer:
+                                lines.insert(0, para_text)
+                                seen_header_footer.add(para_text)
+            except Exception:
+                pass
+
+            # Footers
+            try:
+                if section.footer._element is not None:
+                    for p_elem in section.footer._element.iter(f"{w_ns}p"):
+                        if not _is_in_fallback(p_elem):
+                            para_text = _get_para_text(p_elem)
+                            if para_text and para_text not in seen_header_footer:
+                                lines.append(para_text)
+                                seen_header_footer.add(para_text)
+            except Exception:
+                pass
+    except Exception as exc:
+        log.warning("Failed to extract headers/footers: %s", exc)
+
+    return ["\n".join(lines)] if lines else [""]
 
 
 def _extract_xlsx(path: Path) -> tuple[list[str], dict]:
@@ -494,6 +572,127 @@ def _extract_email(path: Path) -> str:
         return f"[email extract error: {exc}]"
 
 
+REEXTRACTABLE_EXTS = (".docx", ".pptx", ".odt", ".rtf", ".doc", ".html", ".htm", ".xlsx", ".csv", ".txt", ".md", ".eml")
+_REEXTRACT_TRIED: set[str] = set()
+
+
+def _extract_file(
+    raw_path: Path, filename: str, mime: str, doc_dir: Path
+) -> tuple[list[str], list[str], dict[str, Any]]:
+    """Extract text, images, and metadata from a file.
+
+    Returns: (page_texts, page_images, meta)
+    """
+    page_texts: list[str] = []
+    page_images: list[str] = []
+    meta: dict[str, Any] = {}
+
+    if mime == "application/pdf":
+        page_texts, page_images = _extract_pdf(raw_path, doc_dir)
+    elif mime.endswith("wordprocessingml.document") or filename.lower().endswith(".docx"):
+        page_texts = _extract_docx(raw_path)
+    elif mime.endswith("spreadsheetml.sheet") or filename.lower().endswith(".xlsx"):
+        page_texts, sheet_meta = _extract_xlsx(raw_path)
+        meta.update(sheet_meta)
+    elif mime == "text/csv" or filename.lower().endswith(".csv"):
+        page_texts = _extract_csv(raw_path)
+    elif mime == "application/vnd.openxmlformats-officedocument.presentationml.presentation" or filename.lower().endswith(".pptx"):
+        page_texts = _extract_pptx(raw_path)
+    elif mime == "application/vnd.oasis.opendocument.text" or filename.lower().endswith(".odt"):
+        page_texts = _extract_odt(raw_path)
+    elif mime == "text/html" or filename.lower().endswith((".html", ".htm")):
+        page_texts = _extract_html(raw_path)
+    elif mime in ("application/rtf", "text/rtf") or filename.lower().endswith(".rtf"):
+        page_texts = _extract_rtf(raw_path)
+    elif mime == "application/msword" or filename.lower().endswith(".doc"):
+        page_texts = _extract_doc(raw_path)
+    elif mime == "message/rfc822" or filename.lower().endswith(".eml"):
+        page_texts = [_extract_email(raw_path)]
+    elif mime.startswith("image/"):
+        page_images = _extract_image(raw_path, doc_dir)
+        page_texts = [""]    # image-only — OCR fills this in on demand
+    elif mime.startswith("text/"):
+        page_texts = [raw_path.read_text(errors="ignore")]
+    else:
+        page_texts = [raw_path.read_text(errors="ignore")]
+
+    return page_texts, page_images, meta
+
+
+def reextract_if_empty(doc: Document) -> Document:
+    """Re-extract a document if its text is empty, for reextractable formats.
+
+    If doc.text is non-empty or the format is not reextractable, returns doc unchanged.
+    If extraction succeeds and produces text, updates doc and saves registry.
+    Only attempts once per doc per process (tracked in _REEXTRACT_TRIED).
+    """
+    # Check if document text is non-empty
+    if doc.text.strip():
+        return doc
+
+    # Check if format is reextractable
+    ext = Path(doc.filename).suffix.lower()
+    if ext not in REEXTRACTABLE_EXTS:
+        return doc
+
+    # Check if already tried
+    if doc.id in _REEXTRACT_TRIED:
+        return doc
+    _REEXTRACT_TRIED.add(doc.id)
+
+    # Locate raw file
+    raw_path = STORAGE_DIR / doc.id / doc.filename
+    if not raw_path.exists():
+        log.warning("Cannot re-extract %s: file not found at %s", doc.id, raw_path)
+        return doc
+
+    try:
+        doc_dir = raw_path.parent
+        mime = doc.mime or _detect_mime(doc.filename)
+
+        page_texts, page_images, meta_new = _extract_file(raw_path, doc.filename, mime, doc_dir)
+        joined_text = "\n\n".join(page_texts).strip()
+
+        if joined_text:
+            # Update document
+            doc.text = joined_text
+            doc.page_texts = page_texts
+            doc.pages = max(len(page_texts), len(page_images))
+            if page_images:
+                doc.page_images = page_images
+            doc.meta.update(meta_new)
+            doc.meta["reextracted"] = True
+
+            # Persist
+            REGISTRY[doc.id] = doc
+            _save_registry()
+
+            log.info("Re-extracted %s: now has %d chars", doc.id, len(joined_text))
+
+    except Exception as exc:
+        log.warning("Re-extraction failed for %s: %s", doc.id, exc)
+
+    return doc
+
+
+def get_document_fresh(doc_id: str) -> Document | None:
+    """Get a document, re-extracting if its text is empty."""
+    doc = get_document(doc_id)
+    return reextract_if_empty(doc) if doc else None
+
+
+def reextract_empty_documents() -> int:
+    """Re-extract all documents with empty text. Returns count of docs that got text."""
+    count = 0
+    for doc in list(REGISTRY.values()):
+        if not doc.text.strip():
+            old_len = len(doc.text)
+            reextract_if_empty(doc)
+            if len(doc.text) > old_len:
+                count += 1
+    return count
+
+
 async def ingest_file(filename: str, data: bytes) -> Document:
     """Persist a file, extract its text/images, register it."""
     doc_id = uuid.uuid4().hex[:12]
@@ -504,42 +703,14 @@ async def ingest_file(filename: str, data: bytes) -> Document:
     raw_path.write_bytes(data)
 
     mime = _detect_mime(filename)
-    page_texts: list[str] = []
-    page_images: list[str] = []
-    meta: dict[str, Any] = {}
 
     try:
-        if mime == "application/pdf":
-            page_texts, page_images = _extract_pdf(raw_path, doc_dir)
-        elif mime.endswith("wordprocessingml.document") or filename.lower().endswith(".docx"):
-            page_texts = _extract_docx(raw_path)
-        elif mime.endswith("spreadsheetml.sheet") or filename.lower().endswith(".xlsx"):
-            page_texts, sheet_meta = _extract_xlsx(raw_path)
-            meta.update(sheet_meta)
-        elif mime == "text/csv" or filename.lower().endswith(".csv"):
-            page_texts = _extract_csv(raw_path)
-        elif mime == "application/vnd.openxmlformats-officedocument.presentationml.presentation" or filename.lower().endswith(".pptx"):
-            page_texts = _extract_pptx(raw_path)
-        elif mime == "application/vnd.oasis.opendocument.text" or filename.lower().endswith(".odt"):
-            page_texts = _extract_odt(raw_path)
-        elif mime == "text/html" or filename.lower().endswith((".html", ".htm")):
-            page_texts = _extract_html(raw_path)
-        elif mime in ("application/rtf", "text/rtf") or filename.lower().endswith(".rtf"):
-            page_texts = _extract_rtf(raw_path)
-        elif mime == "application/msword" or filename.lower().endswith(".doc"):
-            page_texts = _extract_doc(raw_path)
-        elif mime == "message/rfc822" or filename.lower().endswith(".eml"):
-            page_texts = [_extract_email(raw_path)]
-        elif mime.startswith("image/"):
-            page_images = _extract_image(raw_path, doc_dir)
-            page_texts  = [""]    # image-only — OCR fills this in on demand
-        elif mime.startswith("text/"):
-            page_texts = [raw_path.read_text(errors="ignore")]
-        else:
-            page_texts = [raw_path.read_text(errors="ignore")]
+        page_texts, page_images, meta = _extract_file(raw_path, filename, mime, doc_dir)
     except Exception as exc:
         log.exception("ingest failed: %s", exc)
         page_texts = [f"[ingest error: {exc}]"]
+        page_images = []
+        meta = {}
 
     full_text = "\n\n".join(page_texts).strip()
 

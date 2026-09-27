@@ -1,23 +1,15 @@
 import { useEffect, useState, useRef } from 'react'
 import { motion } from 'framer-motion'
-import { Workflow, Network, ChevronsRight, ChevronsLeft } from 'lucide-react'
+import { Workflow, ChevronsRight, ChevronsLeft } from 'lucide-react'
 import { clsx } from 'clsx'
 import { FlowPanel } from './FlowPanel'
-import { KnowledgeGraph } from './KnowledgeGraph.tsx'
-import type { Tile, DocConversationSummary } from '@/lib/docAgent'
-import type { Message } from '@/types'
+import { PanelErrorBoundary } from '@/components/ui/PanelErrorBoundary'
+import type { Tile } from '@/lib/docAgent'
 
 interface RightPanelProps {
   // FlowPanel props
   tiles: Tile[]
   running: boolean
-
-  // KnowledgeGraph props
-  conversations: DocConversationSummary[]
-  currentConversationId: string
-  currentMessages: Message[]
-  selectedMessageId: string | null
-  onSelectMessage: (id: string) => void
 
   // Controlled collapsed state
   collapsed: boolean
@@ -27,42 +19,19 @@ interface RightPanelProps {
   forceVisible?: boolean
 }
 
-type RightTab = 'flow' | 'graph'
-
 export function RightPanel({
   tiles,
   running,
-  conversations,
-  currentConversationId,
-  currentMessages,
-  selectedMessageId,
-  onSelectMessage,
   collapsed,
   onCollapsedChange,
   forceVisible = false,
 }: RightPanelProps) {
-  const [activeTab, setActiveTab] = useState<RightTab>('flow')
   const [mounted, setMounted] = useState(false)
 
-  // Load persisted active tab from localStorage
+  // Load persisted state from localStorage if needed
   useEffect(() => {
-    try {
-      const savedTab = localStorage.getItem('persephone-docs-right-tab')
-      if (savedTab === 'flow' || savedTab === 'graph') {
-        setActiveTab(savedTab as RightTab)
-      }
-    } catch {}
-
     setMounted(true)
   }, [])
-
-  // Save active tab to localStorage
-  const handleTabChange = (tab: RightTab) => {
-    setActiveTab(tab)
-    try {
-      localStorage.setItem('persephone-docs-right-tab', tab)
-    } catch {}
-  }
 
   // Toggle collapsed state
   const handleCollapseToggle = () => {
@@ -86,7 +55,7 @@ export function RightPanel({
       >
         {/* Expand button at top */}
         <button
-          onClick={handleCollapseToggle}
+          onClick={() => onCollapsedChange(false)}
           className="flex-shrink-0 p-2.5 text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
           title="Expand panel"
         >
@@ -98,15 +67,10 @@ export function RightPanel({
           {/* Flow button with pulsing dot while running */}
           <div className="relative">
             <button
-              onClick={() => {
-                handleTabChange('flow')
-                onCollapsedChange(false)
-              }}
+              onClick={() => onCollapsedChange(false)}
               className={clsx(
                 'p-2.5 rounded-lg transition-colors',
-                activeTab === 'flow'
-                  ? 'text-[var(--accent)] bg-[var(--accent-dim)]'
-                  : 'text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--bg-secondary)]'
+                'text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--glass-fill-hover)]'
               )}
               title="Model flow"
             >
@@ -122,29 +86,12 @@ export function RightPanel({
               />
             )}
           </div>
-
-          {/* Graph button */}
-          <button
-            onClick={() => {
-              handleTabChange('graph')
-              onCollapsedChange(false)
-            }}
-            className={clsx(
-              'p-2.5 rounded-lg transition-colors',
-              activeTab === 'graph'
-                ? 'text-[var(--accent)] bg-[var(--accent-dim)]'
-                : 'text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--bg-secondary)]'
-            )}
-            title="Knowledge graph"
-          >
-            <Network className="w-4 h-4" />
-          </button>
         </div>
       </motion.div>
     )
   }
 
-  // Expanded state: full panel with tabs
+  // Expanded state: full panel with only Flow
   return (
     <motion.div
       initial={{ opacity: 0 }}
@@ -156,59 +103,29 @@ export function RightPanel({
         !forceVisible && 'hidden lg:flex'
       )}
     >
-      {/* Header with tab control and collapse button */}
-      <div className="flex-shrink-0 px-4 py-3 border-b border-[var(--border)] bg-[var(--bg-secondary)]/40 flex items-center justify-between gap-2">
-        {/* Segmented control */}
-        <div className="flex gap-1 flex-1">
-          <button
-            onClick={() => handleTabChange('flow')}
-            className={clsx(
-              'flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors',
-              activeTab === 'flow'
-                ? 'bg-[var(--accent-dim)] text-[var(--accent)]'
-                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-            )}
-          >
-            <Workflow className="w-3.5 h-3.5" />
-            Model flow
-          </button>
-          <button
-            onClick={() => handleTabChange('graph')}
-            className={clsx(
-              'flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium transition-colors',
-              activeTab === 'graph'
-                ? 'bg-[var(--accent-dim)] text-[var(--accent)]'
-                : 'text-[var(--text-secondary)] hover:text-[var(--text-primary)]'
-            )}
-          >
-            <Network className="w-3.5 h-3.5" />
-            Knowledge graph
-          </button>
+      {/* Header with title and collapse button */}
+      <div className="flex-shrink-0 px-4 py-3 border-b border-[var(--glass-stroke)]  flex items-center justify-between gap-2">
+        {/* Title */}
+        <div className="flex items-center gap-1.5">
+          <Workflow className="w-4 h-4 text-[var(--accent)]" />
+          <span className="text-xs font-medium uppercase tracking-wider text-[var(--text-secondary)]">Model flow</span>
         </div>
 
         {/* Collapse button */}
         <button
-          onClick={handleCollapseToggle}
-          className="flex-shrink-0 p-1 text-[var(--text-muted)] hover:text-[var(--accent)] rounded-md hover:bg-[var(--bg-tertiary)] transition-colors"
+          onClick={() => onCollapsedChange(true)}
+          className="flex-shrink-0 p-1 text-[var(--text-muted)] hover:text-[var(--accent)] rounded-md hover:bg-[var(--glass-fill-hover)] transition-colors"
           title="Collapse panel"
         >
           <ChevronsRight className="w-4 h-4" />
         </button>
       </div>
 
-      {/* Tab content */}
+      {/* Content */}
       <div className="flex-1 overflow-hidden h-full min-h-0">
-        {activeTab === 'flow' ? (
+        <PanelErrorBoundary label="Model flow" resetKey="flow">
           <FlowPanel tiles={tiles} running={running} hideHeader />
-        ) : (
-          <KnowledgeGraph
-            conversations={conversations}
-            currentConversationId={currentConversationId}
-            currentMessages={currentMessages}
-            selectedMessageId={selectedMessageId}
-            onSelectMessage={onSelectMessage}
-          />
-        )}
+        </PanelErrorBoundary>
       </div>
     </motion.div>
   )

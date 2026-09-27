@@ -50,6 +50,7 @@ INTENTS = OrderedDict([
     ("translate", "Translate document content into another language or check translation accuracy"),
     ("redact", "Remove, hide, obscure, or black out personal, sensitive, confidential, or private information"),
     ("general_question", "Asks for a specific fact or detail from the document(s), e.g. a date (date of birth, due date), an amount, an address, an age, a status, or what the document says about someone/something"),
+    ("graph_query", "Asks what is known ACROSS the knowledge base / all documents / previous conversations about a person, organization or topic, or which documents mention something — not about one specific attached document"),
 ])
 
 # Singleton state
@@ -658,4 +659,64 @@ def decide_file_role(message: str, file: dict) -> dict | None:
         }
     except Exception as exc:
         log.debug(f"Laya decide_file_role failed: {exc}")
+        return None
+
+
+def decide_web_lookup(message: str) -> dict | None:
+    """
+    Classify whether a user request asks for web lookup to verify a person or fact.
+
+    Uses Laya to judge the user message against a yes/no choice.
+
+    Args:
+        message: user request text (truncated to ~1500 chars internally)
+
+    Returns:
+        {
+            "value": "yes" | "no",                  # whether web lookup is requested
+            "confidence": float,                    # [0, 1] answer_confidence from Laya
+            "probabilities": {"yes": float, ...},   # unnormalized per-choice scores
+        }
+        or None if Laya unavailable, message empty, or prediction fails.
+
+    Never raises; returns None on any failure.
+    """
+    # Validate input
+    if not message or not isinstance(message, str):
+        return None
+
+    try:
+        # Truncate message to ~1500 chars
+        msg_truncated = message[:1500] if message else ""
+        if not msg_truncated:
+            return None
+
+        # Define the question
+        criteria = {
+            "yes": "The user asks to search the internet, LinkedIn or online sources to verify or look up a person or fact",
+            "no": "The user does not ask for any online search or verification",
+        }
+
+        result = judge_choice(
+            text=msg_truncated,
+            question_name="web_lookup",
+            criteria=criteria,
+            instructions="Does the user ask to search the internet, LinkedIn or online sources to verify or look up a person or fact?",
+        )
+
+        if result is None:
+            return None
+
+        # Ensure value is valid; default to no if not found
+        value = result.get("choice", "no")
+        if value not in criteria:
+            value = "no"
+
+        return {
+            "value": value,
+            "confidence": float(result.get("confidence", 0.0)),
+            "probabilities": dict(result.get("probabilities", {})),
+        }
+    except Exception as exc:
+        log.debug(f"Laya decide_web_lookup failed: {exc}")
         return None

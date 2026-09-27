@@ -56,7 +56,7 @@ function DecideNode({ decision }: { decision: any }) {
             <span className="text-xs text-[var(--text-muted)]">Confidence</span>
             <span className="text-xs text-[var(--text-secondary)] font-mono">{(decision.confidence * 100).toFixed(0)}%</span>
           </div>
-          <div className="w-full h-1.5 bg-[var(--bg-tertiary)] rounded-full overflow-hidden">
+          <div className="w-full h-1.5 glass-card rounded-full overflow-hidden">
             <div
               className="h-full bg-[var(--accent)]"
               style={{ width: `${Math.min(100, (decision.confidence * 100))}%` }}
@@ -153,7 +153,7 @@ export function RoutingGraph({ docId }: RoutingGraphProps) {
 
   if (loading) {
     return (
-      <div className="rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)]/50 p-6 flex items-center justify-center gap-2 text-[var(--text-muted)]">
+      <div className="rounded-lg glass-card p-6 flex items-center justify-center gap-2 text-[var(--text-muted)]">
         <Loader2 className="w-4 h-4 animate-spin" />
         <span className="text-sm">Loading routing…</span>
       </div>
@@ -239,7 +239,7 @@ export function RoutingGraph({ docId }: RoutingGraphProps) {
               value={selectedModel ?? ''}
               onChange={e => setSelectedModel(e.target.value || null)}
               disabled={applying}
-              className="flex-1 px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] disabled:opacity-50"
+              className="flex-1 px-3 py-2 rounded-lg glass-input text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] disabled:opacity-50"
             >
               <option value="">Auto (use router)</option>
               {models.map(m => (
@@ -258,7 +258,7 @@ export function RoutingGraph({ docId }: RoutingGraphProps) {
         <button
           onClick={() => load()}
           disabled={loading}
-          className="text-xs text-[var(--text-muted)] hover:text-[var(--accent)] px-3 py-1.5 rounded hover:bg-[var(--bg-tertiary)] transition-colors"
+          className="text-xs text-[var(--text-muted)] hover:text-[var(--accent)] px-3 py-1.5 rounded hover:bg-[var(--glass-fill-hover)] transition-colors"
         >
           Re-route
         </button>

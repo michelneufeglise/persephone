@@ -51,7 +51,7 @@ export function ConversationsList({
   if (conversations.length === 0) return null
 
   return (
-    <div className="border-t border-[var(--border)] mt-2 pt-2">
+    <div className="border-t border-[var(--glass-stroke)] mt-2 pt-2">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2">
         <button
@@ -70,7 +70,7 @@ export function ConversationsList({
           <button
             onClick={onNewConversation}
             title="New conversation"
-            className="p-1.5 text-[var(--text-muted)] hover:text-[var(--accent)] rounded-md hover:bg-[var(--bg-tertiary)] transition-colors"
+            className="p-1.5 text-[var(--text-muted)] hover:text-[var(--accent)] rounded-md hover:bg-[var(--glass-fill-hover)] transition-colors"
           >
             <Plus className="w-3.5 h-3.5" />
           </button>
@@ -88,7 +88,7 @@ export function ConversationsList({
                 'w-full flex items-center justify-between gap-2 px-3 py-2 rounded-lg text-left text-xs transition-colors group',
                 activeId === conv.id
                   ? 'bg-[var(--accent-dim)] text-[var(--accent)]'
-                  : 'text-[var(--text-secondary)] hover:bg-[var(--bg-tertiary)]',
+                  : 'text-[var(--text-secondary)] hover:bg-[var(--glass-fill-hover)]',
               )}
             >
               <div className="flex-1 min-w-0">

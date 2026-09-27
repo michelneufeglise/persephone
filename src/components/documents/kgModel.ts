@@ -3,7 +3,7 @@ import type { Tile, Decision, DocConversationSummary } from '@/lib/docAgent'
 
 export interface KNode {
   id: string
-  kind: 'document' | 'question' | 'decision' | 'model' | 'answer'
+  kind: 'document' | 'question' | 'decision' | 'model' | 'answer' | 'planner' | 'web' | 'profile' | 'entity' | 'pipeline'
   label: string
   data: Record<string, unknown>
   conversationId: string
@@ -46,6 +46,10 @@ export const NODE_SIZES = {
   question: { width: 200, height: 64 },
   decision: { width: 190, height: 52 },
   model: { width: 190, height: 64 },
+  planner: { width: 180, height: 56 },
+  web: { width: 180, height: 56 },
+  profile: { width: 160, height: 52 },
+  entity: { width: 160, height: 80 },
 }
 
 const MIN_NODE_SPACING = 18 // pixels between node edges
@@ -286,13 +290,13 @@ export function buildKnowledgeGraph(
                 probe: 'probe',
                 config: 'config',
                 user: 'you',
-              }[decision.source] || decision.source
+              }[decision.source] || decision.source || 'decision'
 
               edges.push({
                 id: `edge-question-decision-${decisionNodeId}`,
                 source: linkedQuestionNodeId,
                 target: decisionNodeId,
-                label: sourceLabel,
+                label: String(sourceLabel),
                 kind: 'decide',
               })
             }
@@ -460,6 +464,111 @@ export function buildKnowledgeGraph(
             }
           }
         }
+
+        // Handle planner tiles
+        const plannerTile = tiles.find(t => t.kind === 'planner')
+        if (plannerTile && linkedQuestionNodeId) {
+          const plannerNodeId = `planner-${runId}`
+          const plannerNode: KNode = {
+            id: plannerNodeId,
+            kind: 'planner',
+            label: plannerTile.title || 'Query planner',
+            data: {
+              tileId: plannerTile.id,
+              status: plannerTile.status,
+              detail: plannerTile.detail,
+            },
+            conversationId: conv.id,
+            runIds: [runId],
+            messageIds: [msg.id],
+          }
+          nodes.push(plannerNode)
+
+          // Edge: question → planner
+          edges.push({
+            id: `edge-question-planner-${runId}`,
+            source: linkedQuestionNodeId,
+            target: plannerNodeId,
+            label: 'query planning',
+            kind: 'planner-plan',
+          })
+        }
+
+        // Handle web tiles
+        const webTile = tiles.find(t => t.kind === 'web')
+        if (webTile && linkedQuestionNodeId) {
+          const webNodeId = `web-${runId}`
+          const webNode: KNode = {
+            id: webNodeId,
+            kind: 'web',
+            label: webTile.title || 'Web lookup',
+            data: {
+              tileId: webTile.id,
+              model: webTile.model,
+              status: webTile.status,
+              detail: webTile.detail,
+            },
+            conversationId: conv.id,
+            runIds: [runId],
+            messageIds: [msg.id],
+          }
+          nodes.push(webNode)
+
+          // Edge: question → web (or planner → web if planner exists)
+          const webSourceId = plannerTile ? `planner-${runId}` : linkedQuestionNodeId
+          edges.push({
+            id: `edge-${webSourceId}-web-${runId}`,
+            source: webSourceId,
+            target: webNodeId,
+            label: plannerTile ? 'web search' : 'web lookup',
+            kind: 'web-search',
+          })
+
+          // Create profile nodes for LinkedIn results (max 3)
+          if (webTile.items) {
+            let profileCount = 0
+            for (let i = 0; i < webTile.items.length && profileCount < 3; i++) {
+              const item = webTile.items[i]
+              if (item.kind === 'result' && item.url && item.url.includes('linkedin.com/in/')) {
+                const profileNodeId = `${runId}-profile-${profileCount}`
+                const label = typeof item.label === 'string' ? item.label : String(item.label ?? '')
+                const profileLabel = label.length > 40 ? label.substring(0, 40) + '…' : label
+                let profileHost = ''
+                try {
+                  profileHost = new URL(item.url).hostname
+                } catch {
+                  profileHost = 'linkedin.com'
+                }
+
+                const profileNode: KNode = {
+                  id: profileNodeId,
+                  kind: 'profile',
+                  label: profileLabel,
+                  data: {
+                    url: item.url,
+                    host: profileHost,
+                    detail: item.detail,
+                  },
+                  conversationId: conv.id,
+                  runIds: [runId],
+                  messageIds: [msg.id],
+                }
+                nodes.push(profileNode)
+
+                // Edge: web → profile
+                edges.push({
+                  id: `edge-web-profile-${profileNodeId}`,
+                  source: webNodeId,
+                  target: profileNodeId,
+                  label: 'found',
+                  kind: 'web-profile',
+                })
+
+                profileCount++
+              }
+            }
+          }
+        }
       }
     }
   }
@@ -505,7 +614,40 @@ export function buildKnowledgeGraph(
     }
   }
 
-  return { nodes, edges }
+  // Final defensive pass: filter edges to those whose source and target exist in nodes
+  const nodeIds = new Set(nodes.map(n => n.id))
+  const droppedEdges: Array<{ id: string; source: string; target: string }> = []
+  const filteredEdges = edges.filter(edge => {
+    if (!nodeIds.has(edge.source) || !nodeIds.has(edge.target)) {
+      droppedEdges.push({ id: edge.id, source: edge.source, target: edge.target })
+      return false
+    }
+    return true
+  })
+
+  if (droppedEdges.length > 0) {
+    console.warn('[KG Model] dropped edges with missing endpoints', JSON.stringify(droppedEdges.map(e => ({ id: e.id, source: e.source, target: e.target }))))
+  }
+
+  // Normalize all node and edge labels to strings (never null)
+  for (const node of nodes) {
+    node.label = typeof node.label === 'string' ? node.label : String(node.label ?? '')
+  }
+  for (const edge of filteredEdges) {
+    edge.label = typeof edge.label === 'string' ? edge.label : String(edge.label ?? '')
+  }
+
+  // Dedupe edges by id
+  const seenEdgeIds = new Set<string>()
+  const dedupeEdges = filteredEdges.filter(edge => {
+    if (seenEdgeIds.has(edge.id)) {
+      return false
+    }
+    seenEdgeIds.add(edge.id)
+    return true
+  })
+
+  return { nodes, edges: dedupeEdges }
 }
 
 /**
@@ -542,6 +684,9 @@ function layoutKnowledgeGraphLeftRight(
     question: [],
     decision: [],
     model: [],
+    planner: [],
+    web: [],
+    profile: [],
   }
 
   // Group nodes by column
@@ -550,6 +695,9 @@ function layoutKnowledgeGraphLeftRight(
     else if (node.kind === 'question') columns.question.push(node)
     else if (node.kind === 'decision') columns.decision.push(node)
     else if (node.kind === 'model') columns.model.push(node)
+    else if (node.kind === 'planner') columns.planner.push(node)
+    else if (node.kind === 'web') columns.web.push(node)
+    else if (node.kind === 'profile') columns.profile.push(node)
   }
 
   // Sort within columns
@@ -595,6 +743,9 @@ function layoutKnowledgeGraphLeftRight(
     document: 0,
     question: columnGapX,
     decision: columnGapX * 2,
+    planner: columnGapX * 3,
+    web: columnGapX * 4,
+    profile: columnGapX * 5,
     model: columnGapX * 3,
   }
 
@@ -602,6 +753,9 @@ function layoutKnowledgeGraphLeftRight(
     document: 0,
     question: 0,
     decision: 0,
+    planner: 0,
+    web: 0,
+    profile: 0,
     model: 0,
   }
 
@@ -616,12 +770,8 @@ function layoutKnowledgeGraphLeftRight(
         position: { x, y },
       })
 
-      if (kind === 'decision') {
-        columnY[kind] += NODE_SIZES.decision.height + MIN_NODE_SPACING
-      } else {
-        const nodeSize = NODE_SIZES[kind as keyof typeof NODE_SIZES] || NODE_SIZES.document
-        columnY[kind] += nodeSize.height + MIN_NODE_SPACING
-      }
+      const nodeSize = NODE_SIZES[kind as keyof typeof NODE_SIZES] || NODE_SIZES.document
+      columnY[kind] += nodeSize.height + MIN_NODE_SPACING
     }
   }
 
@@ -632,7 +782,7 @@ function layoutKnowledgeGraphLeftRight(
 }
 
 /**
- * Top→Bottom layout: 4 horizontal rows, nodes wrap within each row to keep width ~300px per layer
+ * Top→Bottom layout: horizontal rows, nodes wrap within each row to keep width ~300px per layer
  * Rows are centered horizontally and layers are properly separated
  */
 function layoutKnowledgeGraphTopBottom(
@@ -647,6 +797,9 @@ function layoutKnowledgeGraphTopBottom(
     document: [],
     question: [],
     decision: [],
+    planner: [],
+    web: [],
+    profile: [],
     model: [],
   }
 
@@ -655,6 +808,9 @@ function layoutKnowledgeGraphTopBottom(
     if (node.kind === 'document') layers.document.push(node)
     else if (node.kind === 'question') layers.question.push(node)
     else if (node.kind === 'decision') layers.decision.push(node)
+    else if (node.kind === 'planner') layers.planner.push(node)
+    else if (node.kind === 'web') layers.web.push(node)
+    else if (node.kind === 'profile') layers.profile.push(node)
     else if (node.kind === 'model') layers.model.push(node)
   }
 

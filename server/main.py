@@ -39,6 +39,7 @@ import ollama_parallel as _ollama_par
 import research as _research
 import research_db as _rdb
 import doc_index as _doc_index
+import kg_store as _kg_store
 import ollama_library as _ollama_lib
 import embeddings as _emb
 import comfy_client as _comfy
@@ -225,6 +226,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await _db.init_db()
     await _rdb.init_db()
     await _doc_index.init_db()
+    await _kg_store.init_db()
     log.info("Database initialised at %s", _db.DB_PATH)
     try:
         _emb.set_embed_model((await _db.get_config("embed_model")) or "")
@@ -318,6 +320,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         log.info("Task planner scheduler started")
     except Exception as exc:
         log.warning("Planner startup failed: %s", exc)
+
+    # Re-extract empty documents (documents whose text extraction failed)
+    # Run in a thread to avoid blocking startup
+    try:
+        count = await asyncio.to_thread(_idp.reextract_empty_documents)
+        if count > 0:
+            log.info("Re-extracted %d empty documents on startup", count)
+    except Exception as exc:
+        log.warning("Re-extraction on startup failed: %s", exc)
 
     yield
 
@@ -4237,7 +4248,7 @@ async def setup_tts_install():
 _MODEL_ROLE_KEYS = [
     "active_model", "judge_model", "vision_model", "code_model",
     "ocr_model", "docs_model", "handwriting_model", "tables_model",
-    "multidoc_model", "embed_model",
+    "multidoc_model", "web_lookup_model", "embed_model",
     # Ableton composer roles: standard + deep-reasoning slots. Empty string
     # means "fall back to _PLANNER_PREF / _DEEP_PLANNER_PREF in the composer".
     "ableton_composer_model", "ableton_deep_model",
@@ -4259,6 +4270,7 @@ class ModelRolesUpdate(BaseModel):
     handwriting_model:      str | None = None
     tables_model:           str | None = None
     multidoc_model:         str | None = None
+    web_lookup_model:       str | None = None
     embed_model:            str | None = None
     ableton_composer_model: str | None = None
     ableton_deep_model:     str | None = None
@@ -4703,7 +4715,7 @@ async def idp_list():
 
 @app.get("/api/idp/documents/{doc_id}")
 async def idp_get(doc_id: str):
-    d = _idp.get_document(doc_id)
+    d = _idp.get_document_fresh(doc_id)
     if not d:
         raise HTTPException(404, "Document not found")
     return d.to_dict(include_text=True)
@@ -4727,6 +4739,10 @@ async def idp_delete(doc_id: str):
         await _doc_index.remove_document(doc_id)
     except Exception as exc:
         log.warning("doc index cleanup failed for %s: %s", doc_id, exc)
+    try:
+        await _kg_store.delete_document(doc_id)
+    except Exception as exc:
+        log.warning("kg store cleanup failed for %s: %s", doc_id, exc)
     return {"ok": True}
 
 
@@ -5150,10 +5166,32 @@ async def idp_agent(req: AgentRequest):
         "assistant_message_id": req.assistant_message_id,
     }
 
+    # Web lookup helpers
+    async def _doc_web_search(query: str) -> list[dict]:
+        """Search the web via DuckDuckGo/Brave MCP."""
+        import doc_web as _doc_web
+        if not _mcp_mgr or not _mcp_mgr.manager:
+            raise _doc_web.WebSearchUnavailable("MCP manager not available")
+        running = [
+            sid for sid in ("duckduckgo-search", "brave-search")
+            if sid in _mcp_mgr.manager.clients and _mcp_mgr.manager.clients[sid].is_running
+        ]
+        if not running:
+            raise _doc_web.WebSearchUnavailable("No web search MCP server running")
+        return await _research._search(query)
+
+    async def _doc_fetch_page(url: str) -> str:
+        """Fetch a public web page as text."""
+        try:
+            _title, content = await _research._fetch(url)
+            return content or ""
+        except Exception as e:
+            raise Exception(f"Failed to fetch page: {e}")
+
     # Build the hooks
     hooks = await _doc_agent_hooks.build_hooks(
         _doc_agent_hooks.HookDeps(
-            get_doc=_idp.get_document,
+            get_doc=_idp.get_document_fresh,
             resolve_doc_model=_resolve_doc_model,
             resolve_doc_model_for=_resolve_doc_model_for,
             get_config=_db.get_config,
@@ -5170,6 +5208,12 @@ async def idp_agent(req: AgentRequest):
             model_capabilities=_get_model_capabilities,
             laya=_laya,
             model_override=req.model_override,
+            web_search=_doc_web_search,
+            fetch_page=_doc_fetch_page,
+            kg_search=_kg_store.search_entities,
+            kg_neighborhood=_kg_store.neighborhood,
+            kg_ingest=_kg_store.ingest_run,
+            ollama_base=OLLAMA_BASE,
         )
     )
 
@@ -5177,6 +5221,56 @@ async def idp_agent(req: AgentRequest):
         _doc_agent_service.agent_sse(req_dict, hooks, _db), media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+# ── Knowledge Graph API Routes ─────────────────────────────────────────────
+
+@app.get("/api/kg/graph")
+async def kg_get_graph(scope: str = "all", conversation_id: str | None = None):
+    """Get the knowledge graph as JSON."""
+    try:
+        graph = await _kg_store.get_graph(scope=scope, conversation_id=conversation_id)
+        return graph
+    except Exception as e:
+        log.error(f"kg_get_graph failed: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/kg/entity/{entity_id:path}")
+async def kg_get_entity(entity_id: str):
+    """Get a single entity with its relations and mentions."""
+    try:
+        entity = await _kg_store.get_entity(entity_id)
+        if not entity:
+            raise HTTPException(404, "Entity not found")
+        return entity
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"kg_get_entity failed: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/kg/stats")
+async def kg_get_stats():
+    """Get knowledge graph statistics."""
+    try:
+        stats = await _kg_store.stats()
+        return stats
+    except Exception as e:
+        log.error(f"kg_get_stats failed: {e}")
+        raise HTTPException(500, str(e))
+
+
+@app.delete("/api/kg")
+async def kg_reset():
+    """Reset the knowledge graph (delete all data)."""
+    try:
+        await _kg_store.reset()
+        return {"ok": True}
+    except Exception as e:
+        log.error(f"kg_reset failed: {e}")
+        raise HTTPException(500, str(e))
 
 
 # ── Judge-based category picker for user-triggered "send to worker" ─────────

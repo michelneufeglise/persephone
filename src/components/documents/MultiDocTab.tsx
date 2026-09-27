@@ -155,10 +155,10 @@ export function MultiDocTab({
   )
 
   return (
-    <div className="flex flex-col h-full min-h-0 bg-[var(--bg-secondary)]/40">
+    <div className="flex flex-col h-full min-h-0 ">
       {/* Header bar with controls and shared inputs */}
       {hasRunnable && (
-        <div className="flex-shrink-0 px-6 py-4 border-b border-[var(--border)] space-y-3 bg-[var(--bg-secondary)]/60">
+        <div className="flex-shrink-0 px-6 py-4 border-b border-[var(--glass-stroke)] space-y-3 ">
           <div className="flex items-center justify-between gap-4">
             <div className="flex items-center gap-2">
               <button
@@ -197,7 +197,7 @@ export function MultiDocTab({
                 onChange={e => onSharedChange?.question?.(e.target.value)}
                 disabled={isRunning}
                 placeholder="Question for all documents…"
-                className="flex-1 px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] disabled:opacity-50"
+                className="flex-1 px-3 py-2 rounded-lg glass-input text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] focus:outline-none focus:border-[var(--accent)] disabled:opacity-50"
               />
             </div>
           )}
@@ -208,7 +208,7 @@ export function MultiDocTab({
                 value={shared?.target ?? 'French'}
                 onChange={e => onSharedChange?.target?.(e.target.value)}
                 disabled={isRunning}
-                className="flex-1 px-3 py-2 rounded-lg border border-[var(--border)] bg-[var(--bg-tertiary)] text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] disabled:opacity-50"
+                className="flex-1 px-3 py-2 rounded-lg glass-input text-sm text-[var(--text-primary)] focus:outline-none focus:border-[var(--accent)] disabled:opacity-50"
               >
                 {['French', 'German', 'Spanish', 'Italian', 'Dutch', 'Japanese', 'Chinese', 'Portuguese', 'Russian', 'Arabic', 'English'].map(l => <option key={l} value={l}>{l}</option>)}
               </select>
@@ -227,10 +227,10 @@ export function MultiDocTab({
                   }}
                   disabled={isRunning}
                   className={clsx(
-                    'px-3 py-1.5 rounded-full text-xs border transition-colors disabled:opacity-50',
+                    'px-3 py-1.5 rounded-full text-xs transition-colors disabled:opacity-50',
                     (shared?.categories ?? []).includes(c)
-                      ? 'border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--accent)]'
-                      : 'border-[var(--border)] bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:border-[var(--border-bright)]',
+                      ? 'glass-card-active'
+                      : 'glass-card glass-card-hover',
                   )}
                 >
                   {c}
@@ -248,10 +248,10 @@ export function MultiDocTab({
                     onClick={() => onSharedChange?.tone?.(t)}
                     disabled={isRunning}
                     className={clsx(
-                      'px-3 py-1.5 rounded-lg text-xs border transition-colors disabled:opacity-50 capitalize',
+                      'px-3 py-1.5 rounded-lg text-xs transition-colors disabled:opacity-50 capitalize',
                       (shared?.tone ?? 'natural') === t
-                        ? 'border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--accent)]'
-                        : 'border-[var(--border)] bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:border-[var(--border-bright)]',
+                        ? 'glass-card-active'
+                        : 'glass-card glass-card-hover',
                     )}
                   >
                     {t}
@@ -265,10 +265,10 @@ export function MultiDocTab({
                     onClick={() => onSharedChange?.intensity?.(i)}
                     disabled={isRunning}
                     className={clsx(
-                      'px-3 py-1.5 rounded-lg text-xs border transition-colors disabled:opacity-50 capitalize',
+                      'px-3 py-1.5 rounded-lg text-xs transition-colors disabled:opacity-50 capitalize',
                       (shared?.intensity ?? 'medium') === i
-                        ? 'border-[var(--accent)] bg-[var(--accent-dim)] text-[var(--accent)]'
-                        : 'border-[var(--border)] bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:border-[var(--border-bright)]',
+                        ? 'glass-card-active'
+                        : 'glass-card glass-card-hover',
                     )}
                   >
                     {i}
@@ -307,7 +307,7 @@ export function MultiDocTab({
                     else next.add(docId)
                     return next
                   })}
-                  className="w-full flex items-center justify-between px-6 py-3 hover:bg-[var(--bg-tertiary)]/40 transition-colors group"
+                  className="w-full flex items-center justify-between px-6 py-3 hover: transition-colors group"
                 >
                   <div className="flex items-center gap-3 flex-1 min-w-0">
                     {isExpanded ? (
@@ -347,7 +347,7 @@ export function MultiDocTab({
                     animate={{ opacity: 1, height: 'auto' }}
                     exit={{ opacity: 0, height: 0 }}
                     transition={{ duration: 0.2 }}
-                    className="border-t border-[var(--border)]"
+                    className="border-t border-[var(--glass-stroke)]"
                   >
                     <div className="px-6 py-4">
                       {renderTab(doc, signal, () => handleDocRunComplete(docId), shared)}

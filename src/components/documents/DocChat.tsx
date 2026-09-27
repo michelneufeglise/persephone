@@ -51,7 +51,7 @@ export function DocChat({
         {EXAMPLE_PROMPTS.map((prompt, i) => (
           <div
             key={i}
-            className="p-3 rounded-lg border border-[var(--border)] text-left text-xs text-[var(--text-muted)] bg-[var(--bg-tertiary)]/30"
+            className="p-3 rounded-lg glass-card text-left text-xs text-[var(--text-muted)]"
           >
             "{prompt}"
           </div>
@@ -74,15 +74,15 @@ export function DocChat({
                 className={clsx(
                   'text-xs px-2.5 py-1 rounded-full transition-colors font-medium flex items-center gap-1',
                   chat.selectedMessageId === m.id
-                    ? 'bg-[var(--accent-dim)] text-[var(--accent)]'
-                    : 'bg-[var(--bg-tertiary)] text-[var(--text-secondary)] hover:bg-[var(--border)]',
+                    ? 'glass-card-active'
+                    : 'glass-card glass-card-hover',
                 )}
               >
                 ▣ {tiles.length} step{tiles.length === 1 ? '' : 's'}
               </button>
             )}
             {intent && (
-              <div className="text-xs text-[var(--text-muted)] bg-[var(--bg-tertiary)] px-2.5 py-1 rounded-full">
+              <div className="text-xs text-[var(--text-muted)] glass-card px-2.5 py-1 rounded-full">
                 intent: {intent}
               </div>
             )}
@@ -98,7 +98,7 @@ export function DocChat({
         return (
           <div className="flex items-center gap-2 flex-wrap mt-2">
             {atts.map((att: { name: string; role: string }, i: number) => (
-              <div key={i} className="text-xs text-[var(--text-muted)] bg-[var(--bg-tertiary)] px-2.5 py-1 rounded-full">
+              <div key={i} className="text-xs text-[var(--text-muted)] glass-card px-2.5 py-1 rounded-full">
                 {att.name} · {att.role === 'auto' ? 'auto' : att.role === 'subject' ? 'document' : 'reference'}
               </div>
             ))}
@@ -111,7 +111,7 @@ export function DocChat({
   }
 
   return (
-    <div className="h-full flex flex-col bg-[var(--bg-secondary)]/40">
+    <div className="flex-1 min-h-0 flex flex-col ">
       {/* Selected docs strip */}
       <SelectedDocsStrip
         docs={selectedDocs}

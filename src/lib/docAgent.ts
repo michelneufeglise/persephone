@@ -12,9 +12,16 @@ export interface Decision {
   probabilities: Record<string, number> | null
 }
 
+export interface TileItem {
+  kind: 'query' | 'result' | 'note'
+  label: string
+  url?: string | null
+  detail?: string | null
+}
+
 export interface Tile {
   id: string
-  kind: 'laya' | 'extract' | 'ocr' | 'llm' | 'vision'
+  kind: 'laya' | 'extract' | 'ocr' | 'llm' | 'vision' | 'planner' | 'web' | 'query' | 'store'
   title: string
   status: 'pending' | 'running' | 'done' | 'skipped' | 'error'
   model: string | null
@@ -33,6 +40,49 @@ export interface Tile {
   ms: number | null
   output_preview: string | null
   doc: { doc_id: string; name: string } | null
+  items?: TileItem[]
+}
+
+// ── Knowledge Graph Types ──────────────────────────────────────────────────
+
+export interface KGEntity {
+  id: string
+  type: 'person' | 'organization' | 'role' | 'document' | 'profile' | 'location'
+  name: string
+  props: Record<string, unknown>
+  mention_count: number
+}
+
+export interface KGRelation {
+  id: string
+  src: string
+  dst: string
+  type: 'has_role' | 'works_at' | 'mentioned_in' | 'candidate_profile' | 'likely_profile' | 'located_in'
+  confidence: number
+  source: 'doc_agent' | 'web_lookup'
+  props: Record<string, unknown>
+}
+
+export interface KGDocument {
+  doc_id: string
+  name: string
+  chunk_count: number
+  mention_count: number
+}
+
+export interface KGStats {
+  entities: number
+  relations: number
+  mentions: number
+  documents: number
+  chunks: number
+}
+
+export interface KGGraph {
+  entities: KGEntity[]
+  relations: KGRelation[]
+  documents: KGDocument[]
+  stats: KGStats
 }
 
 export type DocAgentEvent =
@@ -225,6 +275,50 @@ export async function deleteDocConversation(id: string): Promise<void> {
     await fetch(`/api/memory/conversations/${encodeURIComponent(id)}`, { method: 'DELETE' })
   } catch {
     /* ignore */
+  }
+}
+
+/**
+ * Fetch knowledge graph data for a given scope.
+ * Returns empty graph on error to ensure graceful fallback.
+ */
+export async function fetchKnowledgeGraph(
+  scope: 'all' | 'conversation',
+  conversationId?: string,
+): Promise<KGGraph> {
+  const defaultGraph: KGGraph = {
+    entities: [],
+    relations: [],
+    documents: [],
+    stats: { entities: 0, relations: 0, mentions: 0, documents: 0, chunks: 0 },
+  }
+
+  try {
+    const params = new URLSearchParams({
+      scope,
+      ...(conversationId && scope === 'conversation' && { conversation_id: conversationId }),
+    })
+    const res = await fetch(`/api/kg/graph?${params}`)
+    if (!res.ok) return defaultGraph
+    const data = (await res.json()) as unknown
+
+    // Validate shape
+    if (
+      typeof data === 'object' &&
+      data !== null &&
+      'entities' in data &&
+      'relations' in data &&
+      'documents' in data &&
+      'stats' in data &&
+      Array.isArray((data as any).entities) &&
+      Array.isArray((data as any).relations) &&
+      Array.isArray((data as any).documents)
+    ) {
+      return data as KGGraph
+    }
+    return defaultGraph
+  } catch {
+    return defaultGraph
   }
 }
 

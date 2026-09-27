@@ -996,7 +996,7 @@ class TestResolveTextModelInfo:
         deps.resolve_doc_model_for = AsyncMock(return_value="hf.co/DevQuasar/baidu.Unlimited-OCR-GGUF:q4_k_m")
 
         hooks = await build_hooks(deps)
-        result = await hooks.resolve_text_model_info(None, "docs")
+        result = await hooks.resolve_text_model_info(MagicMock(name="doc"), "docs")
 
         assert result["model"] == "qwen2.5:7b"
         assert result["reason"] is None
@@ -1014,7 +1014,7 @@ class TestResolveTextModelInfo:
         deps.installed_models = AsyncMock(return_value=["qwen2.5:7b"])
 
         hooks = await build_hooks(deps)
-        result = await hooks.resolve_text_model_info(None, "docs")
+        result = await hooks.resolve_text_model_info(MagicMock(name="doc"), "docs")
 
         assert result["model"] == "qwen2.5:7b"
         assert result["reason"] is None
@@ -1043,7 +1043,7 @@ class TestResolveTextModelInfo:
         deps.get_config = AsyncMock(side_effect=get_config_side_effect)
 
         hooks = await build_hooks(deps)
-        result = await hooks.resolve_text_model_info(None, "docs")
+        result = await hooks.resolve_text_model_info(MagicMock(name="doc"), "docs")
 
         assert result["model"] == "gemma4:26b"
         assert result["configured"] == "glm-ocr:latest"
@@ -1076,7 +1076,7 @@ class TestResolveTextModelInfo:
         deps.get_config = AsyncMock(side_effect=get_config_side_effect)
 
         hooks = await build_hooks(deps)
-        result = await hooks.resolve_text_model_info(None, "docs")
+        result = await hooks.resolve_text_model_info(MagicMock(name="doc"), "docs")
 
         # Should skip embedding model and use active_model
         assert result["model"] == "qwen2.5:7b"
@@ -1098,7 +1098,7 @@ class TestResolveTextModelInfo:
         ])
 
         hooks = await build_hooks(deps)
-        result = await hooks.resolve_text_model_info(None, "docs")
+        result = await hooks.resolve_text_model_info(MagicMock(name="doc"), "docs")
 
         # Should use built-in pref
         assert result["model"] == "qwen2.5:7b"
@@ -1127,8 +1127,223 @@ class TestResolveTextModelInfo:
         deps.get_config = AsyncMock(side_effect=get_config_side_effect)
 
         hooks = await build_hooks(deps)
-        result = await hooks.resolve_text_model_info(None, "docs")
+        result = await hooks.resolve_text_model_info(MagicMock(name="doc"), "docs")
 
         assert result["reason"] is not None
         assert "glm-ocr" in result["reason"].lower() or "ocr" in result["reason"].lower()
         assert "gemma4" in result["reason"]
+
+
+# ────────────────────────────────────────────────────────────────────────────
+# pick_tool_model_fn tests
+# ────────────────────────────────────────────────────────────────────────────
+
+class TestPickToolModel:
+    """Test pick_tool_model_fn for web lookup model selection."""
+
+    @async_test
+    async def test_configured_model_installed_with_tools(self):
+        """Configured web_lookup_model that's installed and has tools is used."""
+        deps = MagicMock()
+        deps.get_config = AsyncMock(return_value="qwen3:4b-instruct-2507-q4_K_M")
+        deps.installed_models = AsyncMock(return_value=[
+            "qwen3:4b-instruct-2507-q4_K_M",
+            "llama2:7b",
+        ])
+        deps.model_capabilities = AsyncMock(return_value=["completion", "tools"])
+
+        hooks = await build_hooks(deps)
+        result = await hooks.pick_tool_model()
+
+        assert result is not None
+        assert result["model"] == "qwen3:4b-instruct-2507-q4_K_M"
+        assert result["source"] == "settings"
+        assert result["note"] is None
+
+    @async_test
+    async def test_configured_model_not_installed_falls_to_auto(self):
+        """Configured model not installed → falls back to auto-select."""
+        deps = MagicMock()
+        deps.get_config = AsyncMock(return_value="qwen3:4b-instruct-2507-q4_K_M")
+        deps.installed_models = AsyncMock(return_value=[
+            "qwen2.5:7b-instruct-q4_K_M",
+            "hermes3:8b",
+        ])
+        deps.model_capabilities = AsyncMock(side_effect=lambda m: ["completion", "tools"])
+
+        hooks = await build_hooks(deps)
+        result = await hooks.pick_tool_model()
+
+        assert result is not None
+        assert result["source"] == "auto"
+        # qwen2.5 should be picked before hermes3
+        assert result["model"] == "qwen2.5:7b-instruct-q4_K_M"
+        assert "not installed" in (result["note"] or "").lower()
+
+    @async_test
+    async def test_configured_model_without_tools_capability(self):
+        """Configured model without tools support → note and auto fallback."""
+        deps = MagicMock()
+        deps.get_config = AsyncMock(return_value="qwen3:4b-instruct-2507")
+        deps.installed_models = AsyncMock(return_value=[
+            "qwen3:4b-instruct-2507",
+            "qwen2.5:7b-instruct",
+        ])
+
+        async def caps_side_effect(model):
+            if "qwen3:4b" in model:
+                return ["completion"]  # No tools
+            else:
+                return ["completion", "tools"]
+
+        deps.model_capabilities = AsyncMock(side_effect=caps_side_effect)
+
+        hooks = await build_hooks(deps)
+        result = await hooks.pick_tool_model()
+
+        assert result is not None
+        assert result["source"] == "auto"
+        assert result["model"] == "qwen2.5:7b-instruct"
+        assert "does not support tool calling" in (result["note"] or "").lower()
+
+    @async_test
+    async def test_auto_select_qwen3_4b_instruct_priority(self):
+        """Auto-select prefers qwen3:4b-instruct when available."""
+        deps = MagicMock()
+        deps.get_config = AsyncMock(return_value="")  # No configured model
+        deps.installed_models = AsyncMock(return_value=[
+            "hermes3:8b",
+            "qwen3.6:35b-a3b",
+            "qwen3:4b-instruct-2507-q4_K_M",
+        ])
+        deps.model_capabilities = AsyncMock(return_value=["completion", "tools"])
+
+        hooks = await build_hooks(deps)
+        result = await hooks.pick_tool_model()
+
+        assert result is not None
+        assert result["model"] == "qwen3:4b-instruct-2507-q4_K_M"
+        assert result["source"] == "auto"
+
+    @async_test
+    async def test_auto_select_qwen2_5_7b_if_qwen3_4b_missing(self):
+        """Auto-select uses qwen2.5:7b if qwen3:4b not available but qwen3.6/qwen2.5 are."""
+        deps = MagicMock()
+        deps.get_config = AsyncMock(return_value="")
+        deps.installed_models = AsyncMock(return_value=[
+            "hermes3:8b",
+            "qwen2.5:7b-instruct-q4_K_M",
+        ])
+        deps.model_capabilities = AsyncMock(return_value=["completion", "tools"])
+
+        hooks = await build_hooks(deps)
+        result = await hooks.pick_tool_model()
+
+        assert result is not None
+        # When no qwen3:4b or qwen3.6, should pick qwen2.5:7b-instruct
+        assert result["model"] == "qwen2.5:7b-instruct-q4_K_M"
+        assert result["source"] == "auto"
+
+    @async_test
+    async def test_auto_select_skips_deepseek_r1(self):
+        """Auto-select never picks deepseek-r1 models."""
+        deps = MagicMock()
+        deps.get_config = AsyncMock(return_value="")
+        deps.installed_models = AsyncMock(return_value=[
+            "deepseek-r1:14b",
+            "qwen2.5:7b-instruct",
+        ])
+        deps.model_capabilities = AsyncMock(return_value=["completion", "tools"])
+
+        hooks = await build_hooks(deps)
+        result = await hooks.pick_tool_model()
+
+        assert result is not None
+        # Should skip deepseek-r1 and pick qwen2.5
+        assert result["model"] == "qwen2.5:7b-instruct"
+
+    @async_test
+    async def test_auto_select_skips_ocr_only_models(self):
+        """Auto-select skips OCR-only models."""
+        deps = MagicMock()
+        deps.get_config = AsyncMock(return_value="")
+        deps.installed_models = AsyncMock(return_value=[
+            "glm-ocr:latest",
+            "qwen2.5:7b-instruct",
+        ])
+        deps.model_capabilities = AsyncMock(return_value=["completion", "tools"])
+
+        hooks = await build_hooks(deps)
+        result = await hooks.pick_tool_model()
+
+        assert result is not None
+        # Should skip glm-ocr and pick qwen2.5
+        assert result["model"] == "qwen2.5:7b-instruct"
+
+    @async_test
+    async def test_auto_select_skips_embedding_models(self):
+        """Auto-select skips models with 'embed' in name."""
+        deps = MagicMock()
+        deps.get_config = AsyncMock(return_value="")
+        deps.installed_models = AsyncMock(return_value=[
+            "mxbai-embed-large:latest",
+            "qwen2.5:7b-instruct",
+        ])
+        deps.model_capabilities = AsyncMock(return_value=["completion", "tools"])
+
+        hooks = await build_hooks(deps)
+        result = await hooks.pick_tool_model()
+
+        assert result is not None
+        # Should skip embed model and pick qwen2.5
+        assert result["model"] == "qwen2.5:7b-instruct"
+
+    @async_test
+    async def test_no_tool_capable_model_returns_none(self):
+        """Returns None when no model has tool support."""
+        deps = MagicMock()
+        deps.get_config = AsyncMock(return_value="")
+        deps.installed_models = AsyncMock(return_value=[
+            "deepseek-r1:14b",
+            "mxbai-embed-large",
+        ])
+        deps.model_capabilities = AsyncMock(return_value=["completion"])
+
+        hooks = await build_hooks(deps)
+        result = await hooks.pick_tool_model()
+
+        assert result is None
+
+    @async_test
+    async def test_model_name_strip_prefix_paths(self):
+        """Auto-select handles models with 'hf.co/.../' prefix paths."""
+        deps = MagicMock()
+        deps.get_config = AsyncMock(return_value="")
+        deps.installed_models = AsyncMock(return_value=[
+            "hf.co/ModelAuthor/qwen2.5:7b-instruct",
+        ])
+        deps.model_capabilities = AsyncMock(return_value=["completion", "tools"])
+
+        hooks = await build_hooks(deps)
+        result = await hooks.pick_tool_model()
+
+        assert result is not None
+        # Should extract "qwen2.5" from the path and match the qwen2.5 prefix
+        assert "qwen2.5" in result["model"].lower()
+
+    @async_test
+    async def test_configured_model_tag_flexibility(self):
+        """Configured model matches installed version with different tag."""
+        deps = MagicMock()
+        deps.get_config = AsyncMock(return_value="qwen3:4b-instruct-2507")
+        deps.installed_models = AsyncMock(return_value=[
+            "qwen3:4b-instruct-2507-q4_K_M",
+        ])
+        deps.model_capabilities = AsyncMock(return_value=["completion", "tools"])
+
+        hooks = await build_hooks(deps)
+        result = await hooks.pick_tool_model()
+
+        assert result is not None
+        assert result["model"] == "qwen3:4b-instruct-2507-q4_K_M"
+        assert result["source"] == "settings"

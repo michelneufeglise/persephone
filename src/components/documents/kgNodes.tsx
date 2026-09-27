@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react'
-import { FileText, Image, Mail, File, Table2, Type, Layers, FileJson, MessageCircle, Sparkles, Brain, Cpu } from 'lucide-react'
+import { FileText, Image, Mail, File, Table2, Type, Layers, FileJson, MessageCircle, Sparkles, Brain, Cpu, ListChecks, Globe, User, Check } from 'lucide-react'
 import { clsx } from 'clsx'
 import { Handle, Position } from '@xyflow/react'
 import { NODE_SIZES } from './kgModel'
@@ -58,7 +58,7 @@ export function DocumentNodeComponent({ data, selected }: NodeProps) {
             {filename}
           </div>
           {kind && kind !== 'other' && (
-            <span className="inline-block mt-0.5 text-[0.55rem] uppercase tracking-wider font-medium text-[var(--text-muted)] bg-[var(--bg-secondary)]/50 px-1.5 py-px rounded-full">
+            <span className="inline-block mt-0.5 text-[0.55rem] uppercase tracking-wider font-medium text-[var(--text-muted)]  px-1.5 py-px rounded-full">
               {kind}
             </span>
           )}
@@ -178,7 +178,7 @@ export function DecisionNodeComponent({ data, selected }: NodeProps) {
         )}
       >
         <div className="flex items-center gap-1">
-          <div className="text-[0.5rem] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full bg-[var(--bg-secondary)]/60 text-[var(--text-muted)]">
+          <div className="text-[0.5rem] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded-full  text-[var(--text-muted)]">
             {sourceLabels[data.source as keyof typeof sourceLabels] || data.source}
           </div>
         </div>
@@ -186,7 +186,7 @@ export function DecisionNodeComponent({ data, selected }: NodeProps) {
           {data.label}
         </div>
         {data.confidence !== null && data.confidence !== undefined && (
-          <div className="w-full h-1 bg-[var(--bg-secondary)]/40 rounded-full overflow-hidden mt-0.5">
+          <div className="w-full h-1  rounded-full overflow-hidden mt-0.5">
             <div
               className="h-full bg-gradient-to-r from-[var(--accent)] to-[var(--accent-deep)] transition-all duration-300"
               style={{ width: `${Math.min(100, Math.max(0, data.confidence * 100))}%` }}
@@ -279,6 +279,136 @@ export function ModelNodeComponent({ data, selected }: NodeProps) {
             ×{data.useCount}
           </div>
         )}
+      </div>
+      <Handle type="source" position={data.direction === 'LR' ? Position.Right : Position.Bottom} style={{ opacity: 0, pointerEvents: 'none' }} />
+    </>
+  )
+}
+
+export function PlannerNodeComponent({ data, selected }: NodeProps) {
+  const isHighlighted = data.highlighted === true
+
+  const { width, height } = NODE_SIZES.planner
+
+  return (
+    <>
+      <Handle type="target" position={data.direction === 'LR' ? Position.Left : Position.Top} style={{ opacity: 0, pointerEvents: 'none' }} />
+      <div
+        style={{ width, height, overflow: 'hidden' }}
+        className={clsx(
+          'flex items-center gap-2 px-2.5 py-1.5',
+          'rounded-[12px] border',
+          'transition-all duration-200 hover:shadow-[0_8px_16px_var(--shadow-glow)]',
+          selected
+            ? 'border-[var(--gold)] bg-gradient-to-br from-[var(--gold)]/20 to-[var(--bg-tertiary)] shadow-[0_0_12px_var(--gold)]/30'
+            : isHighlighted
+              ? 'border-[var(--gold)]/60 bg-gradient-to-br from-[var(--gold)]/15 to-[var(--bg-tertiary)] shadow-[0_0_8px_var(--gold)]/20'
+              : 'border-[var(--border-glass)] bg-[var(--bg-glass)] shadow-[var(--shadow-soft)] opacity-25',
+        )}
+      >
+        <div className="w-7 h-7 flex-shrink-0 rounded-lg flex items-center justify-center bg-[var(--gold)]/20">
+          <ListChecks className="w-4 h-4 text-[var(--gold)]" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div
+            className="text-[0.7rem] font-semibold text-[var(--text-primary)] leading-tight truncate"
+            title={data.label}
+          >
+            {data.label}
+          </div>
+          {data.detail && (
+            <span className="inline-block mt-0.5 text-[0.55rem] text-[var(--gold)]/80 truncate">
+              {data.detail}
+            </span>
+          )}
+        </div>
+      </div>
+      <Handle type="source" position={data.direction === 'LR' ? Position.Right : Position.Bottom} style={{ opacity: 0, pointerEvents: 'none' }} />
+    </>
+  )
+}
+
+export function WebNodeComponent({ data, selected }: NodeProps) {
+  const isHighlighted = data.highlighted === true
+
+  const { width, height } = NODE_SIZES.web
+
+  return (
+    <>
+      <Handle type="target" position={data.direction === 'LR' ? Position.Left : Position.Top} style={{ opacity: 0, pointerEvents: 'none' }} />
+      <div
+        style={{ width, height, overflow: 'hidden' }}
+        className={clsx(
+          'flex items-center gap-2 px-2.5 py-1.5',
+          'rounded-[12px] border',
+          'transition-all duration-200 hover:shadow-[0_8px_16px_var(--shadow-glow)]',
+          selected
+            ? 'border-[var(--holo)] bg-gradient-to-br from-[var(--holo)]/20 to-[var(--bg-tertiary)] shadow-[0_0_12px_var(--holo)]/30'
+            : isHighlighted
+              ? 'border-[var(--holo)]/60 bg-gradient-to-br from-[var(--holo)]/15 to-[var(--bg-tertiary)] shadow-[0_0_8px_var(--holo)]/20'
+              : 'border-[var(--border-glass)] bg-[var(--bg-glass)] shadow-[var(--shadow-soft)] opacity-25',
+        )}
+      >
+        <div className="w-7 h-7 flex-shrink-0 rounded-lg flex items-center justify-center bg-[var(--holo)]/20">
+          <Globe className="w-4 h-4 text-[var(--holo)]" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div
+            className="text-[0.7rem] font-semibold text-[var(--text-primary)] leading-tight truncate"
+            title={data.label}
+          >
+            {data.label}
+          </div>
+          {data.model && (
+            <span className="inline-block mt-0.5 text-[0.55rem] text-[var(--holo)]/80 font-mono truncate">
+              {data.model}
+            </span>
+          )}
+        </div>
+      </div>
+      <Handle type="source" position={data.direction === 'LR' ? Position.Right : Position.Bottom} style={{ opacity: 0, pointerEvents: 'none' }} />
+    </>
+  )
+}
+
+export function ProfileNodeComponent({ data, selected }: NodeProps) {
+  const isHighlighted = data.highlighted === true
+  const host = (data.host as string) || 'linkedin.com'
+
+  const { width, height } = NODE_SIZES.profile
+
+  return (
+    <>
+      <Handle type="target" position={data.direction === 'LR' ? Position.Left : Position.Top} style={{ opacity: 0, pointerEvents: 'none' }} />
+      <div
+        style={{ width, height, overflow: 'hidden' }}
+        className={clsx(
+          'flex items-center gap-2 px-2.5 py-1.5',
+          'rounded-[12px] border',
+          'transition-all duration-200 hover:shadow-[0_8px_16px_var(--shadow-glow)]',
+          selected
+            ? 'border-[#0a66c2] bg-gradient-to-br from-[#0a66c2]/20 to-[var(--bg-tertiary)] shadow-[0_0_12px_#0a66c2]/30'
+            : isHighlighted
+              ? 'border-[#0a66c2]/60 bg-gradient-to-br from-[#0a66c2]/15 to-[var(--bg-tertiary)] shadow-[0_0_8px_#0a66c2]/20'
+              : 'border-[var(--border-glass)] bg-[var(--bg-glass)] shadow-[var(--shadow-soft)] opacity-25',
+        )}
+      >
+        <div className="w-6 h-6 flex-shrink-0 rounded-lg flex items-center justify-center bg-[#0a66c2]/20">
+          <User className="w-3 h-3 text-[#0a66c2]" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <div
+            className="text-[0.65rem] font-semibold text-[var(--text-primary)] leading-tight truncate"
+            title={data.label}
+          >
+            {data.label}
+          </div>
+          {host && (
+            <span className="inline-block mt-0.5 text-[0.5rem] text-[#0a66c2]/80 font-mono truncate">
+              {host}
+            </span>
+          )}
+        </div>
       </div>
       <Handle type="source" position={data.direction === 'LR' ? Position.Right : Position.Bottom} style={{ opacity: 0, pointerEvents: 'none' }} />
     </>
@@ -394,5 +524,276 @@ export function ModelNodeCompactComponent({ data, selected }: NodeProps) {
       </div>
       <Handle type="source" position={data.direction === 'LR' ? Position.Right : Position.Bottom} style={{ opacity: 0, pointerEvents: 'none' }} />
     </>
+  )
+}
+
+export function PlannerNodeCompactComponent({ data, selected }: NodeProps) {
+  const isHighlighted = data.highlighted === true
+  return (
+    <>
+      <Handle type="target" position={data.direction === 'LR' ? Position.Left : Position.Top} style={{ opacity: 0, pointerEvents: 'none' }} />
+      <div
+        className={clsx(
+          'flex items-center gap-1 px-2 py-1',
+          'rounded-[6px] border text-[0.65rem] font-medium',
+          'transition-all duration-200',
+          selected
+            ? 'border-[var(--gold)] bg-[var(--gold)]/20 shadow-[0_0_8px_var(--gold)]/30'
+            : isHighlighted
+              ? 'border-[var(--gold)]/60 bg-[var(--gold)]/10 shadow-[var(--shadow-soft)]'
+              : 'border-[var(--border-glass)] bg-[var(--bg-glass)] opacity-25',
+        )}
+      >
+        <ListChecks className="w-3 h-3 text-[var(--gold)] flex-shrink-0" />
+        <div className="truncate text-[var(--text-primary)]">{data.shortLabel || data.label}</div>
+      </div>
+      <Handle type="source" position={data.direction === 'LR' ? Position.Right : Position.Bottom} style={{ opacity: 0, pointerEvents: 'none' }} />
+    </>
+  )
+}
+
+export function WebNodeCompactComponent({ data, selected }: NodeProps) {
+  const isHighlighted = data.highlighted === true
+  return (
+    <>
+      <Handle type="target" position={data.direction === 'LR' ? Position.Left : Position.Top} style={{ opacity: 0, pointerEvents: 'none' }} />
+      <div
+        className={clsx(
+          'flex items-center gap-1 px-2 py-1',
+          'rounded-[6px] border text-[0.65rem] font-medium',
+          'transition-all duration-200',
+          selected
+            ? 'border-[var(--holo)] bg-[var(--holo)]/20 shadow-[0_0_8px_var(--holo)]/30'
+            : isHighlighted
+              ? 'border-[var(--holo)]/60 bg-[var(--holo)]/10 shadow-[var(--shadow-soft)]'
+              : 'border-[var(--border-glass)] bg-[var(--bg-glass)] opacity-25',
+        )}
+      >
+        <Globe className="w-3 h-3 text-[var(--holo)] flex-shrink-0" />
+        <div className="truncate text-[var(--text-primary)]">{data.shortLabel || data.label}</div>
+      </div>
+      <Handle type="source" position={data.direction === 'LR' ? Position.Right : Position.Bottom} style={{ opacity: 0, pointerEvents: 'none' }} />
+    </>
+  )
+}
+
+export function ProfileNodeCompactComponent({ data, selected }: NodeProps) {
+  const isHighlighted = data.highlighted === true
+  return (
+    <>
+      <Handle type="target" position={data.direction === 'LR' ? Position.Left : Position.Top} style={{ opacity: 0, pointerEvents: 'none' }} />
+      <div
+        className={clsx(
+          'flex items-center gap-1 px-2 py-1',
+          'rounded-[6px] border text-[0.65rem] font-medium',
+          'transition-all duration-200',
+          selected
+            ? 'border-[#0a66c2] bg-[#0a66c2]/20 shadow-[0_0_8px_#0a66c2]/30'
+            : isHighlighted
+              ? 'border-[#0a66c2]/60 bg-[#0a66c2]/10 shadow-[var(--shadow-soft)]'
+              : 'border-[var(--border-glass)] bg-[var(--bg-glass)] opacity-25',
+        )}
+      >
+        <User className="w-3 h-3 text-[#0a66c2] flex-shrink-0" />
+        <div className="truncate text-[var(--text-primary)]">{data.shortLabel || data.label}</div>
+      </div>
+      <Handle type="source" position={data.direction === 'LR' ? Position.Right : Position.Bottom} style={{ opacity: 0, pointerEvents: 'none' }} />
+    </>
+  )
+}
+
+/**
+ * Entity node component for Knowledge Graph Entities view
+ */
+export function EntityNodeComponent({ data, selected }: NodeProps) {
+  const type = data.type as string || 'person'
+  const accentMap: Record<string, string> = {
+    person: 'var(--accent)',
+    organization: 'var(--gold)',
+    role: 'var(--holo)',
+    document: 'var(--text-secondary)',
+    profile: '#0a66c2',
+    location: '#34d399',
+  }
+  const accent = accentMap[type] || accentMap.person
+
+  const typeLabels: Record<string, string> = {
+    person: 'Person',
+    organization: 'Org',
+    role: 'Role',
+    document: 'Doc',
+    profile: 'Profile',
+    location: 'Location',
+  }
+
+  const { width, height } = NODE_SIZES.entity || { width: 160, height: 60 }
+
+  return (
+    <>
+      <Handle type="target" position={Position.Top} style={{ opacity: 0, pointerEvents: 'none' }} />
+      <div
+        style={{ width, height, overflow: 'hidden', borderLeft: `4px solid ${accent}` }}
+        className={clsx(
+          'flex flex-col justify-center gap-1 px-2.5 py-1.5',
+          'rounded-lg border glass-card',
+          'transition-all duration-200 hover:shadow-[0_8px_16px_var(--shadow-glow)]',
+          selected ? 'border-[var(--accent)] shadow-[0_0_12px_var(--accent-glow)]' : 'border-[var(--glass-stroke)]',
+        )}
+      >
+        <div className="text-[0.55rem] font-bold uppercase tracking-wider text-[var(--text-muted)]">
+          {typeLabels[type]}
+        </div>
+        <div className="text-[0.75rem] font-semibold text-[var(--text-primary)] line-clamp-2 leading-tight">
+          {data.label}
+        </div>
+        {data.mention_count && (
+          <div className="text-[0.6rem] text-[var(--text-muted)] font-mono">
+            {data.mention_count} mention{data.mention_count > 1 ? 's' : ''}
+          </div>
+        )}
+      </div>
+      <Handle type="source" position={Position.Bottom} style={{ opacity: 0, pointerEvents: 'none' }} />
+    </>
+  )
+}
+
+/**
+ * Pipeline view (GraphRAG-style architecture diagram) — clean glass cards.
+ * Colours by role, tinted with color-mix so they stay theme-aware.
+ */
+const PIPELINE_ROLE_COLORS: Record<string, string> = {
+  question: '#34d399',
+  answer: '#34d399',
+  encoder: '#a78bfa',
+  toolselect: 'var(--gold)',
+  instruction: '#60a5fa',
+  context: '#60a5fa',
+  llm: 'var(--accent)',
+  tool: '#f472b6',
+  graph: '#fb923c',
+  band: '#fb923c',
+  source: 'var(--text-secondary)',
+}
+
+const PIPELINE_SIDES = [
+  ['t', Position.Top],
+  ['r', Position.Right],
+  ['b', Position.Bottom],
+  ['l', Position.Left],
+] as const
+
+const HIDDEN_HANDLE: React.CSSProperties = { opacity: 0, pointerEvents: 'none', width: 1, height: 1, minWidth: 0, minHeight: 0, border: 0 }
+
+/** Invisible source + target handles on all four sides: ids `s-<side>` / `t-<side>`. */
+function PipelineHandles() {
+  return (
+    <>
+      {PIPELINE_SIDES.map(([side, pos]) => (
+        <React.Fragment key={side}>
+          <Handle id={`t-${side}`} type="target" position={pos} isConnectable={false} style={HIDDEN_HANDLE} />
+          <Handle id={`s-${side}`} type="source" position={pos} isConnectable={false} style={HIDDEN_HANDLE} />
+        </React.Fragment>
+      ))}
+    </>
+  )
+}
+
+export function PipelineNodeComponent({ data, selected }: NodeProps) {
+  const role = (data.role as string) || 'tool'
+  const color = PIPELINE_ROLE_COLORS[role] || 'var(--accent)'
+  const isTool = typeof data.used === 'boolean'
+  const used = data.used !== false
+  const details = ((data.details as string[] | undefined) || []).slice(0, (data.maxDetails as number) || 3)
+  const chips = (data.chips as string[] | undefined) || []
+  const titleClamp =
+    role === 'question' || role === 'answer' ? 'line-clamp-3' : role === 'llm' ? 'line-clamp-4 break-all' : 'truncate'
+
+  return (
+    <>
+      <PipelineHandles />
+      <div
+        className="glass-card relative w-full h-full rounded-2xl px-3 py-2.5 flex flex-col gap-1 overflow-hidden"
+        style={{
+          opacity: used ? 1 : 0.35,
+          background: `color-mix(in oklab, ${color} 14%, transparent)`,
+          borderColor: `color-mix(in oklab, ${color} ${used ? 55 : 45}%, transparent)`,
+          borderStyle: used ? 'solid' : 'dashed',
+          borderWidth: 1,
+          boxShadow: selected
+            ? `0 0 0 1.5px ${color}, 0 10px 28px -14px ${color}`
+            : isTool && used
+              ? `0 8px 24px -16px ${color}`
+              : undefined,
+        }}
+        title={(data.fullText as string) || (data.label as string)}
+      >
+        <div className="flex shrink-0 items-center justify-between gap-2 min-w-0">
+          <span className="text-[9px] font-bold uppercase tracking-[0.12em] truncate" style={{ color }}>
+            {data.kindLabel as string}
+          </span>
+          {isTool && (
+            <span
+              className="flex-shrink-0 inline-flex items-center gap-0.5 rounded-full px-1.5 py-px text-[9px] font-semibold"
+              style={
+                used
+                  ? { color, background: `color-mix(in oklab, ${color} 22%, transparent)` }
+                  : { color: 'var(--text-muted)', border: '1px dashed var(--glass-stroke)' }
+              }
+            >
+              {used && <Check className="w-2.5 h-2.5" />}
+              {used ? 'used' : 'not used'}
+            </span>
+          )}
+        </div>
+        <div
+          className={clsx('shrink-0 text-[13px] font-semibold leading-snug text-[var(--text-primary)]', titleClamp)}
+          style={role === 'question' || role === 'answer' ? { fontSize: 12, fontWeight: 500 } : undefined}
+        >
+          {data.label as string}
+        </div>
+        {chips.length > 0 && (
+          <div className="flex shrink-0 flex-wrap gap-1 mt-0.5">
+            {chips.map(c => (
+              <span
+                key={c}
+                className="max-w-full truncate rounded-full px-1.5 py-px text-[10px] leading-4 text-[var(--text-secondary)]"
+                style={{ background: `color-mix(in oklab, ${color} 16%, transparent)`, border: `1px solid color-mix(in oklab, ${color} 35%, transparent)` }}
+              >
+                {c}
+              </span>
+            ))}
+          </div>
+        )}
+        {details.map((d, i) => (
+          <div key={i} className="shrink-0 text-[11px] leading-[15px] text-[var(--text-muted)] truncate" title={d}>
+            {d}
+          </div>
+        ))}
+      </div>
+    </>
+  )
+}
+
+/** Background band for the knowledge store — rendered behind the graph nodes. */
+export function PipelineGroupNodeComponent({ data }: NodeProps) {
+  const color = PIPELINE_ROLE_COLORS.band
+  return (
+    <div
+      className="w-full h-full rounded-3xl px-4 py-3 pointer-events-none"
+      style={{
+        background: `color-mix(in oklab, ${color} 7%, transparent)`,
+        border: `1.5px dashed color-mix(in oklab, ${color} 50%, transparent)`,
+      }}
+    >
+      <div className="flex items-baseline justify-between gap-3">
+        <div className="flex items-baseline gap-2">
+          <span className="section-label !text-[12px] !font-semibold" style={{ color }}>
+            {data.label as string}
+          </span>
+          <span className="text-[9px] uppercase tracking-[0.12em] text-[var(--text-muted)]">{data.kindLabel as string}</span>
+        </div>
+        <span className="text-[11px] text-[var(--text-secondary)] font-mono">{data.stats as string}</span>
+      </div>
+    </div>
   )
 }

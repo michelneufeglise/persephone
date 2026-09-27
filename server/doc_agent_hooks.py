@@ -37,6 +37,12 @@ class HookDeps:
     model_capabilities: Callable[[str], Any]  # (model_name) -> awaitable list[str] | None
     laya: Optional[Any] = None  # laya module or None
     model_override: Optional[str] = None  # override for answer model
+    web_search: Optional[Callable[[str], Any]] = None  # (query) -> awaitable list[dict]
+    fetch_page: Optional[Callable[[str], Any]] = None  # (url) -> awaitable str
+    kg_search: Optional[Callable[[str], Any]] = None  # (text) -> awaitable list[dict] of entities
+    kg_neighborhood: Optional[Callable[[str], Any]] = None  # (entity_id) -> awaitable dict with entities/relations
+    kg_ingest: Optional[Callable[..., Any]] = None  # (...) -> awaitable dict
+    ollama_base: str = "http://127.0.0.1:11434"  # Ollama base URL
 
 
 # ── Broken model cache ────────────────────────────────────────────────────
@@ -561,9 +567,17 @@ async def build_hooks(deps: HookDeps) -> "AgentHooks":
         model: str,
         prompt: str,
         think: bool,
+        num_predict: int = 1536,
     ) -> AsyncIterator[dict]:
-        """Stream LLM output with optional thinking."""
-        async for event in deps.stream_text(model, prompt, think=think):
+        """Stream LLM output with optional thinking.
+
+        Args:
+            model: Model name
+            prompt: Input prompt
+            think: Enable thinking/reasoning mode
+            num_predict: Max tokens to generate (default 1536)
+        """
+        async for event in deps.stream_text(model, prompt, think=think, num_predict=num_predict):
             yield event
 
     # Helper: Laya intent decision (SYNC function, called via asyncio.to_thread)
@@ -636,9 +650,13 @@ async def build_hooks(deps: HookDeps) -> "AgentHooks":
         return configured_model
 
     # Helper: resolve text model with fallback chain and reason info
-    async def resolve_text_model_info_fn(doc: Any, category: str) -> dict[str, Optional[str]]:
+    async def resolve_text_model_info_fn(doc: Optional[Any], category: str) -> dict[str, Optional[str]]:
         """
         Resolve the text model with fallback chain and return info about fallback.
+
+        Args:
+            doc: Document to resolve model for, or None for no-doc scenarios (e.g., graph_query)
+            category: Model category ("text", "vision", etc.)
 
         Returns:
             {"model": str, "configured": str|None, "reason": str|None}
@@ -655,10 +673,13 @@ async def build_hooks(deps: HookDeps) -> "AgentHooks":
             }
 
         # Get the configured model
-        configured_model = await deps.resolve_doc_model_for(doc, category)
+        configured_model = (
+            await deps.resolve_doc_model_for(doc, category) if doc is not None
+            else await deps.resolve_doc_model(category)
+        )
 
         # Check if it's OCR-only or embedding model
-        if is_ocr_only_model(configured_model):
+        if not configured_model or is_ocr_only_model(configured_model):
             # Need to walk fallback chain
             installed = await deps.installed_models()
 
@@ -670,6 +691,9 @@ async def build_hooks(deps: HookDeps) -> "AgentHooks":
                 try:
                     candidate = await deps.get_config(key)
                     if candidate and not is_ocr_only_model(candidate):
+                        # For no-doc scenarios (doc=None), skip reasoning models (e.g., deepseek-r1)
+                        if doc is None and "deepseek-r1" in candidate.lower():
+                            continue
                         # Check if installed
                         if candidate in installed or any(
                             m.split(":", 1)[0] == candidate.split(":", 1)[0]
@@ -698,10 +722,13 @@ async def build_hooks(deps: HookDeps) -> "AgentHooks":
 
             # Find any other installed non-OCR, non-embedding chat model
             for m in installed:
+                # For no-doc scenarios, skip reasoning models
+                skip_reasoning = doc is None and "deepseek-r1" in m.lower()
                 if (not is_ocr_only_model(m) and
                     m not in fallback_models and
                     "vision" not in m.lower() and
-                    "embed" not in m.lower()):
+                    "embed" not in m.lower() and
+                    not skip_reasoning):
                     fallback_models.append(m)
 
             # Remove duplicates while preserving order
@@ -715,7 +742,10 @@ async def build_hooks(deps: HookDeps) -> "AgentHooks":
             # Pick the first available fallback
             if unique_fallbacks:
                 selected = unique_fallbacks[0]
-                reason = f"{configured_model.split('/')[-1].split(':')[0]} is an OCR-only model — using {selected.split('/')[-1].split(':')[0]} instead"
+                reason = (
+                    f"{configured_model.split('/')[-1].split(':')[0]} is an OCR-only model — using {selected.split('/')[-1].split(':')[0]} instead"
+                    if configured_model else f"No document model configured — using {selected.split('/')[-1].split(':')[0]}"
+                )
                 return {
                     "model": selected,
                     "configured": configured_model,
@@ -776,6 +806,170 @@ async def build_hooks(deps: HookDeps) -> "AgentHooks":
                 # No event loop; create one
                 asyncio.run(_broken_cache.mark_broken(model, err_text[:200]))
 
+    # Helper: Laya web lookup decision (SYNC function, called via asyncio.to_thread)
+    def laya_web_fn(message: str) -> Optional[dict]:
+        """Call Laya web lookup decision (sync, blocking ~60-200ms)."""
+        if deps.laya is None:
+            return None
+        try:
+            return deps.laya.decide_web_lookup(message)
+        except Exception as e:
+            log.debug(f"Laya web lookup failed: {e}")
+            return None
+
+    # Helper: pick a tool-capable model for web lookup (async)
+    async def pick_tool_model_fn() -> Optional[dict]:
+        """Pick a tool-capable model for web search and fetch.
+
+        Returns dict with keys:
+            model: str - the model name
+            source: "settings" | "auto"
+            note: str | None - optional note (e.g., "X is not installed")
+        Or None if no suitable model found.
+        """
+        installed = await deps.installed_models()
+        note = None
+
+        # First: check if user configured a web_lookup_model
+        try:
+            configured = (await deps.get_config("web_lookup_model")) or ""
+        except Exception:
+            configured = ""
+
+        if configured:
+            # Validate: must be installed, not OCR-only, must have tools
+            # Match against installed (exact match or match ignoring tags/quantization)
+            found_installed_name = None
+
+            # Normalize both: strip :latest and strip quantization suffix (e.g., -q4_K_M)
+            def normalize_model_name(name: str) -> str:
+                """Remove :latest tag and common quantization suffixes for comparison."""
+                import re
+                name = name.split(":")[0] if ":" in name else name
+                # Remove common quantization patterns
+                name = re.sub(r'-(q\d+_?[a-zA-Z_]*|gguf|f16|int8|i8)$', '', name, flags=re.IGNORECASE)
+                return name.lower()
+
+            configured_norm = normalize_model_name(configured)
+
+            for installed_name in installed:
+                installed_norm = normalize_model_name(installed_name)
+                if installed_norm == configured_norm or installed_name == configured:
+                    found_installed_name = installed_name
+                    break
+
+            if not found_installed_name:
+                note = f"{configured} is not installed"
+            elif is_ocr_only_model(found_installed_name):
+                note = f"{configured} is an OCR-only model and cannot do tool calling"
+            else:
+                try:
+                    caps = await deps.model_capabilities(found_installed_name)
+                    if caps and "tools" in caps:
+                        # Configured model is valid! Return the actual installed name
+                        return {"model": found_installed_name, "source": "settings", "note": None}
+                    else:
+                        note = f"{configured} does not support tool calling"
+                except Exception as e:
+                    note = f"{configured} capabilities check failed: {str(e)[:50]}"
+
+        # Fallback to auto-select
+        # Preference list: name PREFIXES checked in order (case-insensitive startswith)
+        preference_list = [
+            "qwen3:4b-instruct",
+            "qwen3.6:35b-a3b",
+            "qwen2.5:7b-instruct",
+            "qwen2.5:7b",
+            "qwen3:",
+            "qwen3.",
+            "qwen2.5:",
+            "hermes3",
+            "llama3.1",
+            "mistral",
+            "nemotron",
+        ]
+
+        for prefix in preference_list:
+            # Find candidates matching this prefix
+            candidates = []
+            for model in installed:
+                # Normalize: strip "hf.co/.../" prefix paths
+                model_name = model.split("/")[-1].lower()
+                if model_name.startswith(prefix.lower()):
+                    candidates.append(model)
+
+            # For each candidate, check if it's suitable
+            for model in candidates:
+                # Skip if OCR-only or embedding or deepseek-r1 or vision-language only
+                if is_ocr_only_model(model):
+                    continue
+                if "embed" in model.lower():
+                    continue
+                if "deepseek-r1" in model.lower():
+                    continue
+                if "vl" in model.lower():  # vision-language only
+                    continue
+
+                # Check if it's in broken cache
+                if await _broken_cache.is_broken(model):
+                    continue
+
+                # Check tool capability
+                try:
+                    caps = await deps.model_capabilities(model)
+                    if caps and "tools" in caps:
+                        # Found a winner!
+                        return {"model": model, "source": "auto", "note": note}
+                except Exception:
+                    pass
+
+        # Nothing found
+        return None
+
+    # Helper: chat with tools on Ollama
+    async def chat_tools_fn(
+        model: str,
+        messages: list[dict],
+        tools: list[dict],
+    ) -> dict:
+        """Call Ollama chat API with tool support."""
+        import json
+        import httpx
+
+        payload = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "options": {
+                "temperature": 0.2,
+            }
+        }
+        if tools:
+            payload["tools"] = tools
+
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            response = await client.post(
+                f"{deps.ollama_base}/api/chat",
+                json=payload,
+            )
+            response.raise_for_status()
+            data = response.json()
+            msg = data.get("message", {})
+            return {
+                "content": msg.get("content", ""),
+                "tool_calls": [
+                    {
+                        "name": tc["function"]["name"],
+                        "arguments": (
+                            json.loads(tc["function"].get("arguments", "{}"))
+                            if isinstance(tc["function"].get("arguments", "{}"), str)
+                            else tc["function"].get("arguments", {})
+                        ) or {}
+                    }
+                    for tc in msg.get("tool_calls", [])
+                ]
+            }
+
     # Build and return AgentHooks
     return AgentHooks(
         get_doc=deps.get_doc,
@@ -794,5 +988,13 @@ async def build_hooks(deps: HookDeps) -> "AgentHooks":
         stream_llm=stream_llm_fn,
         vision_call=vision_call_fn,
         mark_vision_failed=mark_vision_failed_fn,  # Sync function
+        laya_web=laya_web_fn,  # Sync callable for asyncio.to_thread
+        web_search=deps.web_search,
+        fetch_page=deps.fetch_page,
+        kg_search=deps.kg_search,
+        kg_neighborhood=deps.kg_neighborhood,
+        kg_ingest=deps.kg_ingest,
+        pick_tool_model=pick_tool_model_fn,
+        chat_tools=chat_tools_fn,
         now_ms=now_ms_fn,
     )

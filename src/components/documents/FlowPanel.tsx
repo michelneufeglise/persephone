@@ -54,10 +54,10 @@ export function FlowPanel({ tiles, running, title = 'Model flow', hideHeader = f
   }, [tiles.length, running])
 
   return (
-    <div className="h-full flex flex-col bg-[var(--bg-secondary)]/40 border-l border-[var(--border)] overflow-hidden">
+    <div className="h-full flex flex-col  border-l border-[var(--glass-stroke)] overflow-hidden">
       {/* Header (hidden if hideHeader is true, but keep Running… indicator visible) */}
       {!hideHeader && (
-        <div className="flex-shrink-0 px-4 py-3 border-b border-[var(--border)] flex items-center justify-between">
+        <div className="flex-shrink-0 px-4 py-3 border-b border-[var(--glass-stroke)] flex items-center justify-between">
           <h3 className="text-sm font-medium text-[var(--text-primary)]">{title}</h3>
           {running && (
             <div className="flex items-center gap-2">
@@ -74,7 +74,7 @@ export function FlowPanel({ tiles, running, title = 'Model flow', hideHeader = f
 
       {/* Running indicator for collapsed view (shown even when header is hidden) */}
       {hideHeader && running && (
-        <div className="flex-shrink-0 px-4 py-3 border-b border-[var(--border)] flex items-center justify-between">
+        <div className="flex-shrink-0 px-4 py-3 border-b border-[var(--glass-stroke)] flex items-center justify-between">
           <div className="flex items-center gap-2">
             <motion.div
               className="w-2 h-2 rounded-full bg-[var(--accent)]"
