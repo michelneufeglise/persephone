@@ -1,7 +1,7 @@
 /** A small SVG ornament — three diamonds joined by a thin line. */
-export function OrnamentalDivider() {
+export function OrnamentalDivider({ className = '' }: { className?: string } = {}) {
   return (
-    <div className="flex items-center justify-center my-6 select-none">
+    <div className={`flex items-center justify-center my-6 select-none ${className}`} role="separator">
       <svg width="120" height="14" viewBox="0 0 120 14" fill="none" aria-hidden>
         {/* outer accent line */}
         <line x1="6"   y1="7" x2="46" y2="7"

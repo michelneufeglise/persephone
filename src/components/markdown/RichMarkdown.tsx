@@ -3,219 +3,210 @@ import remarkGfm from 'remark-gfm'
 import { useMemo, useState } from 'react'
 import { Copy, Check } from 'lucide-react'
 import { Mermaid } from './Mermaid'
-import { SketchBorder } from './SketchBorder'
 import { OrnamentalDivider } from './OrnamentalDivider'
 import { withInlineIcons } from './InlineIcons'
+import { remarkAnswerStructure } from './remarkAnswerStructure'
 import { clsx } from 'clsx'
+import './richMarkdown.css'
 
-// Long file-name headers (e.g. DEMO_company_registry_extract_….pdf) have no
-// spaces, so a table column cannot shrink below them: allow line breaks after
-// _ - . / only (zero-width spaces), so short words like RESULT never split.
+// Long file names (e.g. DEMO_company_registry_extract_….pdf) have no spaces,
+// so a table column / inline code cannot shrink below them: offer line-break
+// opportunities after _ . / - via <wbr> (not copied with the text, unlike a
+// zero-width space), so short words like RESULT never split.
+function softBreakText(text: string, keyBase: string): React.ReactNode {
+  if (text.length < 16 || !/[_./-]\S/.test(text)) return text
+  const parts = text.split(/(?<=[_./-])(?=\S)/)
+  if (parts.length < 2) return text
+  const out: React.ReactNode[] = []
+  parts.forEach((p, i) => {
+    if (i > 0) out.push(<wbr key={`${keyBase}-w${i}`} />)
+    out.push(p)
+  })
+  return out
+}
 function softBreakChildren(children: React.ReactNode): React.ReactNode {
-  const soft = (c: React.ReactNode) =>
-    typeof c === 'string' ? c.replace(/([_./-])(?=\S)/g, '$1\u200b') : c
-  return Array.isArray(children) ? children.map(soft) : soft(children)
+  const soft = (c: React.ReactNode, i: number) =>
+    typeof c === 'string' ? softBreakText(c, `sb${i}`) : c
+  return Array.isArray(children) ? children.map(soft) : soft(children, 0)
 }
 
 interface RichMarkdownProps {
   children: string
-  /** Larger / fancier treatment (drop cap, dividers between H2s, etc).
-   *  Use true for research reports, false for short chat replies. */
+  /** 'report' = research reports (display-serif title, ornamental dividers
+   *  between H2 sections); 'chat' = assistant answers. */
   variant?: 'chat' | 'report'
 }
 
 export function RichMarkdown({ children, variant = 'chat' }: RichMarkdownProps) {
   const components = useMemo<Components>(() => buildComponents(variant), [variant])
+  const remarkPlugins = useMemo(
+    () => [remarkGfm, [remarkAnswerStructure, { variant }]] as NonNullable<React.ComponentProps<typeof ReactMarkdown>['remarkPlugins']>,
+    [variant],
+  )
   return (
-    <div className={clsx(
-      'rich-md text-[var(--text-primary)] font-sans',
-      variant === 'report' && 'rich-md--report',
-    )}>
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={components}>
+    <div className={clsx('rich-md', variant === 'report' ? 'rich-md--report' : 'rich-md--chat')}>
+      <ReactMarkdown remarkPlugins={remarkPlugins} components={components}>
         {children}
       </ReactMarkdown>
     </div>
   )
 }
 
+/* ─── Status cells (✅ / ⚠️ / ❌) ──────────────────────────────────────── */
+type Status = 'ok' | 'warn' | 'bad'
+const STATUS_GLYPHS: Array<[Status, RegExp]> = [
+  ['ok',   /✅|✔|✓|☑|🟢/u],
+  ['warn', /⚠|🟡|🟠/u],
+  ['bad',  /❌|✗|✘|❎|🔴|⛔|🚫/u],
+]
+const LEADING_GLYPH_RE = /^(\s*)(✅|✔️?|✓|☑️?|🟢|⚠️?|🟡|🟠|❌|✗|✘|❎|🔴|⛔|🚫)\s*/u
+
+interface HastLike { type?: string; value?: string; children?: HastLike[] }
+function hastText(node: HastLike | undefined, depth = 0): string {
+  if (!node || depth > 20) return ''
+  if (node.type === 'text') return node.value ?? ''
+  return Array.isArray(node.children) ? node.children.map(c => hastText(c, depth + 1)).join('') : ''
+}
+
+function statusOf(text: string): Status | null {
+  let best: Status | null = null
+  let bestAt = Infinity
+  for (const [status, re] of STATUS_GLYPHS) {
+    const m = re.exec(text)
+    if (m && m.index < bestAt) { best = status; bestAt = m.index }
+  }
+  return best
+}
+
+/** Wrap a leading status emoji in a fixed-width span so labels line up. */
+function alignLeadingGlyph(children: React.ReactNode): React.ReactNode {
+  const list = Array.isArray(children) ? children : [children]
+  const first = list[0]
+  if (typeof first !== 'string') return children
+  const m = LEADING_GLYPH_RE.exec(first)
+  if (!m) return children
+  return [
+    <span key="st-icon" className="rmd-status__icon">{m[2]}</span>,
+    first.slice(m[0].length),
+    ...list.slice(1),
+  ]
+}
+
 /* ─── Renderers ─────────────────────────────────────────────────────────── */
 function buildComponents(variant: 'chat' | 'report'): Components {
-  let h2Count = 0
-  let firstParagraphDone = false
+  const isReport = variant === 'report'
 
   return {
-    h1: ({ children }) => (
-      <h1 className="font-display text-3xl text-[var(--text-primary)] leading-tight tracking-tight mt-4 mb-3 relative pl-4"
+    h1: ({ children, className }) => isReport ? (
+      // Research reports keep the display-serif title.
+      <h1 className={clsx('rmd-h1 rmd-h1--display font-display', className)}
           style={{ fontVariationSettings: "'opsz' 144" }}>
-        <span className="absolute left-0 top-2 bottom-2 w-[3px] rounded-full"
-              style={{
-                background: 'linear-gradient(180deg, var(--accent), var(--holo))',
-                boxShadow: '0 0 10px var(--accent-glow)',
-              }} />
+        <span className="rmd-h1__bar" aria-hidden />
         {withInlineIcons(children)}
       </h1>
+    ) : (
+      <h1 className={clsx('rmd-h1', className)}>{withInlineIcons(children)}</h1>
     ),
 
-    h2: ({ children }) => {
-      h2Count += 1
-      const showDivider = variant === 'report' && h2Count > 1
-      return (
-        <>
-          {showDivider && <OrnamentalDivider />}
-          <h2 className="font-display text-2xl text-[var(--text-primary)] leading-tight tracking-tight mt-5 mb-3 flex items-baseline gap-3">
-            <span className="inline-block w-2 h-2 rounded-full flex-shrink-0 translate-y-[-2px]"
-              style={{
-                background: 'radial-gradient(circle at 30% 30%, var(--holo), var(--accent))',
-                boxShadow: '0 0 8px var(--accent-glow)',
-              }} />
-            <span>{withInlineIcons(children)}</span>
-          </h2>
-        </>
-      )
-    },
-
-    h3: ({ children }) => (
-      <h3 className="font-display text-lg text-[var(--text-primary)] mt-4 mb-2 font-semibold tracking-tight">
-        <span className="text-[var(--accent)] mr-2">⊹</span>
-        {withInlineIcons(children)}
-      </h3>
+    h2: ({ children, className }) => (
+      <h2 className={clsx('rmd-h2', className)}>{withInlineIcons(children)}</h2>
+    ),
+    h3: ({ children, className }) => (
+      <h3 className={clsx('rmd-h3', className)}>{withInlineIcons(children)}</h3>
+    ),
+    h4: ({ children, className }) => (
+      <h4 className={clsx('rmd-h4', className)}>{withInlineIcons(children)}</h4>
+    ),
+    h5: ({ children, className }) => (
+      <h5 className={clsx('rmd-h5', className)}>{withInlineIcons(children)}</h5>
+    ),
+    h6: ({ children, className }) => (
+      <h6 className={clsx('rmd-h5', className)}>{withInlineIcons(children)}</h6>
     ),
 
-    p: ({ children }) => {
-      // Apply drop-cap to the first paragraph of a *report*.
-      const apply = variant === 'report' && !firstParagraphDone
-      firstParagraphDone = true
-      return (
-        <p className={clsx(
-          // Slightly more breathing room than before (was my-2.5) — dense
-          // reply-length answers were feeling cramped, especially with
-          // list + paragraph interleaves.
-          'leading-relaxed my-3.5 text-[var(--text-primary)]',
-          apply && 'rich-md__lede',
-        )}>
-          {withInlineIcons(children)}
-        </p>
-      )
-    },
+    p: ({ children, className }) => (
+      <p className={className}>{withInlineIcons(children)}</p>
+    ),
 
     a: ({ href, children }) => (
-      <a href={href} target="_blank" rel="noreferrer"
-        className="text-[var(--accent-hover)] underline decoration-[var(--accent-dim)] decoration-2 underline-offset-2 hover:decoration-[var(--accent)] transition-colors">
+      <a href={href} target="_blank" rel="noreferrer" className="rmd-link">
         {children}
       </a>
     ),
 
     blockquote: ({ children }) => (
-      <blockquote className="relative my-4 pl-6 pr-3 py-2 italic text-[var(--text-secondary)] font-display-italic text-[15px] leading-relaxed">
-        <span aria-hidden
-          className="absolute left-0 top-0 text-[44px] leading-none font-display select-none"
-          style={{ color: 'var(--accent)', opacity: 0.55 }}>“</span>
-        <span className="absolute left-1.5 top-2 bottom-2 w-[2px] rounded-full"
-          style={{ background: 'linear-gradient(180deg, var(--accent), transparent)' }} />
-        {withInlineIcons(children)}
-      </blockquote>
+      <blockquote className="rmd-quote">{withInlineIcons(children)}</blockquote>
     ),
 
-    ul: ({ children }) => (
-      // A little more room between items so dense bullet lists breathe.
-      <ul className="my-3 space-y-1.5 list-none pl-2">{children}</ul>
-    ),
+    ul: ({ children, className }) => <ul className={className}>{children}</ul>,
+    ol: ({ children, className, start }) => <ol className={className} start={start}>{children}</ol>,
+    li: ({ children, className }) => <li className={className}>{withInlineIcons(children)}</li>,
 
-    ol: ({ children }) => (
-      <ol className="my-3 space-y-2 list-none pl-2 rich-md__ol counter-reset-rich">
-        {children}
-      </ol>
-    ),
-
-    li: ({ children, ...props }) => {
-      const isOrdered = (props as { ordered?: boolean }).ordered
-      // Use class-based custom counter so we don't fight react-markdown's structure
-      return isOrdered ? (
-        <li className="relative pl-9 leading-relaxed text-[var(--text-primary)]">
-          <span className="rich-md__num" />
-          {withInlineIcons(children)}
-        </li>
-      ) : (
-        <li className="relative pl-5 leading-relaxed text-[var(--text-primary)]">
-          <span aria-hidden
-            className="absolute left-0 top-[0.55em] w-[7px] h-[7px] rotate-45"
-            style={{
-              background: 'linear-gradient(135deg, var(--accent), var(--holo))',
-              boxShadow: '0 0 6px var(--accent-glow)',
-            }} />
-          {withInlineIcons(children)}
-        </li>
-      )
-    },
-
-    hr: () => <OrnamentalDivider />,
+    // Report: ornamental divider between sections. Chat: a thin rule.
+    hr: () => isReport ? <OrnamentalDivider className="rmd-ornament" /> : <hr className="rmd-hr" />,
 
     code: ({ className, children, ...rest }) => {
       const isInline = !(className || '').includes('language-')
       if (isInline) {
-        return (
-          <code className="px-1.5 py-0.5 rounded font-mono text-[0.82em] text-[var(--accent-hover)]"
-            style={{ background: 'var(--accent-dim)' }}>
-            {children}
-          </code>
-        )
+        return <code className="rmd-code-inline">{softBreakChildren(children)}</code>
       }
       // block code — passthrough; <pre> renderer will wrap it
-      return <code className={className} {...(rest as object)}>{children}</code>
+      const { node: _node, ...safe } = rest as { node?: unknown }
+      return <code className={className} {...(safe as object)}>{children}</code>
     },
 
     pre: ({ children }) => {
       // Detect mermaid blocks — the inner <code className="language-mermaid">
       const child: any = (children as any)?.props ? children : null
       const cls = (child?.props?.className as string) || ''
-      const raw = String((child?.props?.children ?? '') as string).trim()
+      const raw = String((child?.props?.children ?? '') as string).replace(/\n$/, '')
       const lang = cls.match(/language-([\w-]+)/)?.[1] ?? ''
 
-      if (lang === 'mermaid' && raw) {
-        return <Mermaid source={raw} />
+      if (lang === 'mermaid' && raw.trim()) {
+        return <Mermaid source={raw.trim()} />
       }
 
       return <CodeBlock lang={lang} raw={raw}>{children}</CodeBlock>
     },
 
     table: ({ children }) => (
-      <SketchBorder
-        stroke="var(--holo)"
-        strokeWidth={1}
-        roughness={1.2}
-        padding={8}
-        className="my-4 overflow-x-auto"
-      >
-        <table className="w-full text-[13px] border-collapse">{children}</table>
-      </SketchBorder>
+      <div className="rmd-table-wrap">
+        <table className="rmd-table">{children}</table>
+      </div>
     ),
-    thead: ({ children }) => (
-      <thead className="border-b border-[var(--border-bright)]">{children}</thead>
+    th: ({ children, style }) => (
+      <th style={style}>{withInlineIcons(softBreakChildren(children))}</th>
     ),
-    tr: ({ children }) => (
-      <tr className="border-b border-[var(--border)] last:border-b-0">{children}</tr>
-    ),
-    th: ({ children }) => (
-      <th className="text-left px-2 py-1.5 font-semibold text-[var(--text-primary)] text-[11px] uppercase tracking-wider">
-        {withInlineIcons(softBreakChildren(children))}
-      </th>
-    ),
-    td: ({ children }) => (
-      <td className="px-2 py-1.5 align-top text-[var(--text-secondary)]">{withInlineIcons(children)}</td>
-    ),
+    td: ({ children, node, style }) => {
+      let status: Status | null = null
+      let short = false
+      try {
+        const text = hastText(node as HastLike).trim()
+        status = statusOf(text)
+        short = [...text].length <= 14
+      } catch { status = null }
+      return (
+        <td style={style} className={status ? clsx('rmd-status', `rmd-status--${status}`, short && 'rmd-status--short') : undefined}>
+          {/* Plain cells also get <wbr> after _ . / - (after the :icon: pass,
+              so `:cloud-rain:` still matches) — "Owner/authorized" or a file
+              name must not force the table wider than a narrow bubble. */}
+          {status ? withInlineIcons(alignLeadingGlyph(children)) : softBreakChildren(withInlineIcons(children))}
+        </td>
+      )
+    },
 
     strong: ({ children }) => (
-      <strong className="font-semibold text-[var(--text-primary)]">{withInlineIcons(children)}</strong>
+      <strong className="rmd-strong">{withInlineIcons(children)}</strong>
     ),
 
     em: ({ children }) => (
-      <em className="font-display-italic text-[var(--text-primary)]">{withInlineIcons(children)}</em>
+      <em className="rmd-em">{withInlineIcons(children)}</em>
     ),
   }
 }
 
 
-// ── Code block with a copy button on hover ────────────────────────────────
+// ── Code block: language label + copy button ───────────────────────────────
 function CodeBlock({
   lang, raw, children,
 }: {
@@ -232,37 +223,22 @@ function CodeBlock({
     } catch { /* silent */ }
   }
   return (
-    <SketchBorder
-      stroke="var(--accent)"
-      fillStyle="solid"
-      fill="rgba(0,0,0,0.35)"
-      padding={14}
-      className="my-3 overflow-x-auto group/code"
-    >
-      <div className="relative">
-        <span className="absolute -top-1 -left-1 text-[8px] font-mono uppercase tracking-[0.28em] text-[var(--text-muted)]">
-          {lang || 'code'}
-        </span>
+    <div className="rmd-codeblock group/code">
+      <div className="rmd-codeblock__bar">
+        <span className="rmd-codeblock__lang">{lang || 'code'}</span>
         <button
+          type="button"
           onClick={copy}
           title={copied ? 'Copied!' : 'Copy code'}
-          className={clsx(
-            'absolute -top-1 -right-1 flex items-center gap-1 px-1.5 py-0.5 rounded',
-            'text-[9px] font-mono uppercase tracking-widest transition-opacity',
-            'opacity-0 group-hover/code:opacity-100 focus-visible:opacity-100',
-            copied
-              ? 'text-emerald-300 bg-emerald-500/10 border border-emerald-500/30'
-              : 'text-[var(--text-muted)] glass-card hover:text-[var(--accent)] hover:border-[var(--accent)]',
-          )}
+          aria-label={copied ? 'Copied' : 'Copy code'}
+          className={clsx('rmd-codeblock__copy', copied && 'is-copied')}
         >
           {copied
-            ? <><Check className="w-2.5 h-2.5" /> copied</>
-            : <><Copy  className="w-2.5 h-2.5" /> copy</>}
+            ? <><Check className="w-3 h-3" /> copied</>
+            : <><Copy  className="w-3 h-3" /> copy</>}
         </button>
-        <pre className="mt-3 text-[12.5px] leading-relaxed font-mono text-[var(--text-primary)] overflow-x-auto whitespace-pre">
-          {children}
-        </pre>
       </div>
-    </SketchBorder>
+      <pre className="rmd-codeblock__pre">{children}</pre>
+    </div>
   )
 }

@@ -211,9 +211,21 @@ export function Mermaid({ source }: { source: string }) {
     initMermaid()
     let cancelled = false
 
+    // A failed mermaid.render leaves its temp wrapper (#d<id>, holding the
+    // "Syntax error in text" svg) appended to <body>; remove only our own.
+    const dropLeftover = (id: string) => {
+      document.getElementById('d' + id)?.remove()
+      document.getElementById(id)?.remove()
+    }
     const renderInto = async (src: string) => {
       const id = `mmd-${++_counter}`
-      const { svg } = await mermaid.render(id, src)
+      let svg: string
+      try {
+        ({ svg } = await mermaid.render(id, src))
+      } catch (err) {
+        dropLeftover(id)
+        throw err
+      }
       if (cancelled || !containerRef.current) return
       containerRef.current.innerHTML = svg
     }

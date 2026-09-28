@@ -1,0 +1,444 @@
+/* ─────────────────────────────────────────────────────────────────────────
+   Rich markdown — readable answer typography (chat, Documents, Research).
+   Everything is scoped under `.rich-md`. Sizes derive from the Display-tab
+   base font size (16px default → 15px body) so user scaling still applies.
+   Overrides of older `.rich-md*` rules in index.css use equal-or-higher
+   specificity (see `.rich-md.rich-md--report p` below).
+   ───────────────────────────────────────────────────────────────────────── */
+
+.rich-md {
+  --rmd-fs: calc(var(--font-size-base, 16px) * 0.9375);           /* 15px */
+  --rmd-measure: 72ch;
+  --rmd-line: color-mix(in oklab, var(--text-primary) 14%, transparent);
+  --rmd-line-soft: color-mix(in oklab, var(--text-primary) 8%, transparent);
+  --rmd-zebra: color-mix(in oklab, var(--text-primary) 3.5%, transparent);
+  --rmd-hover: color-mix(in oklab, var(--accent) 8%, transparent);
+  --rmd-head-bg: color-mix(in oklab, var(--accent) 10%, transparent);
+  --rmd-code-bg: color-mix(in oklab, var(--text-primary) 9%, transparent);
+  --rmd-code-fg: color-mix(in oklab, var(--accent-hover) 30%, var(--text-primary));
+  --rmd-block-bg: rgba(0, 0, 0, 0.30);
+  --rmd-ok: #22c55e;
+  --rmd-warn: #f59e0b;
+  --rmd-bad: #ef4444;
+  --rmd-tint: 13%;
+
+  font-family: var(--font-family-body, 'Manrope', system-ui, sans-serif);
+  font-size: var(--rmd-fs);
+  line-height: 1.65;
+  color: var(--text-primary);
+  letter-spacing: -0.003em;
+  overflow-wrap: break-word;
+  min-width: 0;
+}
+
+/* Light themes: deeper status/code tints so they stay visible on white glass. */
+[data-theme='spring'] .rich-md,
+[data-theme='elysian'] .rich-md {
+  --rmd-block-bg: color-mix(in oklab, var(--text-primary) 5%, transparent);
+  --rmd-code-bg: color-mix(in oklab, var(--accent) 9%, transparent);
+  --rmd-code-fg: color-mix(in oklab, var(--accent-hover) 55%, var(--text-primary));
+  --rmd-zebra: color-mix(in oklab, var(--text-primary) 3%, transparent);
+  --rmd-ok: #16a34a;
+  --rmd-warn: #d97706;
+  --rmd-bad: #dc2626;
+  --rmd-tint: 11%;
+}
+
+/* ── Vertical rhythm ─────────────────────────────────────────────────── */
+.rich-md > *,
+.rich-md .rmd-callout > * { margin: 0; }
+.rich-md > * + *,
+.rich-md .rmd-callout > * + * { margin-top: 0.8em; }
+.rich-md > :first-child { margin-top: 0; }
+.rich-md > :last-child { margin-bottom: 0; }
+
+/* ── Paragraphs & measure ────────────────────────────────────────────── */
+.rich-md p {
+  font-size: 1em;
+  line-height: 1.65;
+  color: var(--text-primary);
+}
+.rich-md p,
+.rich-md ul,
+.rich-md ol,
+.rich-md blockquote,
+.rich-md h1, .rich-md h2, .rich-md h3, .rich-md h4, .rich-md h5, .rich-md h6 {
+  max-width: var(--rmd-measure);
+}
+
+/* ── Headings: body font, semibold, clear scale ──────────────────────── */
+.rich-md h1, .rich-md h2, .rich-md h3,
+.rich-md h4, .rich-md h5, .rich-md h6 {
+  font-family: var(--font-family-body, 'Manrope', system-ui, sans-serif);
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+  font-style: normal;
+}
+.rich-md h1 { font-size: 1.3333em; font-weight: 700; letter-spacing: -0.015em; }   /* 20px */
+.rich-md h2 { font-size: 1.1333em; position: relative; padding-left: 0.72em; }     /* 17px */
+.rich-md h3 { font-size: 1em; }                                                     /* 15px */
+.rich-md h4 { font-size: 0.9333em; }                                                /* 14px */
+.rich-md h5, .rich-md h6 { font-size: 0.8667em; color: var(--text-secondary); }
+
+/* Subtle accent bar for h2 (pseudo-element → not part of textContent,
+   so the section-jump TOC still matches heading text). */
+.rich-md h2::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0.22em;
+  bottom: 0.22em;
+  width: 3px;
+  border-radius: 3px;
+  background: var(--accent);
+  opacity: 0.85;
+}
+
+/* More space above a heading than below it. */
+.rich-md > h1:not(:first-child),
+.rich-md .rmd-callout > h1:not(:first-child) { margin-top: 1.5em; }
+.rich-md > h2:not(:first-child),
+.rich-md .rmd-callout > h2:not(:first-child) { margin-top: 1.55em; }
+.rich-md > h3:not(:first-child),
+.rich-md .rmd-callout > h3:not(:first-child) { margin-top: 1.35em; }
+.rich-md > :is(h4, h5, h6):not(:first-child),
+.rich-md .rmd-callout > :is(h4, h5, h6):not(:first-child) { margin-top: 1.15em; }
+.rich-md > :is(h1, h2, h3, h4, h5, h6) + *,
+.rich-md .rmd-callout > :is(h1, h2, h3, h4, h5, h6) + * { margin-top: 0.45em; }
+.rich-md > :is(h1, h2, h3, h4, h5, h6) + :is(h1, h2, h3, h4, h5, h6):not(:first-child) { margin-top: 0.6em; }
+
+/* `**Label**` on its own line → reads as a small heading. */
+.rich-md p.rmd-lead { font-weight: 600; }
+.rich-md > p.rmd-lead:not(:first-child),
+.rich-md .rmd-callout > p.rmd-lead:not(:first-child) { margin-top: 1.25em; }
+.rich-md > p.rmd-lead + *,
+.rich-md .rmd-callout > p.rmd-lead + * { margin-top: 0.35em; }
+
+/* ── Inline ──────────────────────────────────────────────────────────── */
+.rich-md strong,
+.rich-md b { font-weight: 600; color: var(--text-primary); }
+.rich-md em,
+.rich-md i {
+  font-family: inherit;
+  font-style: italic;
+  color: inherit;
+  /* Manrope has no true italic; the synthesized slant leans into the next
+     word ("tinyC"), so give it a hair of room. */
+  padding-right: 0.08em;
+}
+.rich-md a.rmd-link {
+  color: var(--accent-hover);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklab, var(--accent) 45%, transparent);
+  text-decoration-thickness: 1.5px;
+  text-underline-offset: 2px;
+  transition: text-decoration-color 0.15s;
+}
+.rich-md a.rmd-link:hover { text-decoration-color: var(--accent); }
+
+.rich-md code.rmd-code-inline {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 0.85em;
+  padding: 0.12em 0.4em;
+  border-radius: 5px;
+  background: var(--rmd-code-bg);
+  color: var(--rmd-code-fg);
+  border: 1px solid var(--rmd-line-soft);
+  overflow-wrap: anywhere;
+  font-weight: 500;
+}
+
+/* ── Lists ───────────────────────────────────────────────────────────── */
+.rich-md ul,
+.rich-md ol {
+  padding-left: 1.45em;
+  list-style-position: outside;
+}
+.rich-md ul { list-style-type: disc; }
+.rich-md ul ul { list-style-type: circle; }
+.rich-md ul ul ul { list-style-type: square; }
+.rich-md ol { list-style-type: decimal; }
+.rich-md ol ol { list-style-type: lower-alpha; }
+.rich-md ol ol ol { list-style-type: lower-roman; }
+
+.rich-md li {
+  line-height: 1.6;
+  color: var(--text-primary);
+  padding-left: 0.2em;
+}
+.rich-md li::marker {
+  color: var(--accent);
+  font-weight: 600;
+}
+.rich-md ol > li::marker { font-variant-numeric: tabular-nums; font-size: 0.95em; }
+.rich-md li + li { margin-top: 0.4em; }
+.rich-md li > ul,
+.rich-md li > ol { margin-top: 0.35em; }
+.rich-md li > p { margin: 0; }
+.rich-md li > p + p,
+.rich-md li > p + ul,
+.rich-md li > p + ol,
+.rich-md li > * + .rmd-codeblock,
+.rich-md li > * + .rmd-table-wrap { margin-top: 0.4em; }
+
+/* GFM task lists */
+.rich-md ul.contains-task-list { list-style: none; padding-left: 0.3em; }
+.rich-md li.task-list-item { list-style: none; }
+.rich-md li.task-list-item input[type='checkbox'] {
+  margin-right: 0.5em;
+  accent-color: var(--accent);
+  transform: translateY(1px);
+}
+
+/* ── Blockquote ──────────────────────────────────────────────────────── */
+.rich-md blockquote.rmd-quote {
+  position: relative;
+  padding: 0.1em 0 0.1em 1em;
+  border-left: 3px solid color-mix(in oklab, var(--accent) 60%, transparent);
+  color: var(--text-secondary);
+  font-style: normal;
+}
+.rich-md blockquote.rmd-quote > * + * { margin-top: 0.55em; }
+.rich-md blockquote.rmd-quote p { color: inherit; }
+
+/* ── Horizontal rule (chat) ──────────────────────────────────────────── */
+.rich-md hr.rmd-hr {
+  border: 0;
+  height: 1px;
+  background: var(--rmd-line);
+  margin-top: 1.4em;
+  max-width: 100%;
+}
+.rich-md > hr.rmd-hr + * { margin-top: 1.1em; }
+
+/* ── Code blocks ─────────────────────────────────────────────────────── */
+.rich-md .rmd-codeblock {
+  position: relative;
+  border-radius: 10px;
+  border: 1px solid var(--rmd-line);
+  background: var(--rmd-block-bg);
+  overflow: hidden;
+  max-width: 100%;
+}
+.rich-md .rmd-codeblock__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 5px 8px 5px 12px;
+  border-bottom: 1px solid var(--rmd-line-soft);
+  background: color-mix(in oklab, var(--text-primary) 3%, transparent);
+}
+.rich-md .rmd-codeblock__lang {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.08em;
+  text-transform: lowercase;
+  color: var(--text-muted);
+}
+.rich-md .rmd-codeblock__copy {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 10.5px;
+  color: var(--text-muted);
+  background: transparent;
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 0.15s, color 0.15s, border-color 0.15s, background 0.15s;
+}
+.rich-md .rmd-codeblock:hover .rmd-codeblock__copy,
+.rich-md .rmd-codeblock__copy:focus-visible { opacity: 1; }
+.rich-md .rmd-codeblock__copy:hover {
+  color: var(--accent-hover);
+  border-color: var(--rmd-line);
+  background: var(--rmd-hover);
+}
+.rich-md .rmd-codeblock__copy.is-copied {
+  opacity: 1;
+  color: var(--rmd-ok);
+  border-color: color-mix(in oklab, var(--rmd-ok) 35%, transparent);
+}
+.rich-md pre.rmd-codeblock__pre {
+  margin: 0;
+  padding: 0.8em 1em 0.9em;
+  overflow-x: auto;
+  white-space: pre;
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  font-size: calc(var(--rmd-fs) * 0.8667);          /* 13px */
+  line-height: 1.6;
+  color: var(--text-primary);
+  background: transparent;
+  max-width: none;
+}
+.rich-md pre.rmd-codeblock__pre code {
+  font: inherit;
+  color: inherit;
+  background: none;
+  padding: 0;
+  border: 0;
+}
+
+/* ── Tables ──────────────────────────────────────────────────────────── */
+.rich-md .rmd-table-wrap {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--rmd-line);
+  border-radius: 10px;
+  -webkit-overflow-scrolling: touch;
+}
+.rich-md table.rmd-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: calc(var(--rmd-fs) * 0.9);             /* 13.5px */
+  line-height: 1.5;
+}
+.rich-md table.rmd-table th {
+  text-align: left;
+  font-size: calc(var(--rmd-fs) * 0.8333);          /* 12.5px */
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--text-primary);
+  background: var(--rmd-head-bg);
+  padding: 0.6em 0.75em;
+  border-bottom: 1px solid var(--rmd-line);
+  vertical-align: bottom;
+  white-space: normal;
+}
+.rich-md table.rmd-table td {
+  padding: 0.55em 0.75em;
+  vertical-align: top;
+  color: var(--text-primary);
+  border-top: 1px solid var(--rmd-line-soft);
+}
+.rich-md table.rmd-table tbody tr:first-child td { border-top: 0; }
+.rich-md table.rmd-table td:first-child { font-weight: 600; }
+.rich-md table.rmd-table tbody tr:nth-child(even) td { background: var(--rmd-zebra); }
+.rich-md table.rmd-table tbody tr:hover td { background: var(--rmd-hover); }
+.rich-md table.rmd-table code.rmd-code-inline { white-space: normal; }
+
+/* Status cells ✅ / ⚠️ / ❌ — faint matching tint, aligned glyph. */
+.rich-md table.rmd-table td.rmd-status { font-weight: 500; }
+.rich-md table.rmd-table td.rmd-status:first-child { font-weight: 600; }
+.rich-md table.rmd-table tbody tr td.rmd-status--ok {
+  background: color-mix(in oklab, var(--rmd-ok) var(--rmd-tint), transparent);
+}
+.rich-md table.rmd-table tbody tr td.rmd-status--warn {
+  background: color-mix(in oklab, var(--rmd-warn) var(--rmd-tint), transparent);
+}
+.rich-md table.rmd-table tbody tr td.rmd-status--bad {
+  background: color-mix(in oklab, var(--rmd-bad) var(--rmd-tint), transparent);
+}
+.rich-md table.rmd-table tbody tr:hover td.rmd-status--ok {
+  background: color-mix(in oklab, var(--rmd-ok) calc(var(--rmd-tint) + 6%), transparent);
+}
+.rich-md table.rmd-table tbody tr:hover td.rmd-status--warn {
+  background: color-mix(in oklab, var(--rmd-warn) calc(var(--rmd-tint) + 6%), transparent);
+}
+.rich-md table.rmd-table tbody tr:hover td.rmd-status--bad {
+  background: color-mix(in oklab, var(--rmd-bad) calc(var(--rmd-tint) + 6%), transparent);
+}
+.rich-md table.rmd-table td.rmd-status--short { white-space: nowrap; }
+.rich-md .rmd-status__icon {
+  display: inline-block;
+  width: 1.45em;
+  text-align: left;
+  font-style: normal;
+  line-height: 1;
+}
+
+/* ── Callout sections (Conclusion / Caveats …) ───────────────────────── */
+.rich-md .rmd-callout {
+  --rmd-callout: var(--accent);
+  position: relative;
+  padding: 0.85em 1.1em 0.95em;
+  border-radius: 12px;
+  border: 1px solid color-mix(in oklab, var(--rmd-callout) 32%, transparent);
+  background: color-mix(in oklab, var(--rmd-callout) 7%, transparent);
+  max-width: 100%;
+}
+.rich-md .rmd-callout--caution { --rmd-callout: var(--rmd-warn); }
+.rich-md > .rmd-callout:not(:first-child) { margin-top: 1.2em; }
+.rich-md > .rmd-callout + * { margin-top: 1.1em; }
+.rich-md .rmd-callout > :first-child { margin-top: 0; }
+.rich-md .rmd-callout > :is(h1, h2, h3, h4, h5, h6):first-child,
+.rich-md .rmd-callout > p.rmd-lead:first-child {
+  color: color-mix(in oklab, var(--rmd-callout) 45%, var(--text-primary));
+}
+.rich-md .rmd-callout > h2:first-child::before { background: var(--rmd-callout); }
+[data-theme='spring'] .rich-md .rmd-callout > :is(h1, h2, h3, h4, h5, h6, p.rmd-lead):first-child,
+[data-theme='elysian'] .rich-md .rmd-callout > :is(h1, h2, h3, h4, h5, h6, p.rmd-lead):first-child {
+  color: color-mix(in oklab, var(--rmd-callout) 55%, var(--text-primary));
+}
+.rich-md .rmd-callout > p.rmd-lead:first-child strong { color: inherit; }
+/* `**Conclusion**  ⏎ text…` in one paragraph: tint just the label. */
+.rich-md .rmd-callout > p:first-child:not(.rmd-lead) > strong:first-child {
+  color: color-mix(in oklab, var(--rmd-callout) 45%, var(--text-primary));
+}
+[data-theme='spring'] .rich-md .rmd-callout > p:first-child:not(.rmd-lead) > strong:first-child,
+[data-theme='elysian'] .rich-md .rmd-callout > p:first-child:not(.rmd-lead) > strong:first-child {
+  color: color-mix(in oklab, var(--rmd-callout) 55%, var(--text-primary));
+}
+
+/* ── Images / Mermaid ────────────────────────────────────────────────── */
+.rich-md img { max-width: 100%; height: auto; border-radius: 8px; }
+/* Mermaid measures its HTML labels off-screen with the body metrics; keep the
+   answer typography (line-height 1.65, 72ch, text colour) out of them or the
+   labels overflow their boxes and get clipped. (Doubled class so it also
+   beats `.rich-md.rich-md--report p` and index.css `.rich-md--report p`.) */
+.rich-md.rich-md svg foreignObject p,
+.rich-md.rich-md svg foreignObject span {
+  font-size: inherit;
+  line-height: inherit;          /* mermaid sets 1.5 on the label <div> */
+  letter-spacing: inherit;
+  font-weight: inherit;
+  color: inherit;
+  max-width: none;
+  margin: 0;
+}
+
+.rich-md.rich-md svg foreignObject > div { letter-spacing: var(--letter-spacing-base, normal); }
+
+/* ── Research report variant ─────────────────────────────────────────── */
+/* index.css sets `.rich-md--report p, li { 14.5px; 1.7 }` — override. */
+.rich-md.rich-md--report p,
+.rich-md.rich-md--report li {
+  font-size: 1em;
+  line-height: 1.68;
+}
+.rich-md.rich-md--report p.rmd-lede {
+  font-size: 1.0667em;                               /* 16px */
+  line-height: 1.65;
+  color: var(--text-primary);
+}
+.rich-md.rich-md--report h1.rmd-h1--display {
+  font-family: 'Fraunces', Georgia, serif;
+  font-size: 1.9em;
+  font-weight: 500;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  position: relative;
+  padding-left: 0.55em;
+}
+.rich-md.rich-md--report > h1.rmd-h1--display + * { margin-top: 0.75em; }
+.rich-md.rich-md--report .rmd-h1__bar {
+  position: absolute;
+  left: 0;
+  top: 0.12em;
+  bottom: 0.12em;
+  width: 3px;
+  border-radius: 999px;
+  background: linear-gradient(180deg, var(--accent), var(--holo));
+  box-shadow: 0 0 10px var(--accent-glow);
+}
+/* The ornamental divider already carries its own margin. */
+.rich-md.rich-md--report > .rmd-ornament { margin-top: 1.6em; margin-bottom: 0; }
+.rich-md.rich-md--report > .rmd-ornament + * { margin-top: 1.2em; }
