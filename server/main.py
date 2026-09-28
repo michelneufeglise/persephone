@@ -5387,6 +5387,32 @@ async def kg_get_stats():
         raise HTTPException(500, str(e))
 
 
+@app.get("/api/kg/relation-evidence")
+async def kg_relation_evidence(id: str):
+    """Provenance of one knowledge-graph relation (evidence panel): relation +
+    props, source document, conversation / run / timestamp, a text snippet from
+    the source document and — for signature relations — the crop URLs."""
+    def _doc_text(doc_id: str):
+        d = _idp.get_document(doc_id)
+        return getattr(d, "text", None) if d else None
+
+    def _crop_exists(run_id: str, name: str) -> bool:
+        try:
+            import signature_engine as _se
+            return _se.safe_crop_path(_signatures_dir(), run_id, name) is not None
+        except Exception:
+            return False
+
+    try:
+        ev = await _kg_store.relation_evidence(id, get_doc_text=_doc_text, crop_exists=_crop_exists)
+    except Exception as e:
+        log.error(f"kg_relation_evidence failed: {e}")
+        raise HTTPException(500, str(e))
+    if not ev:
+        raise HTTPException(404, "Relation not found")
+    return ev
+
+
 @app.delete("/api/kg")
 async def kg_reset():
     """Reset the knowledge graph (delete all data)."""

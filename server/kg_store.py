@@ -574,6 +574,7 @@ def _conversation_entity_ids(
     entity_ids.update(doc_entities)
 
     # Breadth-first expansion from the documents over all relations
+    own_docs = set(doc_entities)
     frontier = list(doc_entities)
     for _ in range(hops):
         if not frontier or len(entity_ids) >= limit:
@@ -589,6 +590,12 @@ def _conversation_entity_ids(
             )
             for r in cur.fetchall():
                 for nb in (r["src_id"], r["dst_id"]):
+                    # Never pull in documents the conversation didn't use: a
+                    # shared signature card / person would otherwise drag in
+                    # every other letter verified against it (a genuine and a
+                    # forged letter showing up in each other's graph).
+                    if nb.startswith("document:") and nb not in own_docs:
+                        continue
                     if nb not in entity_ids and len(entity_ids) < limit:
                         entity_ids.add(nb)
                         nxt.append(nb)
@@ -1297,6 +1304,260 @@ async def stats() -> dict:
     return await asyncio.to_thread(_stats_sync)
 
 
+# ── Relation evidence (provenance for the KG evidence panel) ──
+
+SIGNATURE_RELATIONS = ("signed", "verified_against", "signature_specimen")
+_EVIDENCE_KEYWORDS = {
+    "owns": ("owner", "eigenaar", "proprietor", "authorised", "authorized", "bevoegd", "owns"),
+    "works_at": ("work", "employer", "werkzaam", "company", "organisation", "organization"),
+    "has_role": ("role", "functie", "title", "position", "architect", "engineer", "manager"),
+}
+
+
+def _fold(text: str) -> str:
+    """Lower-case, accent-free copy of `text` with the SAME length (one output
+    char per input char), so positions found in the fold map back 1:1."""
+    out = []
+    for c in text or "":
+        d = unicodedata.normalize("NFKD", c)
+        base = next((x for x in d if unicodedata.category(x) != "Mn"), c)
+        low = base.lower()
+        out.append(low[0] if low else c)
+    return "".join(out)
+
+
+def _evidence_snippet(text: str, anchors: list, keywords: tuple = (), radius: int = 95) -> Optional[str]:
+    """Text window around the best occurrence of one of `anchors` (names) in
+    `text`: occurrences near relation keywords ("owner", …) and near the other
+    anchors win. Snapped to line breaks; "…" marks cut ends. None if no anchor
+    occurs."""
+    if not text:
+        return None
+    tf = _fold(text)
+    folded = [(_fold(a.strip()), i) for i, a in enumerate(anchors) if isinstance(a, str) and len(a.strip()) >= 2]
+    best = None  # (score, pos, len)
+    for af, rank in folded:
+        start = 0
+        while True:
+            pos = tf.find(af, start)
+            if pos < 0:
+                break
+            win = tf[max(0, pos - 220): pos + len(af) + 220]
+            score = 3 * sum(1 for k in keywords if k in win)
+            score += 2 * sum(1 for other, r in folded if r != rank and other in win)
+            score -= rank
+            if best is None or score > best[0]:
+                best = (score, pos, len(af))
+            start = pos + 1
+    if best is None:
+        return None
+    _, pos, ln = best
+    a = max(0, pos - radius)
+    b = min(len(text), pos + ln + radius)
+    nl = text.rfind("\n", 0, a)
+    if a > 0 and nl != -1 and a - nl < 80:
+        a = nl + 1
+    nl = text.find("\n", b)
+    if nl != -1 and nl - b < 80:
+        b = nl
+    snippet = text[a:b].strip()
+    if not snippet:
+        return None
+    return ("… " if a > 0 else "") + snippet + (" …" if b < len(text) else "")
+
+
+def _evidence_entity(conn: sqlite3.Connection, entity_id: str) -> dict:
+    row = conn.execute("SELECT id, type, name, props FROM kg_entities WHERE id=?", (entity_id,)).fetchone()
+    if not row:
+        return {"id": entity_id, "type": entity_id.split(":", 1)[0], "name": entity_id, "props": {}}
+    return {"id": row["id"], "type": row["type"], "name": row["name"], "props": json.loads(row["props"] or "{}")}
+
+
+def _evidence_doc(ent: Optional[dict]) -> Optional[dict]:
+    if not ent or ent.get("type") != "document":
+        return None
+    props = ent.get("props") or {}
+    return {
+        "entity_id": ent["id"],
+        "doc_id": props.get("doc_id") or ent["id"].split(":", 1)[-1],
+        "filename": props.get("filename") or ent.get("name") or "",
+        "kind": props.get("kind") or "",
+        "signature_card": bool(props.get("signature_card")),
+    }
+
+
+def _relation_evidence_sync(relation_id: str, get_doc_text=None, crop_exists=None) -> Optional[dict]:
+    """Provenance of one relation: the relation (type, confidence, props, run,
+    conversation, timestamp), its endpoints, the source document, a text
+    snippet from that document around the names (document text via
+    `get_doc_text(doc_id)`, else the stored mention snippet) and — for
+    signature relations — score / band / references and the crop URLs (stored
+    on the relation since this version; for older data derived from the run id
+    when `crop_exists(run_id, name)` confirms the file). None if unknown."""
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT id, src_id, dst_id, type, confidence, source, props, run_id, conversation_id, created_at "
+            "FROM kg_relations WHERE id=?",
+            (relation_id,),
+        ).fetchone()
+        if not row:
+            return None
+        rtype = row["type"]
+        props = json.loads(row["props"] or "{}")
+        src = _evidence_entity(conn, row["src_id"])
+        dst = _evidence_entity(conn, row["dst_id"])
+        relation = {
+            "id": row["id"], "src": row["src_id"], "dst": row["dst_id"], "type": rtype,
+            "confidence": row["confidence"], "source": row["source"], "props": props,
+            "run_id": row["run_id"], "conversation_id": row["conversation_id"], "created_at": row["created_at"],
+        }
+
+        conversation = None
+        if row["conversation_id"]:
+            conversation = {"id": row["conversation_id"], "title": None}
+            try:
+                c = conn.execute("SELECT title FROM conversations WHERE id=?", (row["conversation_id"],)).fetchone()
+                if c:
+                    conversation["title"] = c["title"]
+            except sqlite3.OperationalError:
+                pass  # conversations table absent (tests)
+
+        # ── Source document ──
+        source_ent: Optional[dict] = None
+        reference_ent: Optional[dict] = None
+        if rtype == "verified_against":
+            source_ent, reference_ent = src, dst
+        elif rtype == "signature_specimen":
+            source_ent = src
+        elif dst["type"] == "document":
+            source_ent = dst
+        elif src["type"] == "document":
+            source_ent = src
+        else:
+            # A document both endpoints are mentioned in (same run first)
+            r = conn.execute(
+                "SELECT r1.dst_id AS doc, "
+                "  (COALESCE(r1.run_id, '') = ?) + (COALESCE(r2.run_id, '') = ?) AS same_run, "
+                "  (COALESCE(r1.conversation_id, '') = ?) AS same_conv "
+                "FROM kg_relations r1 JOIN kg_relations r2 ON r1.dst_id = r2.dst_id "
+                "WHERE r1.src_id=? AND r2.src_id=? AND r1.type='mentioned_in' AND r2.type='mentioned_in' "
+                "ORDER BY same_run DESC, same_conv DESC LIMIT 1",
+                (row["run_id"] or "", row["run_id"] or "", row["conversation_id"] or "", row["src_id"], row["dst_id"]),
+            ).fetchone()
+            if not r:
+                r = conn.execute(
+                    "SELECT dst_id AS doc FROM kg_relations WHERE src_id=? AND type='mentioned_in' "
+                    "ORDER BY (COALESCE(run_id, '') = ?) DESC, (COALESCE(conversation_id, '') = ?) DESC, created_at DESC LIMIT 1",
+                    (row["src_id"], row["run_id"] or "", row["conversation_id"] or ""),
+                ).fetchone()
+            if r:
+                source_ent = _evidence_entity(conn, r["doc"])
+
+        # Signed letter → the card it was verified against
+        va = None
+        if rtype == "signed" and dst["type"] == "document":
+            for v in conn.execute(
+                "SELECT dst_id, props, run_id FROM kg_relations WHERE src_id=? AND type='verified_against' ORDER BY created_at DESC",
+                (row["dst_id"],),
+            ).fetchall():
+                vp = json.loads(v["props"] or "{}")
+                if va is None or _normalize_text(vp.get("person") or "") == _normalize_text(src["name"]):
+                    va = {"dst": v["dst_id"], "props": vp, "run_id": v["run_id"]}
+            if va:
+                reference_ent = _evidence_entity(conn, va["dst"])
+        elif rtype == "signature_specimen":
+            v = conn.execute(
+                "SELECT src_id, props, run_id FROM kg_relations WHERE dst_id=? AND type='verified_against' ORDER BY created_at DESC LIMIT 1",
+                (row["src_id"],),
+            ).fetchone()
+            if v:
+                va = {"src": v["src_id"], "props": json.loads(v["props"] or "{}"), "run_id": v["run_id"]}
+                reference_ent = src
+                source_ent = _evidence_entity(conn, v["src_id"])
+
+        source_doc = _evidence_doc(source_ent)
+        reference_doc = _evidence_doc(reference_ent)
+
+        # ── Text snippet ──
+        snippet = None
+        snippet_source = None
+        highlights = [n for n, e in ((src["name"], src), (dst["name"], dst)) if e["type"] != "document"]
+        if rtype not in SIGNATURE_RELATIONS and source_doc:
+            anchors = [e["name"] for e in (src, dst) if e["type"] != "document"]
+            text = None
+            if get_doc_text is not None:
+                try:
+                    text = get_doc_text(source_doc["doc_id"])
+                except Exception:
+                    text = None
+            snippet = _evidence_snippet(text or "", anchors, _EVIDENCE_KEYWORDS.get(rtype, ()))
+            if snippet:
+                snippet_source = "document"
+            else:
+                for eid in (row["src_id"], row["dst_id"]):
+                    m = conn.execute(
+                        "SELECT snippet FROM kg_mentions WHERE entity_id=? AND doc_id=? AND snippet IS NOT NULL AND snippet != '' LIMIT 1",
+                        (eid, source_doc["doc_id"]),
+                    ).fetchone()
+                    if m:
+                        snippet, snippet_source = m["snippet"], "mention"
+                        break
+
+        # ── Signature check ──
+        signature = None
+        if rtype in SIGNATURE_RELATIONS:
+            sp = dict((va or {}).get("props") or {})
+            sp.update({k: v for k, v in props.items() if v is not None})
+            sig_run = (va or {}).get("run_id") or row["run_id"]
+            crops = sp.get("crops") if isinstance(sp.get("crops"), dict) else None
+            crops_source = "stored" if crops else None
+            if not crops and sig_run and crop_exists is not None:
+                try:
+                    n = int(sp.get("n_references") or 0)
+                except (TypeError, ValueError):
+                    n = 0
+                q = f"/api/idp/signatures/{sig_run}/questioned.png" if crop_exists(sig_run, "questioned.png") else None
+                refs = [
+                    f"/api/idp/signatures/{sig_run}/ref_{i}.png"
+                    for i in range(1, min(max(n, 0), 12) + 1)
+                    if crop_exists(sig_run, f"ref_{i}.png")
+                ]
+                if q or refs:
+                    crops = {"questioned": q, "references": refs}
+                    crops_source = "derived"
+            signature = {
+                "score": sp.get("score"),
+                "band": sp.get("band"),
+                "n_references": sp.get("n_references"),
+                "verified_at": sp.get("verified_at"),
+                "person": sp.get("person"),
+                "questioned": (crops or {}).get("questioned"),
+                "references": list((crops or {}).get("references") or []),
+                "crops_source": crops_source,
+            }
+
+        return {
+            "relation": relation,
+            "src_entity": {"id": src["id"], "type": src["type"], "name": src["name"]},
+            "dst_entity": {"id": dst["id"], "type": dst["type"], "name": dst["name"]},
+            "source_doc": source_doc,
+            "reference_doc": reference_doc,
+            "conversation": conversation,
+            "snippet": snippet,
+            "snippet_source": snippet_source,
+            "highlights": highlights,
+            "signature": signature,
+        }
+    finally:
+        conn.close()
+
+
+async def relation_evidence(relation_id: str, get_doc_text=None, crop_exists=None) -> Optional[dict]:
+    """Async wrapper for _relation_evidence_sync."""
+    return await asyncio.to_thread(_relation_evidence_sync, relation_id, get_doc_text, crop_exists)
+
+
 # ── Ingest handler: populate graph after doc agent runs ──
 
 
@@ -1588,18 +1849,26 @@ async def ingest_run(
     verified_at), card —signature_specimen→ person and person —signed→ letter
     (props confidence / band; omitted when the band is "inconsistent").
 
-    Returns {"entities": N, "relations": N, "mentions": N, "entity_list": [...]}
-    where the counts are NEW rows only (re-running the same question adds 0).
+    Returns {"entities": N, "relations": N, "mentions": N, "entity_list": [...],
+    "entities_seen": N, "relations_seen": N, "mentions_seen": N}: "entities" /
+    "relations" / "mentions" count NEW rows only (re-running the same question
+    adds 0); the "*_seen" counts are the distinct rows this run touched (new or
+    already known), i.e. what the run contributed to the knowledge store.
     """
     from doc_web import name_matches as _name_matches
     from doc_web import looks_like_organization as _looks_like_org
     from doc_web import _is_generic_role as _generic_role, _is_bad_org as _bad_org
 
-    counts = {"entities": 0, "relations": 0, "mentions": 0, "entity_list": []}
+    counts = {
+        "entities": 0, "relations": 0, "mentions": 0, "entity_list": [],
+        "entities_seen": 0, "relations_seen": 0, "mentions_seen": 0,
+    }
     if not subject_docs:
         return counts
 
     listed: set = set()
+    seen_relations: set = set()
+    seen_mentions: set = set()
 
     async def _entity(type_: str, name: str, props: Optional[dict] = None, entity_id: Optional[str] = None) -> str:
         eid, created = await asyncio.to_thread(_upsert_entity_ex_sync, type_, name, props, entity_id)
@@ -1608,27 +1877,32 @@ async def ingest_run(
         if (type_, eid) not in listed:
             listed.add((type_, eid))
             counts["entity_list"].append({"name": name, "type": type_})
+            counts["entities_seen"] = len(listed)
         return eid
 
     async def _relation(
         src: str, dst: str, type_: str, confidence: float, source: str, props: Optional[dict] = None,
         replace: bool = False,
     ) -> None:
-        _, created = await asyncio.to_thread(
+        rid, created = await asyncio.to_thread(
             _add_relation_ex_sync, src, dst, type_,
             confidence=confidence, source=source, run_id=run_id, conversation_id=conversation_id,
             props=props, replace_confidence=replace,
         )
         if created:
             counts["relations"] += 1
+        seen_relations.add(rid)
+        counts["relations_seen"] = len(seen_relations)
 
     async def _mention(entity_id: str, doc_id: str, chunk_id, snippet) -> None:
-        _, created = await asyncio.to_thread(
+        mid, created = await asyncio.to_thread(
             _add_mention_ex_sync, entity_id, doc_id,
             chunk_id=chunk_id, snippet=snippet, run_id=run_id, conversation_id=conversation_id,
         )
         if created:
             counts["mentions"] += 1
+        seen_mentions.add(mid)
+        counts["mentions_seen"] = len(seen_mentions)
 
     people: list[dict] = []
     for p in (persons or ([person] if person else [])):
@@ -1652,6 +1926,7 @@ async def ingest_run(
             # nothing else about it (e.g. general_question) — drives the
             # conversation graph scope.
             await asyncio.to_thread(_link_conversation_doc_sync, conversation_id, doc_id, run_id)
+            await _link_entity_doc(conversation_id, doc_entity_id, doc_id, run_id)
 
             for pers in people:
                 if pers.get("doc_id") and pers["doc_id"] != doc_id:
@@ -1773,6 +2048,9 @@ async def ingest_run(
                     )
                     if created:
                         counts["entities"] += 1
+                    if ("profile", profile_entity_id) not in listed:
+                        listed.add(("profile", profile_entity_id))
+                        counts["entities_seen"] = len(listed)
 
                     # Likely match: first URL cited on its platform's "Likely match found"
                     # verdict line (or, for the legacy single verdict, the first cited URL).
@@ -1798,6 +2076,38 @@ async def ingest_run(
         return counts
 
 
+
+async def _link_entity_doc(conversation_id, entity_id: str, doc_id: str, run_id=None) -> None:
+    """A re-uploaded file resolves to the EXISTING document entity (same file
+    name → document:<first upload id>), so the conversation must also be linked
+    to that entity's id — otherwise the conversation graph scope loses the
+    document once a later run moves the shared relations to its conversation."""
+    if not conversation_id or not isinstance(entity_id, str) or not entity_id.startswith("document:"):
+        return
+    ent_doc = entity_id.split(":", 1)[1]
+    if ent_doc and ent_doc != doc_id:
+        await asyncio.to_thread(_link_conversation_doc_sync, conversation_id, ent_doc, run_id)
+
+_CROP_URL_RE = re.compile(r"^/api/idp/signatures/[A-Za-z0-9_-]{1,64}/[A-Za-z0-9_.-]{1,64}\.png$")
+
+
+def _signature_crops(signature: dict) -> Optional[dict]:
+    """{"questioned": url, "references": [url, …]} — the signature crops of the
+    check (served by /api/idp/signatures/…), stored on the relation so the
+    evidence panel can show them. None when the payload has no valid URLs."""
+    def _ok(u) -> bool:
+        return isinstance(u, str) and bool(_CROP_URL_RE.match(u))
+
+    q = signature.get("questioned_url")
+    refs = [u for u in (signature.get("reference_urls") or []) if _ok(u)][:12]
+    out: dict = {}
+    if _ok(q):
+        out["questioned"] = q
+    if refs:
+        out["references"] = refs
+    return out or None
+
+
 async def _ingest_signature(signature: dict, _entity, _relation, looks_like_org, conversation_id, run_id) -> None:
     def _doc_props(d, extra: Optional[dict] = None) -> dict:
         did = getattr(d, "id", "unknown")
@@ -1811,6 +2121,7 @@ async def _ingest_signature(signature: dict, _entity, _relation, looks_like_org,
         "document", getattr(letter, "filename", "document"), _doc_props(letter),
         entity_id=f"document:{getattr(letter, 'id', 'unknown')}",
     )
+    await _link_entity_doc(conversation_id, letter_eid, getattr(letter, "id", "unknown"), run_id)
     try:
         score = int(round(float(signature.get("score"))))
     except (TypeError, ValueError):
@@ -1822,6 +2133,9 @@ async def _ingest_signature(signature: dict, _entity, _relation, looks_like_org,
         props["n_references"] = int(signature["n_references"])
     if signature.get("verified_at"):
         props["verified_at"] = str(signature["verified_at"])
+    crops = _signature_crops(signature)
+    if crops:
+        props["crops"] = crops
     pname = (signature.get("person") or "").strip()
     person_id = None
     if pname and not looks_like_org(pname):
@@ -1832,6 +2146,7 @@ async def _ingest_signature(signature: dict, _entity, _relation, looks_like_org,
             entity_id=f"document:{getattr(card, 'id', 'unknown')}",
         )
         await asyncio.to_thread(_link_conversation_doc_sync, conversation_id, getattr(card, "id", "unknown"), run_id)
+        await _link_entity_doc(conversation_id, card_eid, getattr(card, "id", "unknown"), run_id)
         await _relation(
             letter_eid, card_eid, "verified_against", conf, "signature_engine",
             {**props, **({"person": pname} if pname else {})}, replace=True,

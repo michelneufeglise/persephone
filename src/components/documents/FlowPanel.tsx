@@ -98,7 +98,7 @@ export function FlowPanel({ tiles, running, title = 'Model flow', hideHeader = f
       {/* Tiles container */}
       <div
         ref={containerRef}
-        className="flex-1 overflow-y-auto px-4 py-4 space-y-2"
+        className="flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 space-y-2 min-w-0"
         style={{ scrollbarWidth: 'thin', scrollbarColor: 'var(--scrollbar) transparent' }}
       >
         <AnimatePresence initial={false}>
@@ -106,7 +106,7 @@ export function FlowPanel({ tiles, running, title = 'Model flow', hideHeader = f
             <motion.div
               key={tile.id}
               ref={idx === tiles.length - 1 ? lastTileRef : null}
-              className="relative"
+              className="relative min-w-0"
               initial={{ opacity: 0, y: -14 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.28, ease: [0.22, 1, 0.36, 1] }}

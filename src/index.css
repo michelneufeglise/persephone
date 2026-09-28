@@ -814,12 +814,27 @@ html[data-motion="none"] .composer-ghost.is-speaking { animation: none; }
   .kg-pipeline .react-flow__edge.kg-edge-active .react-flow__edge-path { animation: none; }
 }
 
-/* Knowledge graph → Entities view edges (same flows.css override story as above). */
+/* Knowledge graph → Entities view edges (same flows.css override story as above).
+   Verification relations (owns / works_at / signed / verified_against /
+   signature_specimen) are solid and heavier; mentioned_in is a thin dashed line. */
 .kg-entities .react-flow__edge.kg-ent-edge .react-flow__edge-path {
   stroke: var(--text-secondary) !important;
-  stroke-width: 1.5px !important;
+  stroke-width: 1.6px !important;
   stroke-linecap: round;
   filter: none;
+  transition: stroke-width 150ms ease, opacity 150ms ease;
+}
+.kg-entities .react-flow__edge.kg-ent-edge-owns .react-flow__edge-path {
+  stroke: var(--gold) !important;
+  stroke-width: 2.6px !important;
+}
+.kg-entities .react-flow__edge.kg-ent-edge-works_at .react-flow__edge-path {
+  stroke: var(--text-secondary) !important;
+  stroke-width: 2.2px !important;
+}
+.kg-entities .react-flow__edge.kg-ent-edge-has_role .react-flow__edge-path {
+  stroke: var(--holo) !important;
+  stroke-width: 1.8px !important;
 }
 .kg-entities .react-flow__edge.kg-ent-edge-likely_profile .react-flow__edge-path {
   stroke: var(--accent) !important;
@@ -828,28 +843,135 @@ html[data-motion="none"] .composer-ghost.is-speaking { animation: none; }
 }
 .kg-entities .react-flow__edge.kg-ent-edge-candidate_profile .react-flow__edge-path {
   stroke: var(--text-muted) !important;
-  stroke-width: 1.4px !important;
+  stroke-width: 1.2px !important;
   stroke-dasharray: 5 4 !important;
-  opacity: 0.6;
+  opacity: 0.55;
 }
 .kg-entities .react-flow__edge.kg-ent-edge-signed .react-flow__edge-path {
   stroke: rgb(16 185 129) !important;
-  stroke-width: 2px !important;
+  stroke-width: 2.8px !important;
 }
 .kg-entities .react-flow__edge.kg-ent-edge-verified_against .react-flow__edge-path {
   stroke: #a78bfa !important;
-  stroke-width: 1.8px !important;
-  stroke-dasharray: 6 4 !important;
+  stroke-width: 2.4px !important;
 }
 .kg-entities .react-flow__edge.kg-ent-edge-signature_specimen .react-flow__edge-path {
-  stroke: var(--gold) !important;
-  stroke-width: 1.6px !important;
-  stroke-dasharray: 3 3 !important;
+  stroke: #a78bfa !important;
+  stroke-width: 2px !important;
+  opacity: 0.8;
 }
+.kg-entities .react-flow__edge.kg-ent-band-inconclusive .react-flow__edge-path { stroke: rgb(245 158 11) !important; }
+.kg-entities .react-flow__edge.kg-ent-band-inconsistent .react-flow__edge-path { stroke: rgb(239 68 68) !important; }
 .kg-entities .react-flow__edge.kg-ent-edge-mentioned_in .react-flow__edge-path {
   stroke: var(--text-muted) !important;
-  stroke-dasharray: 1.5 4 !important;
-  opacity: 0.8;
+  stroke-width: 1.1px !important;
+  stroke-dasharray: 3 4 !important;
+  opacity: 0.55;
+}
+.kg-entities .react-flow__edge.kg-ent-hover .react-flow__edge-path { opacity: 1; stroke-width: 3px !important; }
+.kg-entities .react-flow__edge.kg-ent-selected .react-flow__edge-path {
+  opacity: 1;
+  stroke-width: 3.4px !important;
+  filter: drop-shadow(0 0 4px var(--accent-glow));
+}
+.kg-entities .react-flow__edge.kg-ent-dim .react-flow__edge-path { opacity: 0.18; }
+.kg-entities .react-flow__edge-interaction { cursor: pointer; }
+/* Entities edge label pills (HTML, placed along the edge without collisions) */
+.kg-entities .kg-ent-label {
+  position: absolute;
+  pointer-events: all;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+  font-size: 10.5px;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 999px;
+  color: var(--text-secondary);
+  background: var(--bg-glass-strong);
+  border: 1px solid var(--border-glass);
+  box-shadow: var(--shadow-soft);
+  font-family: var(--font-family-body);
+  z-index: 5;
+}
+.kg-entities .kg-ent-label.is-primary { color: var(--text-primary); font-weight: 600; }
+.kg-entities .kg-ent-label.is-secondary { font-size: 9.5px; opacity: 0.9; }
+.kg-entities .kg-ent-label.is-selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent), var(--shadow-soft); }
+.kg-entities .kg-ent-label:hover { border-color: var(--accent); opacity: 1; }
+.kg-entities .kg-ent-label.is-dim { opacity: 0.6; }
+.kg-entities .kg-ent-label__score { border-radius: 999px; padding: 2px 5px; font-weight: 700; font-size: 9.5px; }
+.kg-entities .kg-ent-label__more { color: var(--text-muted); font-weight: 500; font-size: 9.5px; }
+
+/* Knowledge graph → story strip + evidence panel */
+.kg-story {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--glass-stroke);
+  background: color-mix(in oklab, var(--bg-glass-strong) 70%, transparent);
+  min-width: 0;
+}
+.kg-story__step { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; }
+.kg-story__arrow { color: var(--text-muted); font-size: 12px; flex-shrink: 0; }
+.kg-story__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: 12px;
+  line-height: 1.35;
+  color: var(--text-primary);
+  background: color-mix(in oklab, var(--chip-tone) 9%, transparent);
+  border: 1px solid color-mix(in oklab, var(--chip-tone) 32%, transparent);
+  transition: background 150ms ease, border-color 150ms ease;
+  text-align: left;
+}
+.kg-story__chip:hover { background: color-mix(in oklab, var(--chip-tone) 16%, transparent); border-color: color-mix(in oklab, var(--chip-tone) 60%, transparent); }
+.kg-story__chip.is-active { border-color: var(--chip-tone); box-shadow: 0 0 0 1px var(--chip-tone); }
+.kg-story__chip.is-person { font-weight: 600; }
+.kg-story__verb { color: var(--text-muted); }
+.kg-story__text { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.kg-story__note { color: var(--text-secondary); white-space: nowrap; }
+.kg-story__chip.is-bad .kg-story__text, .kg-story__chip.is-bad .kg-story__note { color: var(--chip-tone); }
+.kg-story__chip.is-warn .kg-story__note { color: var(--chip-tone); }
+.kg-story__badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: rgb(16 185 129);
+  background: color-mix(in oklab, rgb(16 185 129) 14%, transparent);
+}
+/* Entities: leave room for the evidence panel (the graph refits into the rest) */
+.kg-entities.kg-panel-open > .react-flow { width: calc(100% - 21rem) !important; }
+.glass-strong.kg-side-panel { background: color-mix(in oklab, var(--bg-solid-secondary) 94%, transparent); }
+.kg-evidence-snippet {
+  margin: 0;
+  padding: 8px 10px;
+  border-left: 2px solid var(--accent);
+  border-radius: 0 10px 10px 0;
+  background: color-mix(in oklab, var(--text-muted) 7%, transparent);
+  color: var(--text-secondary);
+  font-size: 0.74rem;
+  line-height: 1.45;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+.kg-evidence-mark {
+  background: color-mix(in oklab, var(--accent) 22%, transparent);
+  color: var(--text-primary);
+  border-radius: 3px;
+  padding: 0 2px;
 }
 
 /* Knowledge graph → structured Network + Layers (KgRunView). The edge paths use

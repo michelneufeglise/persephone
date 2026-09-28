@@ -1,6 +1,7 @@
 import { MarkerType, type Node, type Edge } from '@xyflow/react'
 import { signatureData, type Tile, type KGGraph } from '@/lib/docAgent'
 import { targetsLabel } from './socialPlatforms'
+import { friendlyDocName, markdownPreview, storeCounts } from './kgFormat'
 
 /**
  * Pure builder for the Knowledge-graph "Pipeline" view: turns ONE doc-agent
@@ -44,6 +45,8 @@ interface PipelineNodeFields {
   fullText?: string
   /** Band only: stats shown on the right of the band title. */
   stats?: string
+  /** Unused tool rendered as a small grey chip. */
+  compact?: boolean
 }
 
 export interface PipelineNodeData extends PipelineNodeFields, Record<string, unknown> {
@@ -90,9 +93,9 @@ function clip(text: string, max: number): string {
   return t.length > max ? `${t.slice(0, max - 1).trimEnd()}…` : t
 }
 
-/** Strip the most common markdown noise for a one-line preview. */
+/** Markdown answer → readable one-line preview ("Letter — The letter was…"). */
 function plainPreview(md: string, max: number): string {
-  return clip(md.replace(/[#*_`>|]+/g, ' ').replace(/\[([^\]]*)\]\([^)]*\)/g, '$1'), max)
+  return markdownPreview(md, max)
 }
 
 /** `hf.co/org/Some-Model:q4` → `Some-Model:q4` */
@@ -119,6 +122,10 @@ interface RunDoc {
   role?: string
   /** Characters extracted for this doc (0 when the tile detail has no count). */
   chars: number
+  /** Friendly display name ("Handwritten letter"). */
+  display?: string
+  /** The run read / OCR'd this document (an extract tile exists). */
+  read?: boolean
 }
 
 /**
@@ -136,8 +143,9 @@ function runDocuments(extractTiles: Tile[], decisions: { id: string; label: stri
     if (prev) {
       if (!prev.name && t.doc?.name) prev.name = t.doc.name
       prev.chars = Math.max(prev.chars, chars)
+      prev.read = prev.read || t.status !== 'skipped'
     } else {
-      out.set(id, { id, name: t.doc?.name || '', chars })
+      out.set(id, { id, name: t.doc?.name || '', chars, read: t.status !== 'skipped' })
     }
   }
   for (const d of decisions) {
@@ -154,7 +162,15 @@ function runDocuments(extractTiles: Tile[], decisions: { id: string; label: stri
       out.set(id, { id, name, role: d.value || undefined, chars: 0 })
     }
   }
-  return [...out.values()].map(d => ({ ...d, name: d.name || d.id }))
+  return [...out.values()].map(d => {
+    const name = d.name || d.id
+    return { ...d, name, display: friendlyDocName(name, { role: d.role }) }
+  })
+}
+
+/** Friendly name for a file name seen in a tile / decision label. */
+function docLabel(name: string, role?: string | null): string {
+  return friendlyDocName(name, { role: role || undefined })
 }
 
 export function buildPipeline(
@@ -273,7 +289,7 @@ export function buildPipeline(
   addNode('answer', ANSWER_X, 210, W, 116, {
     role: 'answer',
     kindLabel: 'Answer',
-    label: answer ? plainPreview(answer, 80) : '…',
+    label: answer ? plainPreview(answer, 110) : '…',
     fullText: answer,
   })
 
@@ -315,7 +331,7 @@ export function buildPipeline(
     .filter(d => d.id.startsWith('role-'))
     .map(d => {
       const m = /\((.*)\)/.exec(d.label)
-      return `${clip(m ? m[1] : d.label, 22)} → ${d.value}`
+      return `${clip(m ? docLabel(m[1], d.value) : d.label, 24)} → ${String(d.value).replace(/_/g, ' ')}`
     })
   addNode('instruction', COL[2], ROW_INSTR, W, 88, {
     role: 'instruction',
@@ -329,7 +345,8 @@ export function buildPipeline(
   const usedExtracts = extractTiles.filter(isUsed)
   const totalChars = usedExtracts.reduce((s, t) => s + charsOf(t), 0)
   if (usedExtracts.length === 1) {
-    const name = usedExtracts[0].doc?.name
+    const rawName = usedExtracts[0].doc?.name
+    const name = rawName ? docLabel(rawName) : ''
     contextDetails.push(
       totalChars
         ? `${fmt(totalChars)} chars${name ? ` from ${name}` : ''}`
@@ -373,12 +390,15 @@ export function buildPipeline(
   } else {
     webDetails.push('web lookup (LinkedIn, Facebook, Instagram, X)')
   }
-  addNode('tool-web', COL[0], ROW_TOOLS, W, TOOL_H, {
+  // Tools this run didn't use collapse into small grey chips (still clickable).
+  const CHIP_H = 40
+  addNode('tool-web', COL[0], ROW_TOOLS, W, webUsed ? TOOL_H : CHIP_H, {
     role: 'tool',
     kindLabel: 'Tool · web',
-    label: 'Search',
+    label: webUsed ? 'Search' : 'Web search',
     details: webDetails,
     used: webUsed,
+    compact: !webUsed,
   })
 
   const extractDetails: string[] = []
@@ -390,7 +410,13 @@ export function buildPipeline(
     if (ocr) extractDetails.push(`OCR${ocr.model ? ` · ${shortModel(ocr.model)}` : ''}`)
     else if (usedExtracts.some(t => /ocr skipped/i.test(t.detail || ''))) extractDetails.push('text layer · OCR skipped')
     const firstName = usedExtracts[0].doc?.name
-    if (firstName) extractDetails.push(firstName)
+    if (firstName) {
+      extractDetails.push(
+        usedExtracts.length > 1
+          ? usedExtracts.map(t => (t.doc?.name ? docLabel(t.doc.name) : '')).filter(Boolean).join(', ')
+          : docLabel(firstName),
+      )
+    }
   } else {
     extractDetails.push('read / OCR documents')
   }
@@ -410,12 +436,13 @@ export function buildPipeline(
   } else {
     queryDetails.push('knowledge-graph lookup')
   }
-  addNode('tool-query', COL[2], ROW_TOOLS, W, TOOL_H, {
+  addNode('tool-query', COL[2], ROW_TOOLS, W, queryUsed ? TOOL_H : CHIP_H, {
     role: 'tool',
     kindLabel: 'Tool · graph',
-    label: 'Query',
+    label: queryUsed ? 'Query' : 'Graph query',
     details: queryDetails,
     used: queryUsed,
+    compact: !queryUsed,
   })
 
   // Signature verification (extra step): local engine + Signature model
@@ -453,7 +480,7 @@ export function buildPipeline(
     storeEmpty || !stats
       ? 'store empty for this conversation'
       : `${plural(stats.entities, 'entity', 'entities')} · ${plural(stats.relations, 'relation')} · ${plural(stats.documents, 'document')}`
-  if (runDocsUnlearned) bandStats += ' · run documents not yet learned'
+  if (runDocsUnlearned && !storeEmpty) bandStats += ' · some run documents not in the store'
   addNode(
     'kg-band',
     0,
@@ -469,7 +496,16 @@ export function buildPipeline(
     // This run's documents, with their chunk count in the store (if indexed).
     for (const d of runDocs.slice(0, 3)) {
       const chunks = storeDoc(d.id)?.chunk_count ?? 0
-      lexicalDetails.push(`${clip(d.name, 18)} · ${chunks > 0 ? plural(chunks, 'chunk') : 'not indexed yet'}`)
+      // Small documents are read whole — no chunk index needed. Say so neutrally.
+      const how =
+        chunks > 0
+          ? plural(chunks, 'chunk')
+          : d.role === 'signature_reference'
+            ? 'image compared'
+            : d.read || d.chars > 0
+              ? 'full text used'
+              : 'not needed here'
+      lexicalDetails.push(`${clip(d.display || d.name, 24)} · ${how}`)
     }
     const runChars = runDocs.reduce((s, d) => s + d.chars, 0)
     const more = runDocs.length > 3 ? `+${runDocs.length - 3} more` : ''
@@ -477,7 +513,7 @@ export function buildPipeline(
     if (more || charsNote) lexicalDetails.push([more, charsNote].filter(Boolean).join(' · '))
   } else {
     // No documents in this run (e.g. graph_query): show the store contents.
-    lexicalDetails.push(...docs.slice(0, 3).map(d => d.name))
+    lexicalDetails.push(...docs.slice(0, 3).map(d => docLabel(d.name)))
     if (stats && stats.chunks > 0) lexicalDetails.push(plural(stats.chunks, 'chunk'))
   }
   if (lexicalDetails.length === 0) lexicalDetails.push('no documents yet')
@@ -492,7 +528,7 @@ export function buildPipeline(
   const topEntities = [...(kg?.entities ?? [])]
     .sort((a, b) => (b.mention_count ?? 0) - (a.mention_count ?? 0))
     .slice(0, 4)
-    .map(e => `${e.name} · ${e.type}`)
+    .map(e => `${e.type === 'document' ? docLabel(String(e.props?.filename || e.name)) : e.name} · ${e.type}`)
   addNode('kg-domain', 520, GRAPH_Y, W, 138, {
     role: 'graph',
     kindLabel: 'Graph · entities',
@@ -505,7 +541,8 @@ export function buildPipeline(
   if (runDocs.length) {
     sourceDetails.push(`${plural(runDocs.length, 'document')} in this run`)
     for (const d of runDocs.slice(0, 3)) {
-      sourceDetails.push(d.role ? `${clip(d.name, 20)} · ${d.role}` : clip(d.name, 28))
+      const shown = d.display || d.name
+      sourceDetails.push(d.role ? `${clip(shown, 24)} · ${d.role.replace(/_/g, ' ')}` : clip(shown, 30))
     }
   } else if (!storeEmpty && stats) {
     sourceDetails.push(`${plural(stats.documents, 'document')} in knowledge store`)
@@ -540,16 +577,17 @@ export function buildPipeline(
   addEdge('llm', 'r', 'answer', 'l', { used: true })
 
   // Tools → Tool selection (curved)
-  addEdge('tool-web', 't', 'toolselect', 'b', { used: webUsed, curve: true })
+  // Unused tools (grey chips) get no edges, so the path that ran stands out.
+  if (webUsed) addEdge('tool-web', 't', 'toolselect', 'b', { used: webUsed, curve: true })
   addEdge('tool-extract', 't', 'toolselect', 'b', { used: extractUsed, curve: true })
-  addEdge('tool-query', 't', 'toolselect', 'b', { used: queryUsed, curve: true })
+  if (queryUsed) addEdge('tool-query', 't', 'toolselect', 'b', { used: queryUsed, curve: true })
   if (sigTile) addEdge('tool-signature', 't', 'llm', 'b', { used: isUsed(sigTile), label: sig ? `${sig.score}%` : undefined })
 
   // Knowledge store → tools
-  addEdge('kg-lexical', 't', 'tool-web', 'b', { used: webUsed, curve: true })
+  if (webUsed) addEdge('kg-lexical', 't', 'tool-web', 'b', { used: webUsed, curve: true })
   addEdge('kg-lexical', 't', 'tool-extract', 'b', { used: extractUsed, curve: true })
   addEdge('kg-domain', 't', 'tool-extract', 'b', { used: extractUsed && queryUsed, curve: true })
-  addEdge('kg-domain', 't', 'tool-query', 'b', { used: queryUsed, curve: true })
+  if (queryUsed) addEdge('kg-domain', 't', 'tool-query', 'b', { used: queryUsed, curve: true })
 
   // Lexical ⟷ Domain (orange, double-headed)
   addEdge('kg-lexical', 'r', 'kg-domain', 'l', { used: false, store: true })
@@ -560,9 +598,9 @@ export function buildPipeline(
 
   // Answer → Domain graph when this run taught the store something
   if (ingestTile && ingestTile.status === 'done') {
-    const m = /\+(\d+)\s+entit/i.exec(ingestTile.detail || '')
-    const n = m ? Number(m[1]) : 0
-    addEdge('answer', 'b', 'kg-domain', 'r', { used: true, label: n ? `learned +${n}` : 'learned' })
+    const c = storeCounts(ingestTile)
+    const n = c?.newEntities ?? 0
+    addEdge('answer', 'b', 'kg-domain', 'r', { used: true, label: n ? `learned +${n}` : c?.entities ? `stored ${c.entities}` : 'learned' })
   }
 
   return { nodes, edges }

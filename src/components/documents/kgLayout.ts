@@ -69,7 +69,7 @@ export const ELK_LAYOUT_OPTIONS: Record<string, string> = {
   // Keep every column in run order so each run's cards stay together (clean run panels).
   
   'elk.spacing.nodeNode': '44',
-  'elk.layered.spacing.nodeNodeBetweenLayers': '90',
+  'elk.layered.spacing.nodeNodeBetweenLayers': '62',
   'elk.spacing.edgeNode': '20',
   'elk.layered.spacing.edgeNodeBetweenLayers': '24',
   'elk.spacing.edgeEdge': '12',
@@ -109,7 +109,7 @@ const RESULTS_BLOCK_OPTIONS: Record<string, string> = {
   'elk.layered.nodePlacement.strategy': 'NETWORK_SIMPLEX',
   'elk.layered.considerModelOrder.strategy': 'NODES_AND_EDGES',
   'elk.spacing.nodeNode': '16',
-  'elk.layered.spacing.nodeNodeBetweenLayers': '60',
+  'elk.layered.spacing.nodeNodeBetweenLayers': '48',
   'elk.spacing.edgeNode': '14',
   'elk.spacing.edgeEdge': '10',
   'elk.padding': '[top=0,left=0,bottom=0,right=0]',

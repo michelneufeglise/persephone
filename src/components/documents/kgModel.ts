@@ -21,6 +21,8 @@ export interface KEdge {
   kind: string
   failed?: boolean
   highlighted?: boolean
+  /** View-specific payload (e.g. EntityEdgeData in the Entities view). */
+  data?: Record<string, unknown>
 }
 
 export interface KGraph {

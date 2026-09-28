@@ -12,6 +12,7 @@ import {
   Panel,
   MarkerType,
   useReactFlow,
+  useNodesInitialized,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { AlertCircle, X, ExternalLink, Menu, ChevronUp, ChevronDown, Maximize2, Lock } from 'lucide-react'
@@ -21,9 +22,12 @@ import { layoutForce } from './kgForce'
 import { loadDocConversation, type DocConversationSummary, fetchKnowledgeGraph, resetKnowledgeStore } from '@/lib/docAgent'
 import { DocumentNodeComponent, QuestionNodeComponent, DecisionNodeComponent, ModelNodeComponent, DocumentNodeCompactComponent, QuestionNodeCompactComponent, DecisionNodeCompactComponent, ModelNodeCompactComponent, PlannerNodeComponent, WebNodeComponent, ProfileNodeComponent, PlannerNodeCompactComponent, WebNodeCompactComponent, ProfileNodeCompactComponent, EntityNodeComponent, PipelineNodeComponent, PipelineGroupNodeComponent } from './kgNodes'
 import { FloatingEdge, FloatingStraightEdge } from './kgFloatingEdge'
-import { buildEntityGraph, layoutEntities, entitySizeOf, type EntityRelationView } from './kgEntities'
+import { buildEntityGraph, layoutEntitiesAuto, entitySizeOf, placeEdgeLabels, type EntityRelationView, type EntityEdgeData } from './kgEntities'
 import { buildPipeline } from './kgPipeline'
 import { KgRunView } from './KgRunView'
+import { EntityEdge } from './kgEntityEdge'
+import { KgEvidencePanel, KgStoryStrip } from './KgEvidence'
+import { buildStory, type StoryChip } from './kgStory'
 import type { Message } from '@/types'
 
 /** Cheap signature of a doc_run's tiles (id + status) — changes when a step starts/finishes. */
@@ -37,21 +41,22 @@ function tilesSignature(m: Message | null | undefined): string {
 // Define edgeTypes outside component to avoid re-creation
 const edgeTypesNetwork = { floating: FloatingEdge }
 const edgeTypesLayers = {}
-const edgeTypesEntities = { floatingStraight: FloatingStraightEdge }
+const edgeTypesEntities = { floatingStraight: FloatingStraightEdge, entityEdge: EntityEdge }
 
 /** Entities view: per-relation edge colour (paired with `.kg-entities` CSS in index.css). */
 const ENTITY_EDGE_STYLE: Record<string, { stroke: string; strokeWidth: number; strokeDasharray?: string; opacity?: number }> = {
   likely_profile: { stroke: 'var(--accent)', strokeWidth: 2 },
-  candidate_profile: { stroke: 'var(--text-muted)', strokeWidth: 1.4, strokeDasharray: '5 4', opacity: 0.6 },
-  has_role: { stroke: 'var(--text-secondary)', strokeWidth: 1.5 },
-  works_at: { stroke: 'var(--text-secondary)', strokeWidth: 1.5 },
-  located_in: { stroke: 'var(--text-secondary)', strokeWidth: 1.5 },
-  mentioned_in: { stroke: 'var(--text-muted)', strokeWidth: 1.5, strokeDasharray: '1.5 4', opacity: 0.8 },
-  owns: { stroke: 'var(--text-secondary)', strokeWidth: 1.5 },
-  signed: { stroke: 'rgb(16 185 129)', strokeWidth: 2 },
-  verified_against: { stroke: '#a78bfa', strokeWidth: 1.8, strokeDasharray: '6 4' },
-  signature_specimen: { stroke: 'var(--gold)', strokeWidth: 1.6, strokeDasharray: '3 3' },
+  candidate_profile: { stroke: 'var(--text-muted)', strokeWidth: 1.2, strokeDasharray: '5 4', opacity: 0.55 },
+  has_role: { stroke: 'var(--holo)', strokeWidth: 1.8 },
+  works_at: { stroke: 'var(--text-secondary)', strokeWidth: 2.2 },
+  located_in: { stroke: 'var(--text-secondary)', strokeWidth: 1.6 },
+  mentioned_in: { stroke: 'var(--text-muted)', strokeWidth: 1.1, strokeDasharray: '3 4', opacity: 0.55 },
+  owns: { stroke: 'var(--gold)', strokeWidth: 2.6 },
+  signed: { stroke: 'rgb(16 185 129)', strokeWidth: 2.8 },
+  verified_against: { stroke: '#a78bfa', strokeWidth: 2.4 },
+  signature_specimen: { stroke: '#a78bfa', strokeWidth: 2, opacity: 0.8 },
 }
+const BAND_STROKE: Record<string, string> = { inconclusive: 'rgb(245 158 11)', inconsistent: 'rgb(239 68 68)' }
 
 interface KnowledgeGraphProps {
   conversations: DocConversationSummary[]
@@ -85,7 +90,7 @@ const nodeTypes = {
 /**
  * ResizeObserver wrapper to fit graph on container resize
  */
-function GraphResizeHandler({ containerRef, padding = 0.15, minZoom = 0.4 }: { containerRef: React.RefObject<HTMLDivElement>; padding?: number; minZoom?: number }) {
+function GraphResizeHandler({ containerRef, padding = 0.15, minZoom = 0.4, fitKey = '' }: { containerRef: React.RefObject<HTMLDivElement>; padding?: number; minZoom?: number; fitKey?: string }) {
   const { fitView } = useReactFlow()
 
   useEffect(() => {
@@ -95,7 +100,7 @@ function GraphResizeHandler({ containerRef, padding = 0.15, minZoom = 0.4 }: { c
     const resizeObserver = new ResizeObserver(() => {
       clearTimeout(timeoutId)
       timeoutId = setTimeout(() => {
-        fitView({ padding, minZoom, duration: 250 })
+        fitView({ padding, minZoom, maxZoom: 1.3, duration: 250 })
       }, 120)
     })
 
@@ -103,7 +108,7 @@ function GraphResizeHandler({ containerRef, padding = 0.15, minZoom = 0.4 }: { c
 
     // Fit on mount
     const mountTimeout = setTimeout(() => {
-      fitView({ padding, minZoom, duration: 250 })
+      fitView({ padding, minZoom, maxZoom: 1.3, duration: 250 })
     }, 50)
 
     return () => {
@@ -111,7 +116,16 @@ function GraphResizeHandler({ containerRef, padding = 0.15, minZoom = 0.4 }: { c
       clearTimeout(mountTimeout)
       resizeObserver.disconnect()
     }
-  }, [fitView, containerRef, padding, minZoom])
+  }, [fitView, containerRef, padding, minZoom, fitKey])
+
+  // Fit again once the nodes are measured (the first fit can run before they
+  // exist) and whenever the graph's shape changes (fitKey).
+  const initialized = useNodesInitialized()
+  useEffect(() => {
+    if (!initialized) return
+    const t = setTimeout(() => fitView({ padding, minZoom, maxZoom: 1.3, duration: 200 }), 120)
+    return () => clearTimeout(t)
+  }, [initialized, fitKey, fitView, padding, minZoom])
 
   return null
 }
@@ -191,7 +205,7 @@ function Legend() {
 /**
  * Entities view: detail section for a knowledge-store entity (type, mentions, props, relations).
  */
-function EntityDetails({ node }: { node: any }) {
+function EntityDetails({ node, onSelectRelation }: { node: any; onSelectRelation?: (relationId: string) => void }) {
   const props = (node.props || {}) as Record<string, unknown>
   const str = (v: unknown) => (typeof v === 'string' || typeof v === 'number' ? String(v) : '')
   const url = str(props.url)
@@ -246,7 +260,7 @@ function EntityDetails({ node }: { node: any }) {
       ) : null}
       {filename ? (
         <div>
-          <div className={labelCls}>File</div>
+          <div className={labelCls}>File name</div>
           <div className={clsx(valueCls, 'font-mono text-[0.7rem] break-all')}>
             {filename}
             {docKind ? <span className="text-[var(--text-muted)]"> · {docKind}</span> : null}
@@ -261,10 +275,16 @@ function EntityDetails({ node }: { node: any }) {
       ) : null}
       {relations.length > 0 ? (
         <div>
-          <div className={labelCls}>Relations</div>
+          <div className={labelCls}>Relations · click for evidence</div>
           <div className="space-y-0.5">
             {relations.map(r => (
-              <div key={`${r.id}-${r.direction}`} className={clsx(valueCls, 'text-[0.72rem]')}>
+              <button
+                type="button"
+                key={`${r.id}-${r.direction}`}
+                onClick={() => onSelectRelation?.(r.id)}
+                className={clsx(valueCls, 'text-[0.72rem] block w-full text-left rounded px-1 -mx-1 hover:bg-[var(--glass-fill-hover)] hover:text-[var(--text-primary)] transition-colors')}
+                title="Show the evidence for this relation"
+              >
                 {r.direction === 'out' ? (
                   <>
                     <span className="text-[var(--text-muted)]">{r.label} →</span> {r.otherName}
@@ -274,7 +294,8 @@ function EntityDetails({ node }: { node: any }) {
                     {r.otherName} <span className="text-[var(--text-muted)]">→ {r.label}</span>
                   </>
                 )}
-              </div>
+                {typeof r.score === 'number' ? <span className="ml-1 font-mono text-[0.66rem] text-[var(--text-muted)]">{r.score}%</span> : null}
+              </button>
             ))}
           </div>
         </div>
@@ -290,10 +311,12 @@ function DetailCard({
   node,
   onClose,
   onSelectMessage,
+  onSelectRelation,
 }: {
   node: any
   onClose: () => void
   onSelectMessage?: (msgId: string) => void
+  onSelectRelation?: (relationId: string) => void
 }) {
   if (!node || typeof node !== 'object') return null
   // KNode kinds keep their fields under `.data`; pipeline / entity nodes are flat.
@@ -302,7 +325,7 @@ function DetailCard({
   return (
     <div className="absolute bottom-2 left-2 right-2 bg-[var(--bg-glass-strong)] backdrop-blur border border-[var(--border-glass)] rounded-[12px] p-3 text-xs max-h-48 overflow-y-auto shadow-[var(--shadow-soft)] animate-in slide-in-from-bottom-2 duration-200">
       <div className="flex items-start justify-between gap-2 mb-2">
-        <div className="font-semibold text-[0.8rem] text-[var(--text-primary)]">{String(node.label ?? '')}</div>
+        <div className="font-semibold text-[0.8rem] text-[var(--text-primary)]">{String(node.kind === 'entity' ? node.displayName ?? node.label ?? '' : node.label ?? '')}</div>
         <button
           onClick={onClose}
           className="flex-shrink-0 text-[var(--text-muted)] hover:text-[var(--text-primary)] hover:bg-[var(--glass-fill-hover)] rounded p-1 transition-colors"
@@ -443,7 +466,7 @@ function DetailCard({
         </div>
       )}
 
-      {node.kind === 'entity' && <EntityDetails node={node} />}
+      {node.kind === 'entity' && <EntityDetails node={node} onSelectRelation={onSelectRelation} />}
 
       {node.kind === 'pipeline' && (
         <div className="space-y-1.5">
@@ -585,6 +608,12 @@ const KnowledgeGraphInner = memo(
     // so DetailCard always gets the view's own node shape (the old code stored React
     // Flow's flattened node.data and crashed reading `.data.fullText`).
     const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null)
+    // Entities view: selected relation (evidence panel) and hovered edge.
+    const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
+    const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null)
+    const [storyActiveKey, setStoryActiveKey] = useState<string | null>(null)
+    // Selection to apply after a view switch (story chip clicked outside Entities).
+    const pendingSelRef = useRef<{ node: string | null; edge: string | null } | null>(null)
     const [selectedKinds, setSelectedKinds] = useState<Set<string>>(new Set(['document', 'question', 'decision', 'model', 'planner', 'web', 'profile']))
     const [nodes, setNodes, onNodesChange] = useNodesState<Node>([])
     const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
@@ -675,10 +704,19 @@ const KnowledgeGraphInner = memo(
       }
     }, [netLayout])
 
-    // A selection belongs to one view's graph — drop it when the view changes.
+    // A selection belongs to one view's graph — drop it when the view changes
+    // (unless a story chip asked for a selection in the view it switched to).
     useEffect(() => {
-      setSelectedNodeId(null)
+      const p = pendingSelRef.current
+      pendingSelRef.current = null
+      setSelectedNodeId(p?.node ?? null)
+      setSelectedEdgeId(p?.edge ?? null)
+      if (!p) setStoryActiveKey(null)
     }, [graphView, netLayout])
+    useEffect(() => {
+      setSelectedEdgeId(null)
+      setStoryActiveKey(null)
+    }, [scope, currentConversationId])
 
     // Save selectedKinds preference
     useEffect(() => {
@@ -794,13 +832,9 @@ const KnowledgeGraphInner = memo(
       return null
     }, [currentMessages, liveMessages, selectedMessageId])
 
-    // Fetch KG data when scope/conversation changes or run finishes (for Pipeline and Entities views)
+    // Fetch KG data when scope/conversation changes or run finishes (every view:
+    // Pipeline + Entities draw it, and the story strip summarises it).
     useEffect(() => {
-      if (graphView !== 'pipeline' && graphView !== 'entities') {
-        setKgData(null)
-        return
-      }
-
       let cancelled = false
       const fetchData = async () => {
         setKgLoading(true)
@@ -821,7 +855,7 @@ const KnowledgeGraphInner = memo(
       return () => {
         cancelled = true
       }
-    }, [graphView, scope, currentConversationId, runMessage?.id, runMessage?.isStreaming, kgReloadKey])
+    }, [scope, currentConversationId, runMessage?.id, runMessage?.isStreaming, kgReloadKey])
 
     const handleResetKnowledgeStore = useCallback(async () => {
       const ok = window.confirm(
@@ -886,8 +920,42 @@ const KnowledgeGraphInner = memo(
       if (graphView !== 'entities') return null
       if (!kgData || kgData.entities.length === 0) return null
       const graph = buildEntityGraph(kgData, currentConversationId)
-      return layoutEntities(graph, containerSize)
+      return layoutEntitiesAuto(graph, containerSize)
     }, [graphView, kgData, containerSize, currentConversationId])
+
+    // Entities: where each edge label sits (collision-free spots along the edge).
+    const entityLabelTs = useMemo(() => {
+      if (!entitiesData) return new Map<string, number>()
+      return placeEdgeLabels(
+        entitiesData.nodes.map(n => ({ id: n.id, position: n.position, ...entitySizeOf(n) })),
+        entitiesData.edges.map(e => {
+          const d = (e.data || {}) as EntityEdgeData
+          return {
+            id: e.id,
+            source: e.source,
+            target: e.target,
+            text: d.label || e.label,
+            hasScore: d.score != null,
+            primary: !!d.primary,
+            extra: d.others?.length ? 22 : 0,
+          }
+        }),
+      )
+    }, [entitiesData])
+
+    // Relation id → the entity edge that draws it (aggregated relations included).
+    const edgeOfRelation = useMemo(() => {
+      const m = new Map<string, { edgeId: string; others: { id: string; type: string; label: string }[]; type: string; label: string }>()
+      for (const e of entitiesData?.edges || []) {
+        const d = (e.data || {}) as EntityEdgeData
+        const all = [{ id: e.id, type: d.type || e.kind, label: d.label || e.label }, ...(d.others || [])]
+        for (const r of all) m.set(r.id, { edgeId: e.id, others: all.filter(x => x.id !== r.id), type: r.type, label: r.label })
+      }
+      return m
+    }, [entitiesData])
+
+    // Story strip: deterministic summary of the focal person's facts (scope-aware).
+    const story = useMemo(() => buildStory(kgData), [kgData])
 
     // Conversations feeding Network / Layers. Keyed on messagesSig, not the array,
     // so a streamed token doesn't rebuild (or relayout) the graph.
@@ -1017,46 +1085,9 @@ const KnowledgeGraphInner = memo(
         return
       }
 
-      // Entities: fixed-size entity cards + straight floating edges with SVG pill labels.
-      if ((graphView as string) === 'entities') {
-        setNodes(
-          gd.nodes.map((n: any) => {
-            const size = entitySizeOf(n)
-            return {
-              id: n.id,
-              position: n.position,
-              type: 'entity',
-              data: { label: n.label ?? '', ...n.data, kind: 'entity' },
-              style: { width: size.width, height: size.height },
-              width: size.width,
-              height: size.height,
-              selected: selectedNodeId != null && n.id === selectedNodeId,
-              draggable: true,
-            }
-          }),
-        )
-        setEdges(
-          gd.edges.map((e: any) => {
-            const st = ENTITY_EDGE_STYLE[e.kind] || ENTITY_EDGE_STYLE.has_role
-            return {
-              id: e.id,
-              source: e.source,
-              target: e.target,
-              type: 'floatingStraight',
-              className: `kg-ent-edge kg-ent-edge-${e.kind}`,
-              label: e.label,
-              style: { ...st },
-              markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: st.stroke },
-              labelStyle: { fontSize: 10, fill: 'var(--text-secondary)', fontFamily: 'var(--font-family-body)' },
-              labelShowBg: true,
-              labelBgStyle: { fill: 'var(--bg-glass-strong)', stroke: 'var(--border-glass)', strokeWidth: 1 },
-              labelBgPadding: [6, 3] as [number, number],
-              labelBgBorderRadius: 999,
-            }
-          }),
-        )
-        return
-      }
+      // Entities: handled by the dedicated effects below (so hover / selection
+      // don't reset positions the user dragged).
+      if ((graphView as string) === 'entities') return
 
       // Build neighbor set for hover dimming
       const hoveredNeighbors = new Set<string>()
@@ -1210,12 +1241,118 @@ const KnowledgeGraphInner = memo(
       setEdges(xyEdges)
     }, [graphData, selectedNodeId, selectedKinds, setNodes, setEdges, isExpanded, graphDirection, graphView])
 
+    // ── Entities view: nodes (layout), selection flag, edges (style / labels / hover) ──
+    useEffect(() => {
+      if (graphView !== 'entities' || !entitiesData) return
+      setNodes(
+        entitiesData.nodes.map((n: any) => {
+          const size = entitySizeOf(n)
+          return {
+            id: n.id,
+            position: n.position,
+            type: 'entity',
+            data: { label: n.label ?? '', ...n.data, kind: 'entity', focal: n.id === entitiesData.focalId },
+            style: { width: size.width, height: size.height },
+            width: size.width,
+            height: size.height,
+            selected: false,
+            draggable: true,
+          }
+        }),
+      )
+    }, [graphView, entitiesData, setNodes])
+    useEffect(() => {
+      if (graphView !== 'entities') return
+      setNodes(prev => prev.map(n => (n.selected === (n.id === selectedNodeId) ? n : { ...n, selected: n.id === selectedNodeId })))
+    }, [graphView, selectedNodeId, entitiesData, setNodes])
+    const selectRelation = useCallback((relationId: string) => {
+      setSelectedEdgeId(relationId)
+      setSelectedNodeId(null)
+    }, [])
+    const selectedEdgeInfo = selectedEdgeId ? edgeOfRelation.get(selectedEdgeId) ?? null : null
+    const selectedDrawnEdge = selectedEdgeInfo?.edgeId ?? null
+    useEffect(() => {
+      if (graphView !== 'entities' || !entitiesData) return
+      setEdges(
+        entitiesData.edges.map((e: any) => {
+          const d = (e.data || {}) as EntityEdgeData
+          const base = ENTITY_EDGE_STYLE[e.kind] || ENTITY_EDGE_STYLE.has_role
+          const bandStroke = (e.kind === 'signed' || e.kind === 'verified_against') && d.band ? BAND_STROKE[d.band] : undefined
+          const st = bandStroke ? { ...base, stroke: bandStroke } : base
+          const hover = hoveredEdgeId === e.id
+          const selected = selectedDrawnEdge === e.id
+          const touchesNode = !!selectedNodeId && (e.source === selectedNodeId || e.target === selectedNodeId)
+          const dim = (!!selectedDrawnEdge && !selected) || (!!selectedNodeId && !touchesNode)
+          return {
+            id: e.id,
+            source: e.source,
+            target: e.target,
+            type: 'entityEdge',
+            className: clsx(
+              'kg-ent-edge',
+              `kg-ent-edge-${e.kind}`,
+              d.band && `kg-ent-band-${d.band}`,
+              hover && 'kg-ent-hover',
+              selected && 'kg-ent-selected',
+              dim && !hover && 'kg-ent-dim',
+            ),
+            style: { ...st },
+            markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: st.stroke },
+            interactionWidth: 26,
+            zIndex: selected || hover ? 5 : d.verification ? 2 : 1,
+            data: {
+              ...d,
+              t: entityLabelTs.get(e.id) ?? 0.5,
+              hover: hover || touchesNode,
+              selected,
+              dim: dim && !hover,
+              onSelect: selectRelation,
+            },
+          }
+        }),
+      )
+    }, [graphView, entitiesData, entityLabelTs, hoveredEdgeId, selectedDrawnEdge, selectedNodeId, selectRelation, setEdges])
+
+    const handleStoryChip = useCallback(
+      (c: StoryChip) => {
+        setStoryActiveKey(c.key)
+        const sel = c.edgeId ? { node: null, edge: c.edgeId } : { node: c.nodeId ?? null, edge: null }
+        if (graphView !== 'entities') {
+          pendingSelRef.current = sel
+          setGraphView('entities')
+          return
+        }
+        setSelectedNodeId(sel.node)
+        setSelectedEdgeId(sel.edge)
+      },
+      [graphView],
+    )
+
 
     const handleNodeClick = (e: React.MouseEvent, node: any) => {
       e.stopPropagation()
       if (node.type === 'pipelineGroup') return // knowledge-store band is background only
       setSelectedNodeId(node.id)
+      setSelectedEdgeId(null)
+      setStoryActiveKey(null)
     }
+    const handleEdgeClick = useCallback(
+      (e: React.MouseEvent, edge: Edge) => {
+        if (graphView !== 'entities') return
+        e.stopPropagation()
+        selectRelation(edge.id)
+        setStoryActiveKey(null)
+      },
+      [graphView, selectRelation],
+    )
+    const handleEdgeEnter = useCallback((_e: React.MouseEvent, edge: Edge) => setHoveredEdgeId(edge.id), [])
+    const handleEdgeLeave = useCallback(() => setHoveredEdgeId(null), [])
+    const handlePaneClick = useCallback(() => {
+      if (graphView !== 'entities') return
+      setSelectedEdgeId(null)
+      setSelectedNodeId(null)
+      setStoryActiveKey(null)
+    }, [graphView])
 
     const handleNodeDragStop = useCallback((_event: any, node: any) => {
       // Record the node's center position in pinned map
@@ -1459,8 +1596,12 @@ const KnowledgeGraphInner = memo(
           )}
         </div>
 
+        {story && (
+          <KgStoryStrip story={story} activeKey={storyActiveKey} onChip={handleStoryChip} />
+        )}
+
         {/* Graph */}
-        <div ref={setContainerNode} className={clsx('flex-1 relative min-h-0', graphView === 'pipeline' && 'kg-pipeline', graphView === 'entities' && 'kg-entities')}>
+        <div ref={setContainerNode} className={clsx('flex-1 relative min-h-0', graphView === 'pipeline' && 'kg-pipeline', graphView === 'entities' && 'kg-entities', graphView === 'entities' && selectedEdgeId && 'kg-panel-open')}>
           {!isEmpty && useRunView && runConvs ? (
             <KgRunView
               key={graphView}
@@ -1489,12 +1630,16 @@ const KnowledgeGraphInner = memo(
             </div>
           ) : (
           <ReactFlow
-            key={graphView === 'pipeline' ? `pipeline-${runMessage?.id}` : graphView}
+            key={graphView === 'pipeline' ? `pipeline-${runMessage?.id}` : graphView === 'entities' ? `entities-${scope}-${currentConversationId}` : graphView}
             nodes={nodes}
             edges={edges}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onNodeClick={handleNodeClick}
+            onEdgeClick={handleEdgeClick}
+            onEdgeMouseEnter={graphView === 'entities' ? handleEdgeEnter : undefined}
+            onEdgeMouseLeave={graphView === 'entities' ? handleEdgeLeave : undefined}
+            onPaneClick={handlePaneClick}
             onNodeDragStop={handleNodeDragStop}
             onNodeMouseEnter={handleNodeMouseEnter}
             onNodeMouseLeave={handleNodeMouseLeave}
@@ -1502,7 +1647,7 @@ const KnowledgeGraphInner = memo(
             nodeTypes={nodeTypes}
             edgeTypes={graphView === 'network' ? edgeTypesNetwork : graphView === 'entities' ? edgeTypesEntities : edgeTypesLayers}
             fitView
-            fitViewOptions={graphView === 'pipeline' ? { padding: 0.08, minZoom: 0.2 } : { padding: 0.15, minZoom: 0.4 }}
+            fitViewOptions={graphView === 'pipeline' ? { padding: 0.08, minZoom: 0.2 } : graphView === 'entities' ? { padding: 0.12, minZoom: 0.55, maxZoom: 1.4 } : { padding: 0.15, minZoom: 0.4 }}
             nodesConnectable={graphView !== 'pipeline'}
             minZoom={0.2}
             maxZoom={3}
@@ -1511,8 +1656,9 @@ const KnowledgeGraphInner = memo(
 
             <GraphResizeHandler
               containerRef={containerRef}
-              padding={graphView === 'pipeline' ? 0.08 : 0.15}
-              minZoom={graphView === 'pipeline' ? 0.2 : 0.4}
+              padding={graphView === 'pipeline' ? 0.08 : graphView === 'entities' ? 0.12 : 0.15}
+              minZoom={graphView === 'pipeline' ? 0.2 : graphView === 'entities' ? 0.55 : 0.4}
+              fitKey={graphView === 'entities' ? `${entitiesData?.nodes.length ?? 0}|${entitiesData?.focalId ?? ''}|${selectedEdgeId ? 'panel' : ''}` : ''}
             />
 
             {graphView !== 'pipeline' && graphView !== 'entities' && (
@@ -1535,7 +1681,29 @@ const KnowledgeGraphInner = memo(
           )}
 
           {!useRunView && !isEmpty && selectedNode && (
-            <DetailCard node={selectedNode} onClose={() => setSelectedNodeId(null)} onSelectMessage={onSelectMessage} />
+            <DetailCard
+              node={selectedNode}
+              onClose={() => setSelectedNodeId(null)}
+              onSelectMessage={onSelectMessage}
+              onSelectRelation={graphView === 'entities' ? selectRelation : undefined}
+            />
+          )}
+
+          {graphView === 'entities' && !isEmpty && selectedEdgeId && (
+            <KgEvidencePanel
+              key={selectedEdgeId}
+              relationId={selectedEdgeId}
+              others={selectedEdgeInfo?.others}
+              onClose={() => {
+                setSelectedEdgeId(null)
+                setStoryActiveKey(null)
+              }}
+              onSelectRelation={selectRelation}
+              onSelectEntity={id => {
+                setSelectedEdgeId(null)
+                setSelectedNodeId(id)
+              }}
+            />
           )}
         </div>
       </div>

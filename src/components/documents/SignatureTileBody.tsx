@@ -1,6 +1,7 @@
 import { clsx } from 'clsx'
 import { AlertTriangle, Cpu, ExternalLink } from 'lucide-react'
 import type { SignatureCrop, SignatureFeature, SignatureTileData } from '@/lib/docAgent'
+import { friendlyDocName } from './kgFormat'
 
 /**
  * Body of the "Signature verification" tile: score gauge (band colour), the
@@ -81,7 +82,7 @@ export function SignatureTileBody({ data }: { data: SignatureTileData }) {
   const refs = data.references ?? []
   const breakdown = data.breakdown ?? []
   return (
-    <div className="space-y-3 border-t border-[var(--glass-stroke)] pt-2.5">
+    <div className="space-y-3 border-t border-[var(--glass-stroke)] pt-2.5 min-w-0">
       {/* Score */}
       <div className="flex items-center gap-3">
         <div className={clsx('text-2xl font-semibold tabular-nums leading-none', style.text)}>{data.score}%</div>
@@ -99,11 +100,11 @@ export function SignatureTileBody({ data }: { data: SignatureTileData }) {
       {/* Crops */}
       {(data.questioned || refs.length > 0) && (
         <div className="grid grid-cols-[minmax(0,1.1fr)_minmax(0,1.9fr)] gap-2 items-start">
-          <div className="space-y-1">
+          <div className="space-y-1 min-w-0">
             <div className="text-[10px] uppercase tracking-wider text-[var(--text-muted)]">Questioned</div>
             {data.questioned && <Crop crop={data.questioned} label="Q" large />}
             {data.questioned_doc && (
-              <div className="text-[10px] text-[var(--text-muted)] truncate" title={data.questioned_doc}>{data.questioned_doc}</div>
+              <div className="text-[10px] text-[var(--text-muted)] truncate" title={data.questioned_doc}>{friendlyDocName(data.questioned_doc)}</div>
             )}
           </div>
           <div className="space-y-1 min-w-0">

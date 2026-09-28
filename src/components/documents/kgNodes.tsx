@@ -712,8 +712,8 @@ export function EntityNodeComponent({ data, selected }: NodeProps) {
         </span>
         <div className="min-w-0 flex-1 flex flex-col gap-0.5">
           <div className="flex items-center gap-1.5 min-w-0">
-            <span className="text-[0.55rem] font-bold uppercase tracking-wider truncate" style={{ color }}>
-              {style.label}
+            <span className="text-[0.6rem] font-bold uppercase tracking-wider truncate" style={{ color }}>
+              {data.focal ? 'Person · focus' : style.label}
             </span>
             {match ? (
               <span
@@ -739,7 +739,7 @@ export function EntityNodeComponent({ data, selected }: NodeProps) {
           <div
             className={clsx(
               'font-semibold text-[var(--text-primary)] leading-tight line-clamp-2 break-words',
-              type === 'person' ? 'text-[0.82rem]' : 'text-[0.74rem]',
+              type === 'person' ? 'text-[0.9rem]' : 'text-[0.8rem]',
             )}
           >
             {title}
@@ -805,6 +805,27 @@ export function PipelineNodeComponent({ data, selected }: NodeProps) {
   const chips = (data.chips as string[] | undefined) || []
   const titleClamp =
     role === 'question' || role === 'answer' ? 'line-clamp-3' : role === 'llm' ? 'line-clamp-4 break-all' : 'truncate'
+
+  // Tool this run didn't use: a small grey chip (click for details).
+  if (data.compact) {
+    return (
+      <>
+        <PipelineHandles />
+        <div
+          className="w-full h-full rounded-full px-3 flex items-center gap-2 overflow-hidden text-[var(--text-muted)] hover:text-[var(--text-secondary)] transition-colors"
+          style={{
+            background: 'color-mix(in oklab, var(--text-muted) 8%, transparent)',
+            border: '1px dashed color-mix(in oklab, var(--text-muted) 45%, transparent)',
+            boxShadow: selected ? '0 0 0 1.5px var(--text-muted)' : undefined,
+          }}
+          title={`${data.kindLabel as string}: ${(data.details as string[] | undefined)?.join(' · ') || ''} — not used in this run`}
+        >
+          <span className="text-[12px] font-semibold truncate">{data.label as string}</span>
+          <span className="ml-auto flex-shrink-0 text-[9.5px] uppercase tracking-[0.1em]">not used</span>
+        </div>
+      </>
+    )
+  }
 
   return (
     <>

@@ -409,6 +409,56 @@ export async function fetchKnowledgeGraph(
   }
 }
 
+export interface KGEvidenceDoc {
+  entity_id: string
+  doc_id: string
+  filename: string
+  kind: string
+  signature_card: boolean
+}
+
+/** GET /api/kg/relation-evidence — provenance of one relation (evidence panel). */
+export interface KGRelationEvidence {
+  relation: {
+    id: string
+    src: string
+    dst: string
+    type: string
+    confidence: number | null
+    source: string
+    props: Record<string, unknown>
+    run_id: string | null
+    conversation_id: string | null
+    created_at: number | null
+  }
+  src_entity: { id: string; type: string; name: string }
+  dst_entity: { id: string; type: string; name: string }
+  source_doc: KGEvidenceDoc | null
+  reference_doc: KGEvidenceDoc | null
+  conversation: { id: string; title: string | null } | null
+  snippet: string | null
+  snippet_source: 'document' | 'mention' | null
+  highlights: string[]
+  signature: {
+    score: number | null
+    band: string | null
+    n_references: number | null
+    verified_at: string | null
+    person: string | null
+    questioned: string | null
+    references: string[]
+    crops_source: 'stored' | 'derived' | null
+  } | null
+}
+
+export async function fetchRelationEvidence(relationId: string, signal?: AbortSignal): Promise<KGRelationEvidence> {
+  const res = await fetch(`/api/kg/relation-evidence?${new URLSearchParams({ id: relationId })}`, { signal })
+  if (!res.ok) throw new Error(res.status === 404 ? 'This relation is no longer in the knowledge store.' : `Could not load evidence (HTTP ${res.status})`)
+  const data = (await res.json()) as KGRelationEvidence
+  if (!data || typeof data !== 'object' || !data.relation) throw new Error('Unexpected evidence response')
+  return data
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 /**

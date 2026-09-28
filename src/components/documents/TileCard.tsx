@@ -8,6 +8,7 @@ import { clsx } from 'clsx'
 import { signatureData, type Tile, type TileItem } from '@/lib/docAgent'
 import { SOCIAL_PLATFORMS, resolvePlatform } from './socialPlatforms'
 import { SignatureTileBody } from './SignatureTileBody'
+import { friendlyFilesInText, shortModelName, storeSummary } from './kgFormat'
 
 /** Small coloured platform badge next to a search result (in / f / IG / 𝕏). */
 function PlatformBadge({ platform, url }: { platform?: string | null; url?: string | null }) {
@@ -175,13 +176,14 @@ export function TileCard({ tile, now }: TileCardProps) {
     elapsedMs = tile.ms
   }
 
-  // Dynamic title based on status and kind
-  let displayTitle = tile.title
+  // Dynamic title based on status and kind (file names → friendly names;
+  // the full title stays in the tooltip)
+  let displayTitle = friendlyFilesInText(tile.title)
   if (isDone) {
     if (tile.kind === 'laya') {
       displayTitle = 'Laya decisions'
     } else if (tile.kind === 'llm') {
-      displayTitle = tile.model ? `Answer · ${tile.model}` : 'Answer'
+      displayTitle = tile.model ? `Answer · ${shortModelName(tile.model)}` : 'Answer'
     }
   } else if (isRunning) {
     if (tile.kind === 'laya') {
@@ -198,18 +200,22 @@ export function TileCard({ tile, now }: TileCardProps) {
 
   return (
     <motion.div
-      className={clsx('rounded-lg border p-3 space-y-3', bgClass)}
+      className={clsx('tile-card w-full max-w-full min-w-0 box-border overflow-hidden rounded-lg border p-3 space-y-3', bgClass)}
     >
       {/* Header */}
-      <div className="flex items-start gap-2">
+      <div className="flex items-start gap-2 min-w-0">
         <div className="flex-shrink-0 pt-0.5">
           <IconComp className="w-4 h-4 text-[var(--accent)]" />
         </div>
 
         <div className="flex-1 min-w-0">
-          <div className="font-medium text-[var(--text-primary)] text-sm">{displayTitle}</div>
+          <div className="font-medium text-[var(--text-primary)] text-sm line-clamp-2 [overflow-wrap:anywhere]" title={tile.kind === 'llm' && tile.model ? `Answer · ${tile.model}` : tile.title}>
+            {displayTitle}
+          </div>
           {tile.detail && (
-            <div className="text-xs text-[var(--text-muted)] mt-0.5">{tile.detail}</div>
+            <div className="text-xs text-[var(--text-muted)] mt-0.5 [overflow-wrap:anywhere]" title={tile.detail}>
+              {tile.kind === 'store' ? storeSummary(tile) : friendlyFilesInText(tile.detail)}
+            </div>
           )}
         </div>
 
@@ -242,9 +248,9 @@ export function TileCard({ tile, now }: TileCardProps) {
 
       {/* Model info row */}
       {tile.model_info && (
-        <div className="flex items-center gap-2 flex-wrap text-xs">
-          <span className="font-mono text-[var(--text-secondary)] glass-card px-2 py-1 rounded">
-            {tile.model || 'auto'}
+        <div className="flex items-center gap-2 flex-wrap text-xs min-w-0">
+          <span className="font-mono text-[var(--text-secondary)] glass-card px-2 py-1 rounded max-w-full truncate" title={tile.model || 'auto'}>
+            {shortModelName(tile.model) || 'auto'}
           </span>
           {tile.kind === 'laya' && tile.model_info ? (
             <>
@@ -303,35 +309,47 @@ export function TileCard({ tile, now }: TileCardProps) {
 
       {/* Decisions list (only for laya kind) */}
       {tile.kind === 'laya' && tile.decisions.length > 0 && (
-        <div className="space-y-2">
+        <div className="space-y-2 min-w-0">
           <div className="text-xs font-medium text-[var(--text-secondary)]">Decisions</div>
-          <div className="space-y-1.5">
+          <div className="space-y-1.5 min-w-0">
             {tile.decisions.map(decision => {
               const isExpanded = expandedDecision === decision.id
               const badgeStyle = BADGES[decision.source] ?? { ...FALLBACK_BADGE, label: decision.source }
               const isWebLookupDecision = decision.id === 'web_lookup' && decision.value !== 'none'
 
               return (
-                <div key={decision.id} className="space-y-1">
-                  <div className="flex items-start gap-2">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-baseline gap-2">
-                        <span className="text-xs text-[var(--text-secondary)]">{decision.label}</span>
-                        <span className="font-medium text-[var(--text-primary)] text-sm">
-                          {decision.id.startsWith('role-') ? decision.value.replace(/_/g, ' ') : decision.value}
-                        </span>
-                      </div>
-                      {decision.note && (
-                        <div className={clsx('text-xs mt-0.5 flex items-center gap-1', isWebLookupDecision ? 'text-amber-400' : 'text-[var(--text-muted)]')}>
-                          {isWebLookupDecision && <Globe className="w-2.5 h-2.5 flex-shrink-0" />}
-                          {decision.note}
-                        </div>
+                <div key={decision.id} className="space-y-1 min-w-0">
+                  {/* label | value | source badge — label column fixed, value wraps */}
+                  <div className="grid grid-cols-[minmax(0,5.75rem)_minmax(0,1fr)_auto] items-baseline gap-x-2 min-w-0">
+                    <span className="text-xs text-[var(--text-secondary)] leading-snug [overflow-wrap:anywhere]" title={decision.label}>
+                      {friendlyFilesInText(decision.label)}
+                    </span>
+                    <span
+                      className={clsx(
+                        'font-medium text-[var(--text-primary)] text-[13px] leading-snug min-w-0',
+                        /model/i.test(decision.id) ? 'truncate' : 'break-words',
                       )}
-                    </div>
-                    <span className={clsx('text-xs px-1.5 py-0.5 rounded font-medium flex-shrink-0', badgeStyle.className)}>
+                      title={decision.value}
+                    >
+                      {decision.id.startsWith('role-')
+                        ? decision.value.replace(/_/g, ' ')
+                        : /model/i.test(decision.id)
+                          ? shortModelName(decision.value)
+                          : friendlyFilesInText(decision.value).replace(/_/g, '_\u200b')}
+                    </span>
+                    <span className={clsx('text-xs px-1.5 py-0.5 rounded font-medium flex-shrink-0 justify-self-end', badgeStyle.className)}>
                       {badgeStyle.label}
                     </span>
                   </div>
+                  {decision.note && (
+                    <div
+                      className={clsx('text-xs flex items-start gap-1 min-w-0 [overflow-wrap:anywhere]', isWebLookupDecision ? 'text-amber-400' : 'text-[var(--text-muted)]')}
+                      title={decision.note}
+                    >
+                      {isWebLookupDecision && <Globe className="w-2.5 h-2.5 flex-shrink-0 mt-0.5" />}
+                      <span className="min-w-0">{friendlyFilesInText(decision.note)}</span>
+                    </div>
+                  )}
 
                   {decision.confidence !== null && (
                     <div className="flex items-center justify-between gap-2 text-xs">
@@ -442,7 +460,9 @@ export function TileCard({ tile, now }: TileCardProps) {
                 </div>
               )}
               {item.kind === 'note' && (
-                <div className="text-xs text-[var(--text-muted)] italic px-2 py-1">{item.label}</div>
+                <div className="text-xs text-[var(--text-muted)] italic px-2 py-1 [overflow-wrap:anywhere]" title={item.label}>
+                  {friendlyFilesInText(item.label)}
+                </div>
               )}
             </div>
           ))}
@@ -458,8 +478,8 @@ export function TileCard({ tile, now }: TileCardProps) {
       {(tile.kind === 'extract' || tile.kind === 'ocr' || tile.kind === 'llm' || tile.kind === 'vision') && (
         <div className="space-y-1.5">
           {tile.doc && (tile.kind === 'extract' || tile.kind === 'ocr') && (
-            <div className="text-xs text-[var(--text-muted)]">
-              <span className="font-medium">{tile.doc.name}</span>
+            <div className="text-xs text-[var(--text-muted)] truncate font-mono text-[11px]" title={tile.doc.name}>
+              {tile.doc.name}
             </div>
           )}
           {tile.output_preview && (
@@ -477,7 +497,7 @@ export function TileCard({ tile, now }: TileCardProps) {
 
       {/* Error message */}
       {isError && tile.detail && (
-        <div className="text-xs text-red-500 bg-red-500/10 border border-red-500/25 rounded p-2">
+        <div className="text-xs text-red-500 bg-red-500/10 border border-red-500/25 rounded p-2 [overflow-wrap:anywhere]">
           {tile.detail}
         </div>
       )}

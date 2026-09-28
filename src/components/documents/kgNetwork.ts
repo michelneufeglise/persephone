@@ -19,6 +19,7 @@
 import type { Message } from '@/types'
 import { signatureData, type Tile, type Decision, type TileItem } from '@/lib/docAgent'
 import { SOCIAL_PLATFORMS, isSocialProfileUrl, resolvePlatform } from './socialPlatforms'
+import { friendlyDocName, storeSummary } from './kgFormat'
 
 export type RunNodeKind =
   | 'document'
@@ -106,15 +107,15 @@ export interface DecisionChip {
 // ── Sizes ────────────────────────────────────────────────────────────────────
 
 export const RUN_NODE_SIZES: Record<Exclude<RunNodeKind, 'decisions'>, { width: number; height: number }> = {
-  document: { width: 210, height: 60 },
-  question: { width: 230, height: 72 },
-  model: { width: 210, height: 60 },
-  planner: { width: 210, height: 60 },
-  web: { width: 210, height: 60 },
-  profile: { width: 210, height: 60 },
-  store: { width: 210, height: 60 },
-  signature: { width: 210, height: 60 },
-  runCompact: { width: 230, height: 64 },
+  document: { width: 232, height: 64 },
+  question: { width: 244, height: 92 },
+  model: { width: 212, height: 64 },
+  planner: { width: 212, height: 64 },
+  web: { width: 212, height: 64 },
+  profile: { width: 212, height: 64 },
+  store: { width: 228, height: 78 },
+  signature: { width: 224, height: 64 },
+  runCompact: { width: 256, height: 68 },
 }
 export const DECISIONS_CARD_WIDTH = 240
 /** Lane reference chips (shared documents / models repeated per lane). */
@@ -407,15 +408,24 @@ export function buildRunGraph(
       if (d?.id?.startsWith('role-') && d.value) roleByDoc.set(d.id.slice(5), String(d.value))
     }
     const docNodes = docs.map(doc => {
+      const role = doc.role || roleByDoc.get(doc.id) || null
       const n = addNode({
         id: `doc:${doc.id}`,
         kind: 'document',
-        label: doc.name,
-        data: { docId: doc.id, filename: doc.name, kind: inferDocKind(doc.name), pages: doc.pages, roles: [] as string[], runKeys: [] as string[] },
+        // Friendly name on the card ("Handwritten letter"); full file name in the tooltip / details.
+        label: friendlyDocName(doc.name, { role }),
+        data: {
+          docId: doc.id,
+          filename: doc.name,
+          fullLabel: doc.name,
+          kind: inferDocKind(doc.name),
+          pages: doc.pages,
+          roles: [] as string[],
+          runKeys: [] as string[],
+        },
         runKey: null,
         column: 0,
       })
-      const role = doc.role || roleByDoc.get(doc.id) || null
       const roles = n.data.roles as string[]
       if (role && !roles.includes(role)) roles.push(role)
       const rk = n.data.runKeys as string[]
@@ -651,7 +661,10 @@ export function buildRunGraph(
           data: {
             mode: isQuery ? 'query' : 'ingest',
             status: t.status,
-            detail: t.detail,
+            // Ingest: what the run contributed ("5 entities (+2 new) · 7 relations (+4 new)"),
+            // not only the rows that happened to be new ("+0 entities · +0 relations").
+            detail: isQuery ? t.detail : storeSummary(t),
+            rawDetail: t.detail,
             items: (Array.isArray(t.items) ? t.items : []).map(it => String(it?.label ?? '')).filter(Boolean),
             preview: t.output_preview || null,
           },

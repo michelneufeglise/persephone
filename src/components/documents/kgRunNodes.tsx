@@ -301,7 +301,7 @@ export function RunCardNode({ data }: { data: RunCardData }) {
         </span>
         <div className="min-w-0 flex-1 flex flex-col gap-0.5">
           <div className="flex items-center gap-1.5 min-w-0">
-            <span className="text-[9px] font-bold uppercase tracking-[0.12em] truncate" style={{ color }}>
+            <span className="text-[10px] font-bold uppercase tracking-[0.12em] truncate" style={{ color }}>
               {kind === 'model' && d.isLaya ? 'Decision model' : RUN_KIND_LABEL[kind]}
             </span>
             {statusColor && <span className="flex-shrink-0 w-1.5 h-1.5 rounded-full" style={{ background: statusColor }} title={status} />}
@@ -309,16 +309,20 @@ export function RunCardNode({ data }: { data: RunCardData }) {
           </div>
           <div
             className={clsx(
-              'font-semibold text-[var(--text-primary)] leading-snug line-clamp-2 break-words',
-              lanes ? 'text-[13px]' : 'text-[12.5px]',
-              kind === 'model' && 'font-mono !text-[12px]',
-              (kind === 'question' || kind === 'runCompact') && '!font-medium',
+              'font-semibold text-[var(--text-primary)] leading-snug break-words',
+              kind === 'question' ? 'line-clamp-3' : kind === 'document' ? 'line-clamp-1' : 'line-clamp-2',
+              lanes ? 'text-[13.5px]' : 'text-[13.5px]',
+              kind === 'model' && 'font-mono !text-[12.5px]',
+              (kind === 'question' || kind === 'runCompact') && '!font-medium !text-[13px]',
             )}
           >
             {data.label}
           </div>
           {subtitle && kind !== 'question' && kind !== 'runCompact' ? (
-            <div className="text-[10.5px] text-[var(--text-muted)] truncate leading-tight" title={subtitle}>
+            <div
+              className={clsx('text-[11.5px] text-[var(--text-muted)] leading-tight', kind === 'store' ? 'line-clamp-2 break-words' : 'truncate')}
+              title={subtitle}
+            >
               {subtitle}
             </div>
           ) : null}
@@ -364,7 +368,7 @@ export function RunBandNode({ data }: { data: RunBandData }) {
               title={`${data.label} — select this run`}
             >
               {statusColor && <span className="flex-shrink-0 w-1.5 h-1.5 rounded-full" style={{ background: statusColor }} />}
-              <span className="truncate text-[10.5px] font-semibold">{data.label}</span>
+              <span className="truncate text-[11.5px] font-semibold">{data.label}</span>
               {data.time && <span className="flex-shrink-0 text-[10px] font-mono opacity-70">{data.time}</span>}
             </button>
           ) : (

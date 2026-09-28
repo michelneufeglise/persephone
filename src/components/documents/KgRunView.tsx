@@ -339,7 +339,7 @@ function KgRunViewInner({ mode, convs, selectedMessageId, onSelectMessage, isExp
           focusable: false,
           data: {
             parts: band.parts.map(p => ({ x: p.rect.x - band.bbox.x, y: p.rect.y - band.bbox.y, width: p.rect.width, height: p.rect.height, role: p.role })),
-            label: truncate(run.question, 90),
+            label: truncate(run.question, 220),
             time: formatRunTime(run.timestamp),
             status: run.status,
             active,
@@ -445,8 +445,52 @@ function KgRunViewInner({ mode, convs, selectedMessageId, onSelectMessage, isExp
   }, [mode, elk, lanes, render, graphNodeById, graphEdgeById, runByKey, focus, focusRunKey, selectedRender, selectedGraphNode, matches, selectRun, setNodes, setEdges])
 
   // ── Viewport ──
+  /** Fit everything ("Fit" button, explicit). */
   const fitAll = useCallback(() => {
-    rf.fitView({ padding: 0.1, duration: 300, minZoom: 0.1, maxZoom: 1.2 })
+    rf.fitView({ padding: 0.08, duration: 300, minZoom: 0.1, maxZoom: 1.3 })
+  }, [rf])
+  /**
+   * Auto-fit (open / scope / tab switch / resize): fit the whole graph when it
+   * stays readable (zoom ≥ READABLE_ZOOM, i.e. ≥ ~11 px text); otherwise fit the
+   * selected — or latest — run at a readable zoom and let the user pan.
+   */
+  const focusIdsRef = useRef<string[]>([])
+  {
+    const run = selectedRun ?? graph.runs[graph.runs.length - 1] ?? null
+    // A single run is the whole graph (its documents sit outside the run band) — fit all of it.
+    focusIdsRef.current = !run || graph.runs.length <= 1
+      ? []
+      : mode === 'layers'
+        ? [`lane:${run.key}`, ...render.nodes.filter(n => n.laneKey === run.key).map(n => n.id)]
+        : [`band:${run.key}`, ...run.nodeIds.filter(id => render.byId.has(id))]
+  }
+  const fitReadable = useCallback(() => {
+    const el = wrapperRef.current?.querySelector('.react-flow') as HTMLElement | null
+    const all = rf.getNodes()
+    if (!el || all.length === 0) return
+    const b = rf.getNodesBounds(all)
+    const w = el.clientWidth
+    const h = el.clientHeight
+    if (!b.width || !b.height || !w || !h) return
+    const zoomAll = Math.min(w / (b.width * 1.06), h / (b.height * 1.06))
+    if (zoomAll >= FIT_ALL_MIN_ZOOM) {
+      rf.fitView({ padding: 0.06, duration: 300, maxZoom: 1.3 })
+      return
+    }
+    const present = new Set(all.map(n => n.id))
+    const ids = focusIdsRef.current.filter(id => present.has(id)).map(id => ({ id }))
+    if (ids.length === 0) {
+      rf.fitView({ padding: 0.06, duration: 300, minZoom: Math.min(READABLE_ZOOM, Math.max(MIN_RUN_ZOOM, zoomAll)), maxZoom: 1.3 })
+      return
+    }
+    // A run that is itself too wide for READABLE_ZOOM (e.g. document → question
+    // → Laya → planner → web → profile in a docked panel) is fitted whole (down
+    // to MIN_RUN_ZOOM) instead of being clipped on both sides.
+    const idSet = new Set(ids.map(n => n.id))
+    const rb = rf.getNodesBounds(all.filter(n => idSet.has(n.id)))
+    const zoomRun = rb.width && rb.height ? Math.min(w / (rb.width * 1.08), h / (rb.height * 1.08)) : READABLE_ZOOM
+    const floor = Math.min(READABLE_ZOOM, Math.max(MIN_RUN_ZOOM, zoomRun))
+    rf.fitView({ nodes: ids, padding: 0.08, duration: 300, minZoom: floor, maxZoom: 1.3 })
   }, [rf])
   // Fit when the view / number of runs / collapse state changes (not per tile).
   const fitKey = `${mode}|${graph.runs.length}|${collapseOlder ? 1 : 0}|${render.nodes.length > 0 ? 1 : 0}`
@@ -454,9 +498,9 @@ function KgRunViewInner({ mode, convs, selectedMessageId, onSelectMessage, isExp
   useEffect(() => {
     if (render.nodes.length === 0 || lastFitKey.current === fitKey) return
     lastFitKey.current = fitKey
-    const t = setTimeout(fitAll, 40)
+    const t = setTimeout(fitReadable, 60)
     return () => clearTimeout(t)
-  }, [fitKey, render.nodes.length, fitAll])
+  }, [fitKey, render.nodes.length, fitReadable])
   // Chat selection changed → bring that run into view.
   const lastSelectedMsg = useRef<string | null | undefined>(selectedMessageId)
   useEffect(() => {
@@ -487,14 +531,14 @@ function KgRunViewInner({ mode, convs, selectedMessageId, onSelectMessage, isExp
     let t: ReturnType<typeof setTimeout> | undefined
     const ro = new ResizeObserver(() => {
       if (t) clearTimeout(t)
-      t = setTimeout(fitAll, 150)
+      t = setTimeout(fitReadable, 150)
     })
     ro.observe(el)
     return () => {
       if (t) clearTimeout(t)
       ro.disconnect()
     }
-  }, [fitAll])
+  }, [fitReadable])
 
   const focusFirstMatch = useCallback(() => {
     const first = render.nodes.find(n => matches.has(n.id))
@@ -670,6 +714,12 @@ const LEGEND_EDGES: { category: EdgeCategory; label: string }[] = [
 ]
 
 const LEGEND_KEY = 'persephone-docs-kg-legend-open'
+/** Below this zoom card text drops under ~11 px — auto-fit focuses one run instead. */
+const READABLE_ZOOM = 0.8
+/** Fit the whole graph as long as it stays at least this legible (a single run always fits a docked panel). */
+const FIT_ALL_MIN_ZOOM = 0.64
+/** Lowest auto-fit zoom for a single run that doesn't fit at READABLE_ZOOM. */
+const MIN_RUN_ZOOM = 0.45
 const LEGEND_NARROW_PX = 640
 
 function RunLegend({ mode, open, onToggle }: { mode: 'network' | 'layers'; open: boolean; onToggle: () => void }) {
@@ -780,13 +830,15 @@ function RunDetailPanel({
   return (
     <aside className="absolute right-2 top-2 bottom-2 w-72 z-10 animate-in slide-in-from-right-4 duration-200" aria-label="Node details">
       {/* .glass-strong sets its own `position`, so the positioning lives on this wrapper. */}
-      <div className="glass-strong w-full h-full rounded-2xl flex flex-col overflow-hidden shadow-[var(--shadow-soft)]">
+      <div className="glass-strong kg-side-panel w-full h-full rounded-2xl flex flex-col overflow-hidden shadow-[var(--shadow-soft)]">
       <div className="flex items-start gap-2 px-3.5 pt-3 pb-2 border-b border-[var(--glass-stroke)]">
         <div className="min-w-0 flex-1">
           <div className="text-[0.6rem] font-bold uppercase tracking-[0.12em]" style={{ color }}>
             {kind ? RUN_KIND_LABEL[kind] : 'Node'}
           </div>
-          <div className="text-[0.85rem] font-semibold text-[var(--text-primary)] leading-snug break-words line-clamp-3">{node?.label || '—'}</div>
+          <div className="text-[0.85rem] font-semibold text-[var(--text-primary)] leading-snug break-words line-clamp-3" title={str(d.fullText) || str(d.fullLabel) || node?.label}>
+            {node?.label || '—'}
+          </div>
           {run && (
             <div className="text-[0.66rem] text-[var(--text-muted)] mt-0.5 font-mono">
               Run {run.index + 1}
@@ -858,8 +910,8 @@ function RunDetailPanel({
 
         {kind === 'document' && (
           <>
-            <Section title="File">
-              <div className={clsx(VALUE_CLS, 'break-all')}>{str(d.filename) || node.label}</div>
+            <Section title="File name">
+              <div className={clsx(VALUE_CLS, 'break-all font-mono text-[0.7rem]')}>{str(d.filename) || node.label}</div>
             </Section>
             <div className="grid grid-cols-2 gap-2">
               <Section title="Kind">

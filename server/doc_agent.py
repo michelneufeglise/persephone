@@ -2428,19 +2428,27 @@ async def run_agent(
                 counts = await hooks.kg_ingest(**ingest_kwargs)
 
                 # If ingest returned counts, emit a kg-ingest tile
-                if counts and any(counts.get(k, 0) > 0 for k in ["entities", "relations", "mentions"]):
-                    entities_count = counts.get("entities", 0)
-                    relations_count = counts.get("relations", 0)
-                    mentions_count = counts.get("mentions", 0)
-
+                if counts and any(
+                    counts.get(k, 0) > 0
+                    for k in ["entities", "relations", "mentions", "entities_seen", "relations_seen"]
+                ):
                     kg_ingest_tile = Tile(
                         id="kg-ingest",
                         kind="store",
                         title="Knowledge store",
                         status="done",
-                        detail=f"+{entities_count} entities · +{relations_count} relations · +{mentions_count} mentions",
+                        detail=_kg_ingest_detail(counts),
                         items=[],
                     )
+                    kg_ingest_tile.data = {
+                        "type": "kg_ingest",
+                        "entities": int(counts.get("entities_seen", counts.get("entities", 0)) or 0),
+                        "relations": int(counts.get("relations_seen", counts.get("relations", 0)) or 0),
+                        "mentions": int(counts.get("mentions_seen", counts.get("mentions", 0)) or 0),
+                        "new_entities": int(counts.get("entities", 0) or 0),
+                        "new_relations": int(counts.get("relations", 0) or 0),
+                        "new_mentions": int(counts.get("mentions", 0) or 0),
+                    }
 
                     # Add entity items if available (up to 6)
                     entity_list = counts.get("entity_list", [])
@@ -2716,6 +2724,29 @@ def _pick_questioned_doc(answer_docs: list[Any], subject_docs: list[Any]) -> Opt
     return sorted(cands, key=rank)[0]
 
 
+def _kg_ingest_detail(counts: dict) -> str:
+    """Knowledge-store tile summary: what the run contributed (entities and
+    relations it touched) plus how many of those were new, e.g.
+    "5 entities (+2 new) · 7 relations (+4 new)". Falls back to the new-only
+    counts ("+2 entities · +4 relations · +3 mentions") when the ingest result
+    has no "*_seen" counts."""
+    ne = int(counts.get("entities", 0) or 0)
+    nr = int(counts.get("relations", 0) or 0)
+    nm = int(counts.get("mentions", 0) or 0)
+    if "entities_seen" not in counts and "relations_seen" not in counts:
+        return f"+{ne} entities · +{nr} relations · +{nm} mentions"
+    se = max(int(counts.get("entities_seen", 0) or 0), ne)
+    sr = max(int(counts.get("relations_seen", 0) or 0), nr)
+
+    def _part(n: int, new: int, one: str, many: str) -> str:
+        return f"{n} {one if n == 1 else many}" + (f" (+{new} new)" if new else "")
+
+    detail = f"{_part(se, ne, 'entity', 'entities')} · {_part(sr, nr, 'relation', 'relations')}"
+    if not ne and not nr:
+        detail += " · already known"
+    return detail
+
+
 def _signature_for_kg(
     result: dict,
     all_docs: list[Any],
@@ -2754,6 +2785,11 @@ def _signature_for_kg(
         "band": result.get("band"),
         "n_references": result.get("n_references"),
         "verified_at": result.get("verified_at"),
+        # Crop URLs (served by /api/idp/signatures/…) for the KG evidence panel
+        "questioned_url": (result.get("questioned") or {}).get("url") if isinstance(result.get("questioned"), dict) else None,
+        "reference_urls": [
+            r.get("url") for r in (result.get("references") or []) if isinstance(r, dict) and r.get("url")
+        ],
     }
 
 
