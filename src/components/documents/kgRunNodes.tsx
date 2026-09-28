@@ -25,6 +25,7 @@ import {
   Facebook,
   Instagram,
   Twitter,
+  Signature,
 } from 'lucide-react'
 import { SOCIAL_PLATFORMS, resolvePlatform, type SocialPlatform } from './socialPlatforms'
 import { visibleDecisionChips, type DecisionChip, type RunNodeKind } from './kgNetwork'
@@ -39,6 +40,7 @@ export const RUN_KIND_COLOR: Record<RunNodeKind, string> = {
   web: 'var(--holo)',
   profile: 'var(--holo)',
   store: '#fb923c',
+  signature: '#a78bfa',
   runCompact: '#34d399',
 }
 
@@ -51,6 +53,7 @@ export const RUN_KIND_LABEL: Record<RunNodeKind, string> = {
   web: 'Web lookup',
   profile: 'Profile',
   store: 'Knowledge store',
+  signature: 'Signature check',
   runCompact: 'Earlier run',
 }
 
@@ -111,6 +114,11 @@ function iconFor(kind: RunNodeKind, d: Record<string, unknown>): { Icon: React.E
     }
     case 'store':
       return { Icon: Database, color: RUN_KIND_COLOR.store }
+    case 'signature': {
+      const band = str(d.band)
+      const c = band === 'consistent' ? 'rgb(16 185 129)' : band === 'inconsistent' ? 'rgb(239 68 68)' : band === 'inconclusive' ? 'rgb(245 158 11)' : RUN_KIND_COLOR.signature
+      return { Icon: Signature, color: c }
+    }
   }
 }
 
@@ -141,6 +149,7 @@ function subtitleFor(kind: RunNodeKind, d: Record<string, unknown>): string {
     case 'planner':
     case 'web':
     case 'store':
+    case 'signature':
       return str(d.detail)
     case 'profile':
       return str(d.host)

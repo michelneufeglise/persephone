@@ -17,7 +17,7 @@
  * chips, so no edge ever leaves its lane.
  */
 import type { Message } from '@/types'
-import type { Tile, Decision, TileItem } from '@/lib/docAgent'
+import { signatureData, type Tile, type Decision, type TileItem } from '@/lib/docAgent'
 import { SOCIAL_PLATFORMS, isSocialProfileUrl, resolvePlatform } from './socialPlatforms'
 
 export type RunNodeKind =
@@ -29,9 +29,10 @@ export type RunNodeKind =
   | 'web'
   | 'profile'
   | 'store'
+  | 'signature'
   | 'runCompact'
 
-export type EdgeCategory = 'document' | 'decision' | 'model' | 'web' | 'store' | 'other'
+export type EdgeCategory = 'document' | 'decision' | 'model' | 'web' | 'store' | 'signature' | 'other'
 
 export interface RunNode {
   id: string
@@ -112,6 +113,7 @@ export const RUN_NODE_SIZES: Record<Exclude<RunNodeKind, 'decisions'>, { width: 
   web: { width: 210, height: 60 },
   profile: { width: 210, height: 60 },
   store: { width: 210, height: 60 },
+  signature: { width: 210, height: 60 },
   runCompact: { width: 230, height: 64 },
 }
 export const DECISIONS_CARD_WIDTH = 240
@@ -194,6 +196,7 @@ export function decisionChips(decisions: Decision[]): DecisionChip[] {
     if (id === 'intent') return 0
     if (id === 'web_lookup') return 1
     if (id === 'tool') return 2
+    if (id === 'signature_check') return 2.5
     if (id.startsWith('role-')) return 3
     if (id.startsWith('doc_kind-')) return 4
     if (id.startsWith('ocr_needed-')) return 5
@@ -219,6 +222,11 @@ export function decisionChips(decisions: Decision[]): DecisionChip[] {
     else if (id === 'web_lookup') {
       if (value && value !== 'none') chips.push({ id, text: `web: ${value}`, tone: 'web' })
     } else if (id === 'tool') chips.push({ id, text: `tool: ${value}`, tone: 'tool' })
+    else if (id === 'signature_check') {
+      if (value && value !== 'none') chips.push({ id, text: 'signature check', tone: 'tool' })
+    } else if (id.startsWith('handwritten-')) {
+      if (value === 'yes') chips.push({ id, text: 'handwritten', tone: 'doc' })
+    }
     else if (id.startsWith('ocr_needed-')) chips.push({ id, text: 'OCR needed', tone: 'doc' })
     else if (id === 'answer_model') chips.push({ id, text: `model: ${value}`, tone: 'model' })
     else if (id.startsWith('vision_fallback_')) chips.push({ id, text: `fallback: ${value || 'none'}`, tone: 'model' })
@@ -431,7 +439,7 @@ export function buildRunGraph(
           answer,
           decisionCount: decisions.length,
           chips: decisionChips(decisions),
-          resultCount: tiles.filter(t => t.kind === 'web' || t.kind === 'planner' || t.kind === 'store' || t.kind === 'query').length,
+          resultCount: tiles.filter(t => t.kind === 'web' || t.kind === 'planner' || t.kind === 'store' || t.kind === 'query' || t.kind === 'signature').length,
           conversationTitle: run.conv.title,
         },
         runKey: key,
@@ -516,7 +524,7 @@ export function buildRunGraph(
       }
     }
     for (const t of tiles) {
-      if (!t.model || (t.kind !== 'ocr' && t.kind !== 'vision' && t.kind !== 'extract')) continue
+      if (!t.model || (t.kind !== 'ocr' && t.kind !== 'vision' && t.kind !== 'extract' && t.kind !== 'signature')) continue
       const m = ensureModel(String(t.model), run, t.kind)
       addEdge({ id: `e:${key}:tile-model:${t.id}`, source: hub.id, target: m.id, label: t.kind, kind: `${t.kind}-model`, category: 'model', runKey: key, failed: t.status === 'error' })
     }
@@ -593,6 +601,45 @@ export function buildRunGraph(
         count++
       }
     }
+    // Signature verification (extra step): score + crops
+    const sigTile = tiles.find(t => t.kind === 'signature')
+    if (sigTile) {
+      const sd = signatureData(sigTile)
+      const sn = addNode({
+        id: `signature:${key}`,
+        kind: 'signature',
+        label: sd ? `${sd.score}% · ${sd.band}` : sigTile.title || 'Signature verification',
+        data: {
+          status: sigTile.status,
+          detail: sd?.band_label || sigTile.detail,
+          score: sd?.score ?? null,
+          band: sd?.band ?? null,
+          nReferences: sd?.n_references ?? null,
+          model: sd?.model ?? sigTile.model ?? null,
+          questioned: sd?.questioned?.url ?? null,
+          references: (sd?.references ?? []).map(r => r.url),
+          reasons: sd?.reasons ?? [],
+          warnings: sd?.warnings ?? [],
+          questionedDoc: sd?.questioned_doc ?? null,
+          referenceDocs: sd?.reference_docs ?? [],
+          fullText: sigTile.detail || '',
+        },
+        runKey: key,
+        column: 4,
+      })
+      info.nodeIds.push(sn.id)
+      addEdge({
+        id: `e:${key}:signature`,
+        source: hub.id,
+        target: sn.id,
+        label: 'signature check',
+        kind: 'signature-check',
+        category: 'signature',
+        runKey: key,
+        failed: sigTile.status === 'error',
+      })
+    }
+
     tiles
       .filter(t => t.kind === 'store' || t.kind === 'query')
       .forEach((t, i) => {

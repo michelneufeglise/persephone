@@ -12,7 +12,9 @@ Tables:
   kg_meta        — key/value flags for one-off migrations
 
 Entity types: person, organization, role, document, profile, location
-Relation types: has_role, works_at, owns, mentioned_in, candidate_profile, likely_profile, located_in
+Relation types: has_role, works_at, owns, mentioned_in, candidate_profile, likely_profile, located_in,
+  signed (person → document), signature_specimen (reference card document → person),
+  verified_against (document → reference card document; props score / band / verified_at)
 """
 
 from __future__ import annotations
@@ -345,8 +347,12 @@ def _add_relation_ex_sync(
     run_id: Optional[str] = None,
     conversation_id: Optional[str] = None,
     props: Optional[dict] = None,
+    replace_confidence: bool = False,
 ) -> tuple[str, bool]:
     """Upsert a relation; returns (relation_id, created).
+
+    `replace_confidence` overwrites the stored confidence instead of keeping
+    the maximum (a re-measured signature score replaces the old one).
 
     On update the relation is re-attributed to the latest run/conversation that
     produced it, so deleting an older conversation doesn't remove a relation a
@@ -366,7 +372,10 @@ def _add_relation_ex_sync(
         if row:
             # Keep max confidence
             old_conf = row["confidence"]
-            final_conf = max(old_conf, confidence) if old_conf is not None and confidence is not None else (confidence or old_conf)
+            if replace_confidence and confidence is not None:
+                final_conf = confidence
+            else:
+                final_conf = max(old_conf, confidence) if old_conf is not None and confidence is not None else (confidence or old_conf)
             # Merge props
             old_props = json.loads(row["props"] or "{}")
             merged_props = {**old_props, **props}
@@ -385,6 +394,18 @@ def _add_relation_ex_sync(
                 (rel_id, src_id, dst_id, type_, confidence, source, json.dumps(props), run_id, conversation_id, now),
             )
             return rel_id, True
+    finally:
+        conn.close()
+
+
+def _delete_relation_sync(src_id: str, dst_id: str, type_: str) -> int:
+    """Delete one relation (by endpoints + type). Returns rows deleted."""
+    conn = _connect()
+    try:
+        cur = conn.execute(
+            "DELETE FROM kg_relations WHERE src_id=? AND dst_id=? AND type=?", (src_id, dst_id, type_),
+        )
+        return cur.rowcount or 0
     finally:
         conn.close()
 
@@ -1548,6 +1569,7 @@ async def ingest_run(
     verdict: Optional[str] = None,  # Web lookup verdict text
     persons: Optional[list] = None,  # [{name, role, org, doc_id?}] — several people (identify_person)
     organizations: Optional[list] = None,  # [{name, doc_id, owner?, legal_form?, registered_since?, demo?, …}] — registry extracts
+    signature: Optional[dict] = None,  # {person, letter_doc, card_docs, score, band, n_references, verified_at} — signature check
 ) -> dict:
     """
     Populate the knowledge graph after a document agent run.
@@ -1560,6 +1582,11 @@ async def ingest_run(
     extracts: organization —mentioned_in→ its document, and (with an owner)
     person —owns→ organization (props legal_form / registered_since / demo).
     A demo/fictitious source marks the organization with props {"demo": true}.
+
+    `signature` (optional) records a signature check: letter document
+    —verified_against→ reference card document (props score / band /
+    verified_at), card —signature_specimen→ person and person —signed→ letter
+    (props confidence / band; omitted when the band is "inconsistent").
 
     Returns {"entities": N, "relations": N, "mentions": N, "entity_list": [...]}
     where the counts are NEW rows only (re-running the same question adds 0).
@@ -1585,11 +1612,12 @@ async def ingest_run(
 
     async def _relation(
         src: str, dst: str, type_: str, confidence: float, source: str, props: Optional[dict] = None,
+        replace: bool = False,
     ) -> None:
         _, created = await asyncio.to_thread(
             _add_relation_ex_sync, src, dst, type_,
             confidence=confidence, source=source, run_id=run_id, conversation_id=conversation_id,
-            props=props,
+            props=props, replace_confidence=replace,
         )
         if created:
             counts["relations"] += 1
@@ -1759,10 +1787,69 @@ async def ingest_run(
                         if not has_likely:
                             await _relation(person_entity_id, profile_entity_id, "candidate_profile", 0.5, "web_lookup")
 
+        # Signature check: letter —verified_against→ card, card —signature_specimen→
+        # person, person —signed→ letter
+        if isinstance(signature, dict) and signature.get("letter_doc") is not None and signature.get("card_docs"):
+            await _ingest_signature(signature, _entity, _relation, _looks_like_org, conversation_id, run_id)
+
         return counts
     except Exception as e:
         log.warning("kg ingest failed: %s", e)
         return counts
+
+
+async def _ingest_signature(signature: dict, _entity, _relation, looks_like_org, conversation_id, run_id) -> None:
+    def _doc_props(d, extra: Optional[dict] = None) -> dict:
+        did = getattr(d, "id", "unknown")
+        fname = getattr(d, "filename", did)
+        props = {"doc_id": did, "filename": fname, "kind": _doc_kind(fname, getattr(d, "mime", "") or "")}
+        props.update(extra or {})
+        return props
+
+    letter = signature["letter_doc"]
+    letter_eid = await _entity(
+        "document", getattr(letter, "filename", "document"), _doc_props(letter),
+        entity_id=f"document:{getattr(letter, 'id', 'unknown')}",
+    )
+    try:
+        score = int(round(float(signature.get("score"))))
+    except (TypeError, ValueError):
+        return
+    band = str(signature.get("band") or "")
+    conf = max(0.01, min(1.0, score / 100.0))
+    props = {"score": score, "band": band}
+    if signature.get("n_references"):
+        props["n_references"] = int(signature["n_references"])
+    if signature.get("verified_at"):
+        props["verified_at"] = str(signature["verified_at"])
+    pname = (signature.get("person") or "").strip()
+    person_id = None
+    if pname and not looks_like_org(pname):
+        person_id = await _entity("person", pname)
+    for card in signature.get("card_docs") or []:
+        card_eid = await _entity(
+            "document", getattr(card, "filename", "reference card"), _doc_props(card, {"signature_card": True}),
+            entity_id=f"document:{getattr(card, 'id', 'unknown')}",
+        )
+        await asyncio.to_thread(_link_conversation_doc_sync, conversation_id, getattr(card, "id", "unknown"), run_id)
+        await _relation(
+            letter_eid, card_eid, "verified_against", conf, "signature_engine",
+            {**props, **({"person": pname} if pname else {})}, replace=True,
+        )
+        if person_id:
+            await _relation(
+                card_eid, person_id, "signature_specimen", 0.9, "signature_engine",
+                {"n_references": props.get("n_references")} if props.get("n_references") else None,
+            )
+    if person_id:
+        if band == "inconsistent":
+            # The measured signature does not match: no "signed" claim for this pair
+            await asyncio.to_thread(_delete_relation_sync, person_id, letter_eid, "signed")
+        else:
+            await _relation(
+                person_id, letter_eid, "signed", conf, "signature_engine",
+                {"confidence": round(conf, 2), **props}, replace=True,
+            )
 
 
 def _hostname(url: str) -> str:

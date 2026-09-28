@@ -85,6 +85,8 @@ class HookDeps:
     kg_neighborhood: Optional[Callable[[str], Any]] = None  # (entity_id) -> awaitable dict with entities/relations
     kg_ingest: Optional[Callable[..., Any]] = None  # (...) -> awaitable dict
     sheet_frames: Optional[Callable[[Any], Any]] = None  # (doc) -> list[dict] parsed sheets | None (sync)
+    signature_dir: Optional[Callable[[str], Path]] = None  # (run_id) -> Path for signature crop PNGs
+    transcribe_handwriting: Optional[Callable[[Any, str], Any]] = None  # (doc, model) -> awaitable str
     ollama_base: str = "http://127.0.0.1:11434"  # Ollama base URL
 
 
@@ -192,7 +194,8 @@ def pick_signature_model(
     Pick a vision model for signature/handwriting comparison.
 
     Priority order:
-    1. config handwriting_model if installed AND vision-capable
+    0. config signature_model if installed AND vision-capable
+    1. config handwriting_model if installed AND vision-capable (never an OCR-only model)
     2. config vision_model if installed AND vision-capable
     3. First installed model starting with 'llama3.2-vision'
     4. First installed model starting with 'qwen2.5vl', 'gemma3', or 'minicpm-v'
@@ -216,9 +219,14 @@ def pick_signature_model(
         base = model_name.split(":", 1)[0]
         return any(m.split(":", 1)[0] == base for m in installed)
 
-    # 1. Handwriting model (only if vision-capable)
+    # 0. Signature Verification model (only if vision-capable)
+    signature = cfg.get("signature_model", "")
+    if signature and _is_installed(signature) and is_vision(signature) and not is_ocr_only_model(signature):
+        return signature
+
+    # 1. Handwriting model (only if vision-capable; an OCR-only model cannot compare)
     handwriting = cfg.get("handwriting_model", "")
-    if handwriting and _is_installed(handwriting) and is_vision(handwriting):
+    if handwriting and _is_installed(handwriting) and is_vision(handwriting) and not is_ocr_only_model(handwriting):
         return handwriting
 
     # 2. Vision model from config (only if vision-capable)
@@ -264,7 +272,8 @@ async def rank_signature_models(
     Rank available vision models for signature/handwriting comparison.
 
     Returns up to 4 candidates in priority order:
-    1. config handwriting_model (if installed, capable, not broken)
+    0. config signature_model (if installed, capable, not broken)
+    1. config handwriting_model (if installed, capable, not broken, not OCR-only)
     2. config vision_model (if installed, capable, not broken)
     3. installed llama3.2-vision* (if capable, not broken)
     4. remaining installed vision models sorted by size (ascending), excluding OCR-only
@@ -308,7 +317,7 @@ async def rank_signature_models(
     # Probe every model we might consider concurrently instead of one
     # /api/show call after another; the ranking below then reads the results.
     _probe_names: list[str] = []
-    for _n in (cfg.get("handwriting_model", ""), cfg.get("vision_model", "")):
+    for _n in (cfg.get("signature_model", ""), cfg.get("handwriting_model", ""), cfg.get("vision_model", "")):
         if _n and _is_installed(_n) and _n not in _probe_names:
             _probe_names.append(_n)
     for _n in installed:
@@ -355,9 +364,15 @@ async def rank_signature_models(
 
     candidates = []
 
-    # 1. config handwriting_model
+    # 0. config signature_model (Signature Verification role)
+    sig_model = cfg.get("signature_model", "")
+    if sig_model and _is_installed(sig_model) and not is_ocr_only_model(sig_model):
+        if not await _is_broken(sig_model) and await _is_vision_capable(sig_model):
+            candidates.append(sig_model)
+
+    # 1. config handwriting_model (an OCR-only model cannot compare signatures)
     hw_model = cfg.get("handwriting_model", "")
-    if hw_model and _is_installed(hw_model):
+    if hw_model and _is_installed(hw_model) and hw_model not in candidates and not is_ocr_only_model(hw_model):
         if not await _is_broken(hw_model) and await _is_vision_capable(hw_model):
             candidates.append(hw_model)
 
@@ -478,11 +493,13 @@ async def build_hooks(deps: HookDeps) -> "AgentHooks":
         """Pick the best available vision model based on config and installed."""
         cfg_str = await deps.get_config("vision_model") or ""
         handwriting_str = await deps.get_config("handwriting_model") or ""
+        signature_str = await deps.get_config("signature_model") or ""
         installed = await deps.installed_models()
 
         cfg = {
             "vision_model": cfg_str,
             "handwriting_model": handwriting_str,
+            "signature_model": signature_str,
         }
         return pick_signature_model(cfg, installed, deps.name_is_vision)
 
@@ -583,6 +600,7 @@ async def build_hooks(deps: HookDeps) -> "AgentHooks":
         prompt: str,
         reference_paths: list[str],
         subject_paths: list[str],
+        **kw: Any,
     ) -> str:
         """
         Call vision model, composing images if needed for single-image models.
@@ -592,6 +610,14 @@ async def build_hooks(deps: HookDeps) -> "AgentHooks":
         Otherwise, pass reference_paths + subject_paths as a list.
         """
         from image_compose import is_single_image_model, compose_comparison
+
+        extra = {"num_predict": kw["num_predict"]} if kw.get("num_predict") else {}
+        # One image list only (a composite, a candidates sheet, a page): send as-is
+        if not reference_paths or not subject_paths:
+            only = list(reference_paths or []) + list(subject_paths or [])
+            if is_single_image_model(model):
+                only = only[:1]
+            return await deps.vision_call(model, prompt, only, **extra)
 
         if is_single_image_model(model):
             # Single-image model: compose reference and subject
@@ -609,7 +635,7 @@ async def build_hooks(deps: HookDeps) -> "AgentHooks":
                 )
 
                 # Call vision with composite
-                return await deps.vision_call(model, prompt, [str(composite_path)])
+                return await deps.vision_call(model, prompt, [str(composite_path)], **extra)
             finally:
                 # Clean up composite
                 try:
@@ -621,7 +647,7 @@ async def build_hooks(deps: HookDeps) -> "AgentHooks":
         else:
             # Multi-image model: pass reference + subject directly
             all_paths = reference_paths + subject_paths
-            return await deps.vision_call(model, prompt, all_paths)
+            return await deps.vision_call(model, prompt, all_paths, **extra)
 
     # Helper: stream LLM with thinking support
     async def stream_llm_fn(
@@ -843,12 +869,14 @@ async def build_hooks(deps: HookDeps) -> "AgentHooks":
         try:
             cfg_str = await deps.get_config("vision_model") or ""
             handwriting_str = await deps.get_config("handwriting_model") or ""
+            signature_str = await deps.get_config("signature_model") or ""
             installed = await deps.installed_models()
             tags = await deps.ollama_tags()
 
             cfg = {
                 "vision_model": cfg_str,
                 "handwriting_model": handwriting_str,
+                "signature_model": signature_str,
             }
             return await rank_signature_models(deps, cfg, installed, tags)
         except Exception as e:
@@ -882,6 +910,24 @@ async def build_hooks(deps: HookDeps) -> "AgentHooks":
         except Exception as e:
             log.debug(f"Laya web lookup failed: {e}")
             return None
+
+    # Helper: Laya signature-check decision (SYNC, called via asyncio.to_thread)
+    def laya_signature_fn(message: str) -> Optional[dict]:
+        if deps.laya is None or not hasattr(deps.laya, "decide_signature_check"):
+            return None
+        try:
+            return deps.laya.decide_signature_check(message)
+        except Exception as e:
+            log.debug(f"Laya signature check failed: {e}")
+            return None
+
+    def signature_dir_fn(run_id: str) -> Path:
+        if deps.signature_dir is not None:
+            return Path(deps.signature_dir(run_id))
+        from paths import uploads_dir
+        p = uploads_dir() / "_signatures" / run_id
+        p.mkdir(parents=True, exist_ok=True)
+        return p
 
     # Helper: pick a tool-capable model for web lookup (async)
     async def pick_tool_model_fn() -> Optional[dict]:
@@ -1069,5 +1115,9 @@ async def build_hooks(deps: HookDeps) -> "AgentHooks":
         sheet_frames=deps.sheet_frames,
         pick_tool_model=pick_tool_model_fn,
         chat_tools=chat_tools_fn,
+        signature_candidates=vision_candidates_fn,  # signature_model > handwriting_model > vision_model > …
+        signature_dir=signature_dir_fn,
+        laya_signature=laya_signature_fn,
+        transcribe_handwriting=deps.transcribe_handwriting,
         now_ms=now_ms_fn,
     )

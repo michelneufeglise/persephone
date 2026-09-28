@@ -4253,7 +4253,7 @@ async def setup_tts_install():
 # users can pick newly-pulled Ollama models without re-running the wizard.
 _MODEL_ROLE_KEYS = [
     "active_model", "judge_model", "vision_model", "code_model",
-    "ocr_model", "docs_model", "handwriting_model", "tables_model",
+    "ocr_model", "docs_model", "handwriting_model", "signature_model", "tables_model",
     "multidoc_model", "web_lookup_model", "embed_model",
     # Ableton composer roles: standard + deep-reasoning slots. Empty string
     # means "fall back to _PLANNER_PREF / _DEEP_PLANNER_PREF in the composer".
@@ -4274,6 +4274,7 @@ class ModelRolesUpdate(BaseModel):
     ocr_model:              str | None = None
     docs_model:             str | None = None
     handwriting_model:      str | None = None
+    signature_model:        str | None = None
     tables_model:           str | None = None
     multidoc_model:         str | None = None
     web_lookup_model:       str | None = None
@@ -4589,6 +4590,7 @@ async def _resolve_doc_model(category: str = "docs") -> str:
         "ocr":         ["ocr_model", "vision_model", "docs_model"],
         "docs":        ["docs_model", "vision_model", "ocr_model"],
         "handwriting": ["handwriting_model", "vision_model", "ocr_model"],
+        "signature":   ["signature_model", "handwriting_model", "vision_model"],
         "tables":      ["tables_model", "code_model", "active_model"],
         "multidoc":    ["multidoc_model", "docs_model", "active_model"],
         "text":        ["active_model"],
@@ -5086,6 +5088,35 @@ def _agent_tmp_dir() -> Path:
     return tmp
 
 
+def _signatures_dir() -> Path:
+    """Root folder for signature-verification crops (one sub-folder per run)."""
+    p = paths.uploads_dir() / "_signatures"
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def _signature_run_dir(run_id: str) -> Path:
+    import signature_engine as _se
+    if not _se.RUN_ID_RE.match(run_id or ""):
+        raise ValueError("invalid run id")
+    p = _signatures_dir() / run_id
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+@app.get("/api/idp/signatures/{run_id}/{name}")
+async def idp_signature_crop(run_id: str, name: str):
+    """Serve a signature crop PNG of a signature-verification run. Ids are
+    validated (no path traversal; only questioned / ref_N / cand_N /
+    candidates / compare .png)."""
+    from fastapi.responses import FileResponse
+    import signature_engine as _se
+    p = _se.safe_crop_path(_signatures_dir(), run_id, name)
+    if p is None:
+        raise HTTPException(404, "Not found")
+    return FileResponse(str(p), media_type="image/png", headers={"Cache-Control": "private, max-age=86400"})
+
+
 async def _cleanup_agent_tmp() -> None:
     """Delete files older than 1 hour in the agent temp directory."""
     import glob
@@ -5259,6 +5290,8 @@ async def idp_agent(req: AgentRequest):
             kg_neighborhood=_kg_store.neighborhood,
             kg_ingest=_kg_store.ingest_run,
             sheet_frames=_idp.sheet_frames,
+            signature_dir=_signature_run_dir,
+            transcribe_handwriting=_idp.run_handwriting_transcription,
             ollama_base=OLLAMA_BASE,
         )
     )

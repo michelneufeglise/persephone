@@ -35,7 +35,11 @@ const ROLES = [
   },
   {
     key: 'handwriting_model', label: 'Handwriting', required: false,
-    description: 'Reads handwritten notes, cursive, and signatures.',
+    description: 'Reads (transcribes) handwritten letters, notes and cursive in the Documents agent — line breaks, names and numbers kept, unreadable words marked [?].',
+  },
+  {
+    key: 'signature_model', label: 'Signature Verification', required: false,
+    description: 'Vision model that picks which handwritten line is the signature and explains similarities / differences with the reference signatures. The score itself comes from a local, deterministic engine. Needs a vision-capable model (e.g. gemma4:12b, qwen2.5vl, minicpm-v) — not an OCR-only model. Empty = Handwriting → Vision model.',
   },
   {
     key: 'tables_model', label: 'Spreadsheets & Tables', required: false,
@@ -68,7 +72,7 @@ type RoleValues = Record<RoleKey, string>
 
 const EMPTY_ROLES: RoleValues = {
   active_model: '', judge_model: '', vision_model: '', code_model: '',
-  ocr_model: '', docs_model: '', handwriting_model: '', tables_model: '',
+  ocr_model: '', docs_model: '', handwriting_model: '', signature_model: '', tables_model: '',
   multidoc_model: '', web_lookup_model: '', embed_model: '',
   ableton_composer_model: '', ableton_deep_model: '',
 }

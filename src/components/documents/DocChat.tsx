@@ -26,6 +26,7 @@ const EXAMPLE_PROMPTS: { text: string; select?: string }[] = [
   { text: 'Summarize this document in 3 bullets' },
   { text: 'Who is this about — and check LinkedIn if this person exists' },
   { text: 'What do we know about <name> across my documents?', select: '<name>' },
+  { text: 'Read this handwritten letter, check the company in the registry, and verify the signature against the reference card' },
 ]
 
 export function DocChat({
@@ -189,7 +190,7 @@ export function DocChat({
         onStop={chat.stop}
         enableRoles={true}
         largePasteChars={1500}
-        accept={`image/*,.pdf,.docx,.doc,${SHEET_ACCEPT},.txt,.md,.rtf,.pptx,.odt,.html,.htm,.json,.xml,.eml`}
+        accept={`image/*,.heic,.heif,.pdf,.docx,.doc,${SHEET_ACCEPT},.txt,.md,.rtf,.pptx,.odt,.html,.htm,.json,.xml,.eml`}
         placeholder={selectedDocIds.length > 0 ? `Ask about the ${selectedDocIds.length} selected document${selectedDocIds.length === 1 ? '' : 's'}…` : "Ask about your documents — attach files with the paperclip, paste an email, or drop files here"}
         resetKey={chat.activeId}
         selectedMessageId={selectedMessageId}

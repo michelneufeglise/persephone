@@ -129,13 +129,17 @@ export function buildEntityGraph(
     }
   })
 
-  const edges: KEdge[] = relations.map(r => ({
-    id: r.id,
-    source: r.src,
-    target: r.dst,
-    label: relationLabel(r.type),
-    kind: r.type,
-  }))
+  const edges: KEdge[] = relations.map(r => {
+    const score = (r.props || {})['score']
+    const withScore = (r.type === 'signed' || r.type === 'verified_against') && typeof score === 'number'
+    return {
+      id: r.id,
+      source: r.src,
+      target: r.dst,
+      label: withScore ? `${relationLabel(r.type)} · ${score}%` : relationLabel(r.type),
+      kind: r.type,
+    }
+  })
 
   return { nodes, edges }
 }

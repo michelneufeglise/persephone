@@ -47,6 +47,10 @@ const ENTITY_EDGE_STYLE: Record<string, { stroke: string; strokeWidth: number; s
   works_at: { stroke: 'var(--text-secondary)', strokeWidth: 1.5 },
   located_in: { stroke: 'var(--text-secondary)', strokeWidth: 1.5 },
   mentioned_in: { stroke: 'var(--text-muted)', strokeWidth: 1.5, strokeDasharray: '1.5 4', opacity: 0.8 },
+  owns: { stroke: 'var(--text-secondary)', strokeWidth: 1.5 },
+  signed: { stroke: 'rgb(16 185 129)', strokeWidth: 2 },
+  verified_against: { stroke: '#a78bfa', strokeWidth: 1.8, strokeDasharray: '6 4' },
+  signature_specimen: { stroke: 'var(--gold)', strokeWidth: 1.6, strokeDasharray: '3 3' },
 }
 
 interface KnowledgeGraphProps {

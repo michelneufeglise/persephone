@@ -666,13 +666,14 @@ const LEGEND_EDGES: { category: EdgeCategory; label: string }[] = [
   { category: 'model', label: 'model' },
   { category: 'web', label: 'web' },
   { category: 'store', label: 'store' },
+  { category: 'signature', label: 'signature' },
 ]
 
 const LEGEND_KEY = 'persephone-docs-kg-legend-open'
 const LEGEND_NARROW_PX = 640
 
 function RunLegend({ mode, open, onToggle }: { mode: 'network' | 'layers'; open: boolean; onToggle: () => void }) {
-  const kinds = ['document', 'question', 'decisions', 'model', 'web', 'store'] as const
+  const kinds = ['document', 'question', 'decisions', 'model', 'web', 'store', 'signature'] as const
   const pillClass =
     'pointer-events-auto inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--text-muted)] hover:text-[var(--text-secondary)] bg-[var(--bg-glass-strong)] border border-[var(--border-glass)] backdrop-blur transition-colors'
   if (!open) {
@@ -960,6 +961,37 @@ function RunDetailPanel({
                 <div className={clsx(VALUE_CLS, 'break-words')}>{str(d.detail)}</div>
               </Section>
             )}
+          </>
+        )}
+
+        {kind === 'signature' && (
+          <>
+            <Section title="Score">
+              <div className={clsx(VALUE_CLS, 'break-words')}>{str(d.detail) || '—'}</div>
+            </Section>
+            {(str(d.questioned) || (Array.isArray(d.references) && d.references.length > 0)) && (
+              <Section title="Questioned vs references">
+                <div className="grid grid-cols-3 gap-1">
+                  {str(d.questioned) && (
+                    <a href={str(d.questioned)} target="_blank" rel="noopener noreferrer" className="col-span-3 block rounded border border-[var(--glass-stroke)] bg-white overflow-hidden">
+                      <img src={str(d.questioned)} alt="Questioned signature" className="w-full h-14 object-contain" />
+                    </a>
+                  )}
+                  {(Array.isArray(d.references) ? (d.references as string[]) : []).slice(0, 6).map((u, i) => (
+                    <a key={u} href={u} target="_blank" rel="noopener noreferrer" className="block rounded border border-[var(--glass-stroke)] bg-white overflow-hidden" title={`R${i + 1}`}>
+                      <img src={u} alt={`Reference ${i + 1}`} className="w-full h-8 object-contain" />
+                    </a>
+                  ))}
+                </div>
+              </Section>
+            )}
+            {str(d.model) && (
+              <Section title="Signature model">
+                <div className={clsx(VALUE_CLS, 'font-mono')}>{str(d.model)}</div>
+              </Section>
+            )}
+            <ItemList title="Reasons" items={Array.isArray(d.reasons) ? (d.reasons as string[]) : []} />
+            <ItemList title="Warnings" items={Array.isArray(d.warnings) ? (d.warnings as string[]) : []} />
           </>
         )}
 

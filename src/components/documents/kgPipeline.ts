@@ -1,5 +1,5 @@
 import { MarkerType, type Node, type Edge } from '@xyflow/react'
-import type { Tile, KGGraph } from '@/lib/docAgent'
+import { signatureData, type Tile, type KGGraph } from '@/lib/docAgent'
 import { targetsLabel } from './socialPlatforms'
 
 /**
@@ -176,6 +176,8 @@ export function buildPipeline(
   const planTile = byId('web-plan') ?? byKind('planner')
   const queryTile = byId('kg-query') ?? byKind('query')
   const ingestTile = byId('kg-ingest') ?? byKind('store')
+  const sigTile = byId('signature-check') ?? byKind('signature')
+  const sig = signatureData(sigTile)
   const extractTiles = tiles.filter(
     t => t.id.startsWith('extract-') || t.kind === 'extract' || t.kind === 'ocr',
   )
@@ -297,6 +299,8 @@ export function buildPipeline(
   if (web) chips.push(`web: ${!web.value || web.value === 'none' ? 'off' : web.value}`)
   const tool = decision('tool')
   if (tool) chips.push(`tool: ${tool.value}`)
+  const sigDecision = decision('signature_check')
+  if (sigTile || (sigDecision && sigDecision.value !== 'none')) chips.push('signature check')
   const answerModel = decision('answer_model')
   if (answerModel) chips.push(`model: ${shortModel(answerModel.value)}`)
   addNode('toolselect', COL[1], ROW_MID, W, MID_H, {
@@ -345,6 +349,7 @@ export function buildPipeline(
     webSearches = mSearch ? Number(mSearch[1]) : items.filter(i => i.kind === 'query').length
     if (webUsed) contextDetails.push(`+ ${plural(webResults, 'web result')}`)
   }
+  if (sig) contextDetails.push(`+ signature score ${sig.score}%`)
   const facts = queryTile ? (queryTile.items ?? []).length : 0
   if (queryUsed) contextDetails.push(facts ? `+ ${plural(facts, 'fact')}` : `+ graph lookup`)
   if (contextDetails.length === 0) contextDetails.push('question only')
@@ -412,6 +417,25 @@ export function buildPipeline(
     details: queryDetails,
     used: queryUsed,
   })
+
+  // Signature verification (extra step): local engine + Signature model
+  if (sigTile) {
+    const sigDetails: string[] = []
+    if (sig) {
+      sigDetails.push(`${sig.score}% — ${sig.band}`)
+      sigDetails.push(`${plural(sig.n_references, 'reference')} · local engine`)
+      if (sig.model) sigDetails.push(shortModel(sig.model))
+    } else {
+      sigDetails.push(sigTile.detail || sigTile.status)
+    }
+    addNode('tool-signature', LLM_X - 10, ROW_TOOLS, W, TOOL_H, {
+      role: 'tool',
+      kindLabel: 'Tool · signature',
+      label: 'Signature check',
+      details: sigDetails,
+      used: isUsed(sigTile),
+    })
+  }
 
   // ── Knowledge store band (background) ─────────────────────────────────────
   const stats = kg?.stats
@@ -519,6 +543,7 @@ export function buildPipeline(
   addEdge('tool-web', 't', 'toolselect', 'b', { used: webUsed, curve: true })
   addEdge('tool-extract', 't', 'toolselect', 'b', { used: extractUsed, curve: true })
   addEdge('tool-query', 't', 'toolselect', 'b', { used: queryUsed, curve: true })
+  if (sigTile) addEdge('tool-signature', 't', 'llm', 'b', { used: isUsed(sigTile), label: sig ? `${sig.score}%` : undefined })
 
   // Knowledge store → tools
   addEdge('kg-lexical', 't', 'tool-web', 'b', { used: webUsed, curve: true })

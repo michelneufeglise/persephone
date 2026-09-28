@@ -41,7 +41,7 @@ VISION_PREFIXES = (
     "minicpm-v", "minicpm-o", "openbmb/minicpm",
     "llama3.2-vision", "llama4-vision",
     "llava",
-    "gemma3",
+    "gemma3", "gemma4",
     "granite3-vision", "granite3.2-vision",
     "moondream", "bakllava", "cogvlm", "internvl",
 )
@@ -344,6 +344,9 @@ def _detect_mime(filename: str) -> str:
             "png": "image/png",
             "jpg": "image/jpeg",
             "jpeg": "image/jpeg",
+            "heic": "image/heic",
+            "heif": "image/heif",
+            "webp": "image/webp",
             "doc": "application/msword",
             "rtf": "application/rtf",
             "pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
@@ -608,9 +611,19 @@ def _extract_doc(path: Path) -> list[str]:
 
 
 def _extract_image(path: Path, doc_dir: Path) -> list[str]:
-    """Single-page 'document' for raw images. OCR happens on demand."""
+    """Single-page 'document' for raw images. OCR happens on demand.
+
+    The page image is written as a real, upright PNG: HEIC/HEIF photos are
+    decoded (pillow-heif) and the EXIF orientation of phone photos is applied,
+    so vision models, the signature engine and the browser all see the same
+    upright image. Falls back to a plain copy when decoding fails."""
     out = doc_dir / "page_0001.png"
-    shutil.copy(path, out)
+    try:
+        import signature_engine as _se
+        _se.normalize_image_file(path, out)
+    except Exception as exc:
+        log.warning("image normalisation failed for %s (%s) — storing a copy", path.name, exc)
+        shutil.copy(path, out)
     return [str(out)]
 
 
@@ -1027,6 +1040,27 @@ def _num_ctx_for(prompt: str, num_predict: int, *, extra_tokens: int = 0) -> int
     return min(NUM_CTX_MAX, max(NUM_CTX_MIN, 1 << (max(est, 1) - 1).bit_length()))
 
 
+_THINKING_CACHE: dict[str, bool] = {}
+
+
+async def _model_thinks(model: str) -> bool:
+    """True when Ollama reports the "thinking" capability for `model` (cached).
+    Vision calls then send think=false: a thinking model (e.g. gemma4) would
+    otherwise reason for ~2 minutes before transcribing one page."""
+    if model in _THINKING_CACHE:
+        return _THINKING_CACHE[model]
+    thinks = False
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as c:
+            r = await c.post(f"{OLLAMA_BASE}/api/show", json={"model": model})
+            if r.status_code == 200:
+                thinks = "thinking" in (r.json().get("capabilities") or [])
+    except Exception:
+        return False
+    _THINKING_CACHE[model] = thinks
+    return thinks
+
+
 async def _ollama_vision_call(
     model: str, prompt: str, image_paths: list[str],
     *, num_predict: int = 2048,
@@ -1079,6 +1113,8 @@ async def _ollama_vision_call(
             "num_thread":  _hw.recommended_num_thread(),
         },
     }
+    if await _model_thinks(chosen):
+        payload["think"] = False
 
     try:
         async with httpx.AsyncClient(timeout=300.0) as client:
@@ -1291,6 +1327,53 @@ async def run_ocr(doc: Document, model: str, page_range: tuple[int, int] | None 
     if truncated:
         joined = f"{joined}\n\n{OCR_TRUNCATION_NOTE}".strip()
     return joined
+
+
+HANDWRITING_PAGE_NUM_PREDICT = 2048
+
+
+async def run_handwriting_transcription(doc: Document, model: str) -> str:
+    """Transcribe a handwritten document (one vision call per page, the
+    Handwriting model) — preserves line breaks, names and numbers, marks
+    unreadable words as [?]. Cached like OCR: fills doc.page_texts / doc.text
+    and sets meta last_ocr_at / ocr_model / handwritten / transcribed_by."""
+    from doc_signature import TRANSCRIBE_PROMPT
+
+    if not doc.page_images:
+        return doc.text or ""
+    n_images = len(doc.page_images)
+    indices = list(range(min(n_images, OCR_MAX_PAGES)))
+    page_texts = list(doc.page_texts)
+    if len(page_texts) < n_images:
+        page_texts.extend([""] * (n_images - len(page_texts)))
+    parts: list[str] = []
+    for pos, i in enumerate(indices):
+        try:
+            text = await _ollama_vision_call(
+                model, TRANSCRIBE_PROMPT, [doc.page_images[i]], num_predict=HANDWRITING_PAGE_NUM_PREDICT,
+            )
+        except RuntimeError as exc:
+            if pos == 0:
+                raise
+            log.warning("Handwriting transcription failed for %s page %d: %s", doc.id, i + 1, exc)
+            parts.append(f"[transcription failed for page {i + 1}]")
+            continue
+        text = (text or "").strip()
+        parts.append(text)
+        if text:
+            page_texts[i] = text
+    doc.page_texts = page_texts
+    doc.pages = max(doc.pages, len(page_texts))
+    doc.text = "\n\n".join(page_texts).strip()
+    now = int(time.time() * 1000)
+    doc.meta["last_ocr_at"] = now
+    doc.meta["ocr_model"] = model
+    doc.meta["ocr_pages"] = len(indices)
+    doc.meta["handwritten"] = True
+    doc.meta["transcribed_by"] = model
+    doc.meta["transcribed_at"] = now
+    await save_registry_async()
+    return "\n\n".join(p for p in parts if p)
 
 
 async def summarize(doc: Document, model: str, style: str = "brief") -> str:

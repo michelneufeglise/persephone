@@ -704,6 +704,20 @@ input[type='range'] { -webkit-appearance: none; appearance: none; }
   stroke-dasharray: 5 4 !important;
   opacity: 0.6;
 }
+.kg-entities .react-flow__edge.kg-ent-edge-signed .react-flow__edge-path {
+  stroke: rgb(16 185 129) !important;
+  stroke-width: 2px !important;
+}
+.kg-entities .react-flow__edge.kg-ent-edge-verified_against .react-flow__edge-path {
+  stroke: #a78bfa !important;
+  stroke-width: 1.8px !important;
+  stroke-dasharray: 6 4 !important;
+}
+.kg-entities .react-flow__edge.kg-ent-edge-signature_specimen .react-flow__edge-path {
+  stroke: var(--gold) !important;
+  stroke-width: 1.6px !important;
+  stroke-dasharray: 3 3 !important;
+}
 .kg-entities .react-flow__edge.kg-ent-edge-mentioned_in .react-flow__edge-path {
   stroke: var(--text-muted) !important;
   stroke-dasharray: 1.5 4 !important;
@@ -719,6 +733,7 @@ input[type='range'] { -webkit-appearance: none; appearance: none; }
 .kg-network .kg-net-edge--model { --kg-edge: var(--accent); }
 .kg-network .kg-net-edge--web { --kg-edge: var(--holo); }
 .kg-network .kg-net-edge--store { --kg-edge: #fb923c; }
+.kg-network .kg-net-edge--signature { --kg-edge: #a78bfa; }
 .kg-network .kg-net-edge__path {
   stroke: var(--kg-edge);
   stroke-width: 1.25px;
@@ -803,6 +818,7 @@ input[type='range'] { -webkit-appearance: none; appearance: none; }
 .kg-network .kg-legend__line--model { background: var(--accent); }
 .kg-network .kg-legend__line--web { background: var(--holo); }
 .kg-network .kg-legend__line--store { background: #fb923c; }
+.kg-network .kg-legend__line--signature { background: #a78bfa; }
 .kg-network .react-flow__controls.kg-controls-shifted { right: 19.5rem !important; }
 /* Knowledge Graph header view tabs: scroll horizontally at narrow widths, no visible scrollbar */
 .kg-tabs-scroll { scrollbar-width: none; -ms-overflow-style: none; }

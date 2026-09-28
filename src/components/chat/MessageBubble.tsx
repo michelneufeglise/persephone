@@ -110,7 +110,7 @@ function MessageBubbleImpl({ message, onSpeak, renderExtra, onSelect, selected }
 
       {/* Bubble */}
       <div
-        className={`max-w-[75%] flex flex-col ${isUser ? 'items-end' : 'items-start'} ${
+        className={`max-w-[75%] min-w-0 flex flex-col ${isUser ? 'items-end' : 'items-start'} ${
           !isUser && onSelect ? 'cursor-pointer' : ''
         }`}
         onClick={() => !isUser && onSelect && onSelect(message)}
@@ -193,7 +193,7 @@ function MessageBubbleImpl({ message, onSpeak, renderExtra, onSelect, selected }
         )}
 
         <div
-          className={`relative rounded-2xl px-4 py-3 text-[14px] leading-relaxed text-[var(--text-primary)]
+          className={`relative max-w-full min-w-0 rounded-2xl px-4 py-3 text-[14px] leading-relaxed text-[var(--text-primary)]
             ${isUser ? 'rounded-tr-md border border-[var(--glass-stroke)]' : 'rounded-tl-md glass-card'}`}
           style={{
             background: isUser ? 'var(--user-bubble)' : 'var(--ai-bubble)',

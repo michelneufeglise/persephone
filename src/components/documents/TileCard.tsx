@@ -2,11 +2,12 @@ import { useState } from 'react'
 import { motion } from 'framer-motion'
 import {
   Loader2, CheckCircle2, AlertCircle, SkipForward, Eye, FileText, ScanLine, Bot, Brain, Sparkles,
-  ChevronDown, ChevronRight, ListChecks, Globe, Search, Database, DatabaseZap, Table2,
+  ChevronDown, ChevronRight, ListChecks, Globe, Search, Database, DatabaseZap, Table2, Signature,
 } from 'lucide-react'
 import { clsx } from 'clsx'
-import type { Tile, TileItem } from '@/lib/docAgent'
+import { signatureData, type Tile, type TileItem } from '@/lib/docAgent'
 import { SOCIAL_PLATFORMS, resolvePlatform } from './socialPlatforms'
+import { SignatureTileBody } from './SignatureTileBody'
 
 /** Small coloured platform badge next to a search result (in / f / IG / 𝕏). */
 function PlatformBadge({ platform, url }: { platform?: string | null; url?: string | null }) {
@@ -43,6 +44,7 @@ const ICON_BY_KIND: Record<Tile['kind'], React.ElementType> = {
   query: DatabaseZap,
   store: Database,
   table: Table2,
+  signature: Signature,
 }
 
 function fmtCell(v: unknown): string {
@@ -160,7 +162,8 @@ function formatMs(ms: number | null): string {
 export function TileCard({ tile, now }: TileCardProps) {
   const [expandedDecision, setExpandedDecision] = useState<string | null>(null)
 
-  const IconComp = ICON_BY_KIND[tile.kind]
+  const IconComp = ICON_BY_KIND[tile.kind] ?? Sparkles
+  const sigData = tile.kind === 'signature' ? signatureData(tile) : null
   const isRunning = tile.status === 'running'
   const isDone = tile.status === 'done'
   const isError = tile.status === 'error'
@@ -314,7 +317,9 @@ export function TileCard({ tile, now }: TileCardProps) {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-baseline gap-2">
                         <span className="text-xs text-[var(--text-secondary)]">{decision.label}</span>
-                        <span className="font-medium text-[var(--text-primary)] text-sm">{decision.value}</span>
+                        <span className="font-medium text-[var(--text-primary)] text-sm">
+                          {decision.id.startsWith('role-') ? decision.value.replace(/_/g, ' ') : decision.value}
+                        </span>
                       </div>
                       {decision.note && (
                         <div className={clsx('text-xs mt-0.5 flex items-center gap-1', isWebLookupDecision ? 'text-amber-400' : 'text-[var(--text-muted)]')}>
@@ -385,6 +390,9 @@ export function TileCard({ tile, now }: TileCardProps) {
           </div>
         </div>
       )}
+
+      {/* Signature verification: score, crops, breakdown */}
+      {sigData && <SignatureTileBody data={sigData} />}
 
       {/* Table query: summary + compact result table */}
       {tile.kind === 'table' && tile.items && tile.items.length > 0 && <TableQueryItems items={tile.items} />}

@@ -446,6 +446,7 @@ export function buildKnowledgeGraph(
               ocr: 'ocr',
               extract: 'extract',
               vision: 'vision',
+              signature: 'signature',
             }
             const role = roleMap[tile.kind] || tile.kind
             const roles = (modelNode.data.roles as string[]) || []

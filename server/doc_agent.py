@@ -71,7 +71,7 @@ VERIFY_SIGNATURE_STRONG_CONFIDENCE = 0.85
 IDENTIFY_PERSON_STRONG_CONFIDENCE = 0.9
 
 INTENTS = {
-    "verify_signature": "Compare or verify a signature, handwriting, or document authenticity against a reference specimen or original",
+    "verify_signature": "ONLY compares or verifies a signature or handwriting against a reference specimen / signature card — no other task (no reading, summarising or checking the document's contents)",
     "identify_person": "Asks WHO a person is / whose document it is / which person it is about / the name of the person — the identity itself",
     "summarize": "Summarize content, extract key points, tl;dr, main takeaways, overview of the document",
     "extract_data": "Extract structured data from forms, tables, fields, amounts, dates, invoice items, entities, metadata, or billing information",
@@ -79,24 +79,26 @@ INTENTS = {
     "redact": "Remove, hide, obscure, or black out personal, sensitive, confidential, or private information",
     "general_question": "Asks for a specific fact or detail from the document(s), e.g. a date (date of birth, due date), an amount, an address, an age, a status, or what the document says about someone/something",
     "graph_query": "Asks what is known ACROSS the knowledge base / all documents / previous conversations about a person, organization or topic, or which documents mention something — not about one specific attached document",
-    "cross_reference": "Asks to compare / cross-reference / check consistency between two or more documents, or to verify one document's claims against another (e.g. CV vs company registry, invoice vs contract)",
+    "cross_reference": "Asks to compare / cross-reference / check consistency between two or more documents, or to verify one document's claims against another (e.g. CV vs company registry, invoice vs contract, a letter's company vs the registry — a signature check may be requested on top)",
 }
 
 # Prompts
 SIGNATURE_PROMPT = """You have been provided with one or more images for signature comparison.
 
 If multiple images are provided, they are ordered as:
-- First section(s): REFERENCE SPECIMEN (the known-good signature or handwriting to compare against)
-- Remaining section(s): DOCUMENT UNDER EXAMINATION (the signature or handwriting in question)
+- First section(s): REFERENCE SPECIMEN (the known-good signature(s) to compare against)
+- Remaining section(s): DOCUMENT UNDER EXAMINATION (the signature in question)
 
-If a single composite image is provided, it will have clear labels: 'REFERENCE SPECIMEN' for the top section and 'DOCUMENT UNDER EXAMINATION' for the lower section(s).
+If a single composite image is provided, it will have clear labels: 'REFERENCE SPECIMEN' / 'REFERENCE SIGNATURES' and 'DOCUMENT UNDER EXAMINATION' / 'QUESTIONED SIGNATURE'.
+
+When a LOCAL ENGINE RESULT is given below, it is a deterministic measurement of the same signatures and is AUTHORITATIVE: do not change its score or band — explain it.
 
 Your task:
 1. Locate the signature(s) in the document.
-2. Compare with the reference specimen on: stroke shape, letterforms, slant, proportions, spacing, pen pressure/line quality, flourishes.
+2. Compare with the reference specimen(s) on: stroke shape, letterforms, slant, proportions, spacing, pen pressure/line quality, flourishes.
 3. List observed similarities and differences with specifics.
-4. End with 'Visual similarity: low / moderate / high' and 'Confidence in this assessment: low/medium/high'.
-5. REQUIRED closing caveat: "This is an automated visual comparison by an AI model, NOT a forensic document examination, and must not be used as proof of authenticity or forgery."
+4. You may add your own short impression ('Visual similarity: low / moderate / high'), but the engine score is the measured result.
+5. REQUIRED closing caveat: "This is an automated visual comparison by an AI model, NOT a forensic document examination, and must not be used as proof of authenticity or forgery." (not a forensic determination)
 
 Do NOT declare the signature 'genuine' or 'forged'."""
 
@@ -150,6 +152,7 @@ FACTS (subject —relation→ object, with source and confidence) are listed bel
 Write a concise answer in 3–6 sentences or a short bullet list grouped as:
 - Identity & role
 - Documents
+- Signatures (only when there are signed / verified_against / signature_specimen facts: which document was signed, the signature score and band, against which reference card — an automated check, not a forensic determination)
 - Online presence
 
 Do NOT copy the facts list verbatim and do NOT repeat any line. Distinguish a *likely* LinkedIn profile from mere *candidates*. Cite the document names or website hosts given as "source" in parentheses (e.g. "(cv.pdf)", "(linkedin.com)"); never cite internal labels such as doc_agent or web_lookup. If something isn't in the facts, say it's unknown. Refer to people by their name; do not assume gender or use he/she.
@@ -199,6 +202,7 @@ class Tile:
     ms: Optional[int] = None  # Duration in ms when finished
     output_preview: Optional[str] = None  # First 300 chars of output
     doc: Optional[dict[str, str]] = None  # {"doc_id": str, "name": str} or None
+    data: Optional[dict[str, Any]] = None  # structured payload (e.g. signature-check scores / crop URLs)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -215,6 +219,7 @@ class Tile:
             "ms": self.ms,
             "output_preview": self.output_preview,
             "doc": self.doc,
+            "data": self.data,
         }
 
 
@@ -310,6 +315,12 @@ class AgentHooks:
     search_notes: Optional[Callable[[], list]] = None  # () -> [{"kind": "paced", "seconds": s}] pacing events since last call (sync)
     retrieve_chunks: Optional[Callable[[str, str, int], Any]] = None  # (doc_id, query, k) -> awaitable list[str] (RAG over the doc)
     sheet_frames: Optional[Callable[[Any], Any]] = None  # (doc) -> list[dict] parsed sheets (sheets.py) | None; sync/blocking
+    # Signature verification / handwriting
+    signature_candidates: Optional[Callable[[], Any]] = None  # () -> awaitable list[str] (signature_model > handwriting_model > vision_model > …)
+    signature_dir: Optional[Callable[[str], Any]] = None  # (run_id) -> Path for crop PNGs (under paths.uploads_dir())
+    laya_signature: Optional[Callable[[str], Any]] = None  # (message) -> {"value": "yes"|"no", "confidence"} | None; sync/blocking
+    transcribe_handwriting: Optional[Callable[[Any, str], Any]] = None  # (doc, model) -> awaitable str (caches on the doc like OCR)
+    card_probe: Optional[Callable[[str], Any]] = None  # (image path) -> {"is_card": bool, …}; sync (default: signature_engine.looks_like_signature_card)
     now_ms: Callable[[], int] = field(default_factory=lambda: lambda: int(time.time() * 1000))
 
 # ── Pure functions for intent & role resolution ─────────────────────────────
@@ -442,6 +453,13 @@ CROSS_REFERENCE_PATTERNS = [
     r"(?<!\w)mismatch(?:es|ed)?(?!\w)",
     r"(?<!\w)vergelijk\w*",
     r"(?<!\w)controleer(?!\w)(?:\W+\w+){0,10}?\W+tegen(?!\w)",
+    # "check the company in the registry", "verify the owner with the KvK"
+    r"(?<!\w)(?:check|verify|confirm|look\s+up)(?!\w)(?:\W+\w+){0,10}?\W+(?:in|with|at)\W+(?:the\W+|a\W+)?(?:company\W+|trade\W+|business\W+)?"
+    r"(?:regist\w*|handelsregister|kvk|chamber\s+of\s+commerce)(?!\w)",
+    r"(?<!\w)controleer(?!\w)(?:\W+\w+){0,12}?\W+(?:in|met)\W+(?:het\W+|de\W+)?(?:handelsregister|register|kvk|uittreksel)(?!\w)",
+    # "does the writer own the company in the registry", "owner according to the KvK"
+    r"(?<!\w)(?:own|owns|owned|owner|owners|ownership|eigenaar)(?!\w)(?:\W+\w+){0,8}?\W+(?:in|from|according\s+to|volgens)\W+"
+    r"(?:the\W+|a\W+|het\W+|de\W+)?(?:company\W+|trade\W+|business\W+)?(?:regist\w*|handelsregister|kvk|chamber\s+of\s+commerce)(?!\w)",
     r"(?<!\w)kom(?:t|en)(?!\w)(?:\W+\w+){0,5}?\W+overeen(?!\w)",
 ]
 _CROSS_REFERENCE_RES = [re.compile(p) for p in CROSS_REFERENCE_PATTERNS]
@@ -948,6 +966,16 @@ async def run_agent(
             if len(message_for_intent.strip()) < 3:
                 message_for_intent = "Who is this document about?"
 
+        # A signature check is an EXTRA STEP (like the web lookup): when the
+        # request also asks something else ("read this letter, check the company
+        # in the registry and verify the signature against the reference card")
+        # its clause is stripped before intent detection. A request that is only
+        # about signatures stays verify_signature.
+        import doc_signature as _doc_sig
+        sig_plan = _doc_sig.plan_signature_step(message_for_intent)
+        if sig_plan["combined"] and len(attachments) >= 2:
+            message_for_intent = sig_plan["remainder"]
+
         # Early intent detection (rules only) to check for graph_query
         # This allows graph_query to bypass attachment validation
         early_files = [{"doc_id": a.get("doc_id"), "name": ""} for a in attachments]
@@ -1155,6 +1183,18 @@ async def run_agent(
                         seen_labels.add(label_normalized)
 
                         conf_str = f" ({confidence:.0%})" if confidence else ""
+                        rprops = rel.get("props") or {}
+                        if rel_type in ("signed", "verified_against") and rprops.get("score") is not None:
+                            conf_str = (
+                                f" [signature score {rprops.get('score')}% — {rprops.get('band', '?')}"
+                                + (f", {rprops.get('n_references')} reference signatures" if rprops.get("n_references") else "")
+                                + (f", verified {str(rprops.get('verified_at'))[:10]}" if rprops.get("verified_at") else "")
+                                + "; automated check, not forensic]"
+                            )
+                        if rel_type == "signature_specimen":
+                            # Not a similarity score: the card holds the person's reference signatures
+                            n_refs = rprops.get("n_references")
+                            conf_str = f" [reference signature card{f' with {n_refs} specimen signatures' if n_refs else ''}]"
                         fact_text = f"- {label}{conf_str}" + (f" (source: {source})" if source else "")
                         if (rel.get("props") or {}).get("demo") or any(
                             (entities_map.get(x, {}).get("props") or {}).get("demo")
@@ -1176,6 +1216,9 @@ async def run_agent(
                         "has_role": 0,
                         "works_at": 1,
                         "owns": 1.5,
+                        "signed": 1.6,
+                        "signature_specimen": 1.7,
+                        "verified_against": 1.8,
                         "located_in": 2,
                         "mentioned_in": 3,
                         "likely_profile": 4,
@@ -1276,9 +1319,11 @@ async def run_agent(
 
                         # Stream LLM with token limit for graph_query answers
                         answer_text = ""
-                        # Try to pass num_predict if supported; cap graph_query answers at ~600 tokens
+                        # Try to pass num_predict if supported; cap graph_query answers at
+                        # ~1200 tokens (a reasoning model such as deepseek-r1 still streams
+                        # thinking with think=False, which counts against the cap)
                         try:
-                            async for delta in hooks.stream_llm(llm_model, prompt, think=False, num_predict=600):
+                            async for delta in hooks.stream_llm(llm_model, prompt, think=False, num_predict=1200):
                                 if "thinking" in delta:
                                     yield {"thinking": delta["thinking"]}
                                 elif "content" in delta:
@@ -1368,6 +1413,46 @@ async def run_agent(
                 source=web_lookup.get("source") or "rules",
                 note=web_note,
             ))
+
+        # Signature check decision: keyword rules + a signature reference card
+        # among the documents (file name, or an image with several signature-
+        # like blobs); Laya can corroborate but never trigger it on its own.
+        sig_card: Optional[dict] = None
+        sig_decision: Optional[dict] = None
+        if sig_plan["hits"] and len(docs) >= 2:
+            try:
+                sig_card = await _doc_sig.find_signature_reference(
+                    [d for d, _ in docs], hooks.card_probe or _default_card_probe(),
+                )
+            except Exception as e:
+                log.debug(f"signature reference detection failed: {e}")
+        if intent == "verify_signature":
+            laya_tile.decisions.append(Decision(
+                id="signature_check",
+                label="Signature check",
+                value="primary task",
+                source="rules",
+                note="local signature engine score + Signature model" + (
+                    f" · reference: {sig_card['name']}" if sig_card else ""
+                ),
+            ))
+        elif sig_plan["hits"]:
+            laya_sig = None
+            if hooks.laya_signature and message:
+                try:
+                    laya_sig = await asyncio.to_thread(hooks.laya_signature, message)
+                except Exception as e:
+                    log.debug(f"Laya signature check failed: {e}")
+            sig_decision = _doc_sig.resolve_signature_step(sig_plan, sig_card, len(docs), laya_sig)
+            laya_tile.decisions.append(Decision(
+                id="signature_check",
+                label="Signature check",
+                value=(f"yes — vs {sig_card['name']}" if sig_decision["value"] == "yes" and sig_card else "none"),
+                confidence=sig_decision.get("confidence"),
+                source=sig_decision.get("source") or "rules",
+                note=sig_decision.get("note"),
+            ))
+        signature_on = bool(sig_decision and sig_decision.get("value") == "yes" and sig_card)
         yield {"tile": laya_tile.to_dict()}
 
         # Decisions 2..n: roles (only if >=2 attachments or intent is verify_signature)
@@ -1376,13 +1461,40 @@ async def run_agent(
             assigned_roles = await asyncio.to_thread(
                 lambda: assign_roles(files_meta, message, hooks.laya_role, user_roles, intent)
             )
+            doc_by_id = {d.id: d for d, _ in docs}
             for role_info in assigned_roles:
+                role_value = role_info["role"]
+                role_source = role_info.get("source") or "rules"
+                role_note = role_info.get("note")
+                role_conf = role_info.get("confidence")
+                if sig_card and role_info["doc_id"] == sig_card["doc_id"] and (
+                    signature_on or intent == "verify_signature"
+                ):
+                    # The signature card is compared visually, never read as text
+                    role_value = "signature_reference" if signature_on else "reference"
+                    role_note = f"signature reference card ({sig_card['how']})"
+                    if role_source != "user":
+                        role_source, role_conf = "rules", None
+                elif signature_on and role_value == "signature_reference":
+                    role_value = "reference"
+                elif (
+                    signature_on and role_source != "user"
+                    and looks_like_registry(getattr(doc_by_id.get(role_info["doc_id"]), "text", "") or "")
+                ):
+                    # The registry extract is the reference for the company check
+                    role_value, role_source, role_conf = "reference", "rules", None
+                    role_note = "company registry extract (reference for the company check)"
+                elif signature_on and role_source != "user" and role_value != "subject":
+                    # The document carrying the questioned signature (the letter)
+                    role_value, role_source, role_conf = "subject", "rules", None
+                    role_note = "document under examination (questioned signature)"
                 laya_tile.decisions.append(Decision(
                     id=f"role-{role_info['doc_id']}",
                     label=f"Role ({role_info['name']})",
-                    value=role_info["role"],
-                    confidence=role_info.get("confidence"),
-                    source=role_info.get("source") or "rules",
+                    value=role_value,
+                    confidence=role_conf,
+                    source=role_source,
+                    note=role_note,
                 ))
             yield {"tile": laya_tile.to_dict()}
         else:
@@ -1428,12 +1540,15 @@ async def run_agent(
         # (labelled role="reference" in the prompt).
         subject_docs = []
         reference_docs = []
+        signature_ref_docs = []   # signature cards: compared visually, never read as text
         doc_roles: dict[str, str] = {}
         for doc, att in docs:
             role = _find_role(doc, laya_tile, docs)
             doc_roles[doc.id] = role
             if role == "subject":
                 subject_docs.append(doc)
+            elif role == "signature_reference":
+                signature_ref_docs.append(doc)
             else:
                 reference_docs.append(doc)
 
@@ -1487,7 +1602,65 @@ async def run_agent(
                 yield {"tile": laya_tile.to_dict()}
                 yield {"tile": extract_tile.to_dict()}
 
+                # Handwritten image (a letter): transcribed by the Handwriting
+                # model instead of the OCR model. Cached on the doc like OCR text.
+                hw = None
                 try:
+                    hw = await _handwriting_decision(hooks, doc, message)
+                except Exception as e:
+                    log.debug(f"handwriting check failed for {doc.id}: {e}")
+                if hw is not None:
+                    laya_tile.decisions.append(Decision(
+                        id=f"handwritten-{doc.id}",
+                        label=f"Handwritten ({doc.filename})",
+                        value="yes" if hw["handwritten"] else "no",
+                        source=hw.get("source") or "rules",
+                        note=hw.get("note"),
+                    ))
+                    yield {"tile": laya_tile.to_dict()}
+
+                try:
+                    hw_model = ""
+                    hw_note = None
+                    if hw is not None and hw.get("handwritten"):
+                        hw_model, hw_note = await _handwriting_model(hooks)
+                    if hw_model:
+                        extract_tile.title = f"Read handwriting · {doc.filename}"
+                        if hw_note:
+                            extract_tile.items.append({"kind": "note", "label": hw_note})
+                        extract_tile.model = hw_model
+                        extract_tile.model_info = await hooks.model_info(hw_model)
+                        extract_tile.detail = f"handwritten — transcribing with {_short_model(hw_model)}…"
+                        yield {"tile": extract_tile.to_dict()}
+                        try:
+                            ocr_text = await _transcribe_handwriting(hooks, doc, hw_model)
+                            if not (ocr_text or "").strip():
+                                raise RuntimeError("empty transcription")
+                        except Exception as e:
+                            # Fall back to the OCR model below
+                            log.warning(f"handwriting transcription failed ({hw_model}): {e}")
+                            try:
+                                hooks.mark_vision_failed(hw_model, str(e))
+                            except Exception:
+                                pass
+                            extract_tile.items.append({
+                                "kind": "note",
+                                "label": f"{_short_model(hw_model)} could not transcribe ({str(e)[:80]}) — using the OCR model",
+                            })
+                            ocr_text = None
+                        if ocr_text is not None:
+                            extract_tile.status = "done"
+                            extract_tile.detail = (
+                                f"handwritten — transcribed by {_short_model(hw_model)} · {len(ocr_text)} chars"
+                            )
+                            if len(doc.text or ocr_text or "") > doc_budget:
+                                extract_tile.detail += " · excerpts used"
+                            extract_tile.output_preview = ocr_text[:300]
+                            extract_tile.ms = hooks.now_ms() - extract_tile.started_ms
+                            yield {"tile": extract_tile.to_dict()}
+                            tiles_emitted[extract_tile.id] = extract_tile
+                            continue
+
                     ocr_model = await hooks.resolve_model("ocr")
                     extract_tile.model = ocr_model
                     extract_tile.model_info = await hooks.model_info(ocr_model)
@@ -1515,7 +1688,13 @@ async def run_agent(
                 extract_tile.status = "done"
                 extract_tile.kind = "extract"
                 meta = getattr(doc, "meta", None) or {}
-                if isinstance(meta, dict) and (meta.get("last_ocr_at") or meta.get("ocr_model")):
+                if isinstance(meta, dict) and meta.get("handwritten") and meta.get("transcribed_by"):
+                    # Earlier handwriting transcription (Handwriting model)
+                    extract_tile.model = str(meta.get("transcribed_by"))
+                    extract_tile.detail = (
+                        f"handwritten — transcribed by {_short_model(extract_tile.model)} (cached, {text_len} chars)"
+                    )
+                elif isinstance(meta, dict) and (meta.get("last_ocr_at") or meta.get("ocr_model")):
                     # Text comes from an earlier OCR pass (e.g. an image-only scan)
                     extract_tile.detail = f"OCR text (cached, {text_len} chars)"
                 elif text_len >= 40:
@@ -1601,21 +1780,47 @@ async def run_agent(
             started_ms=hooks.now_ms(),
         )
 
+        signature_result: Optional[dict] = None
+        web_result: Optional[dict] = None  # set by the web lookup (not on the verify_signature path)
+        answer_text = ""
+
         # Determine which model to use based on intent
         if intent == "verify_signature":
-            # Vision model: get candidates and try them in order with fallback
-            try:
-                candidates = await hooks.vision_candidates()
-            except Exception as e:
-                answer_tile.status = "error"
-                answer_tile.detail = f"Failed to get vision model candidates: {str(e)[:150]}"
-                yield {"tile": answer_tile.to_dict()}
-                yield {"error": answer_tile.detail}
-                return
+            # 1. Local engine: locate the questioned signature, segment the
+            #    reference card, score (the vision model then explains it).
+            sig_refs = [d for d, _ in docs if sig_card and d.id == sig_card["doc_id"]] or [
+                d for d, _ in docs if doc_roles.get(d.id) == "reference"
+            ]
+            sig_q = _pick_questioned_doc(
+                [d for d, _ in docs if d not in sig_refs], [d for d in subject_docs if d not in sig_refs],
+            )
+            if sig_refs and sig_q is not None:
+                async for ev in _doc_sig.run_signature_step(
+                    hooks, run_id=run_id, questioned_doc=sig_q, reference_docs=sig_refs, assess=False,
+                ):
+                    if "_signature_result" in ev:
+                        signature_result = ev["_signature_result"]
+                    elif not any(k.startswith("_") for k in ev):
+                        yield ev
+                        if "tile" in ev:
+                            tiles_emitted[ev["tile"]["id"]] = ev["tile"]
+            sig_ok = bool(signature_result and signature_result.get("ok"))
 
-            if not candidates:
+            # 2. Vision model (Signature role): candidates in order with fallback
+            try:
+                candidates = await (hooks.signature_candidates or hooks.vision_candidates)()
+            except Exception as e:
+                if not sig_ok:
+                    answer_tile.status = "error"
+                    answer_tile.detail = f"Failed to get vision model candidates: {str(e)[:150]}"
+                    yield {"tile": answer_tile.to_dict()}
+                    yield {"error": answer_tile.detail}
+                    return
+                candidates = []
+
+            if not candidates and not sig_ok:
                 answer_tile.status = "error"
-                answer_tile.detail = "No vision-capable model could be found. Install one that Ollama can run (e.g. `ollama pull minicpm-v`) or set a Handwriting model in Settings."
+                answer_tile.detail = "No vision-capable model could be found. Install one that Ollama can run (e.g. `ollama pull minicpm-v`) or set a Signature Verification model in Settings."
                 yield {"tile": answer_tile.to_dict()}
                 yield {"error": answer_tile.detail}
                 return
@@ -1626,18 +1831,33 @@ async def run_agent(
             answer_model_decision = Decision(
                 id="answer_model",
                 label="Answer Model",
-                value=candidates[0],  # Start with first
+                value=candidates[0] if candidates else "local signature engine",
                 source="config",
-                note="Vision model selected for signature comparison",
+                note="Vision model selected for signature comparison" if candidates else "No vision-capable Signature model — engine score only",
             )
             laya_tile.decisions.append(answer_model_decision)
 
             # Prepare image paths once (before the loop)
             subject_images = []
             reference_images = []
+            vision_prompt = SIGNATURE_PROMPT
+            sig_header = ""
+            if sig_ok:
+                files = signature_result.get("files") or {}
+                if files.get("questioned") and files.get("references"):
+                    # The engine's crops: the questioned signature + the references
+                    subject_images = [files["questioned"]]
+                    reference_images = list(files["references"])[:6]
+                vision_prompt = (
+                    SIGNATURE_PROMPT + "\n\nLOCAL ENGINE RESULT (authoritative — explain it, do not change it):\n"
+                    + _doc_sig.engine_summary(signature_result)
+                )
+                sig_header = "### Signature verification\n\n" + _doc_sig.signature_section_md(signature_result).rsplit("\n\n_", 1)[0]
+            elif signature_result and signature_result.get("warning"):
+                sig_header = f"⚠️ Local signature engine: {signature_result['warning']}"
 
             try:
-                for doc, _ in docs:
+                for doc, _ in (docs if not subject_images else []):
                     role = _find_role(doc, laya_tile, docs)
                     if role == "reference" and doc.page_images:
                         # Get first page of reference
@@ -1682,14 +1902,20 @@ async def run_agent(
                 try:
                     vision_result = await hooks.vision_call(
                         vision_model,
-                        SIGNATURE_PROMPT,
+                        vision_prompt,
                         reference_images,
                         subject_images,
                     )
 
                     # Success: emit content and mark tile as done
-                    for i in range(0, len(vision_result), 200):
-                        chunk = vision_result[i : i + 200]
+                    full = vision_result
+                    if sig_header:
+                        full = f"{sig_header}\n\n**Visual comparison ({_short_model(vision_model)})**\n\n{vision_result}"
+                        if "forensic" not in vision_result.lower():
+                            full += f"\n\n_{_doc_sig.CAVEAT}_"
+                    answer_text = full
+                    for i in range(0, len(full), 200):
+                        chunk = full[i : i + 200]
                         yield {"content": chunk}
 
                     answer_tile.status = "done"
@@ -1730,8 +1956,26 @@ async def run_agent(
                         # All failed; emit error
                         break
 
+            # No vision model could run, but the local engine has a score:
+            # answer with the engine result only.
+            if vision_result is None and sig_ok:
+                answer_text = (
+                    "### Signature verification\n\n" + _doc_sig.signature_section_md(signature_result)
+                    + "\n\n_No vision model could describe the signatures — this is the local engine's measurement only._"
+                )
+                for i in range(0, len(answer_text), 200):
+                    yield {"content": answer_text[i: i + 200]}
+                answer_tile.status = "done"
+                answer_tile.kind = "llm"
+                answer_tile.model = answer_tile.model or None
+                answer_tile.detail = "Local signature engine only (no vision model available)"
+                answer_tile.output_preview = answer_text[:300]
+                answer_tile.ms = hooks.now_ms() - answer_tile.started_ms
+                yield {"tile": answer_tile.to_dict()}
+                tiles_emitted["answer"] = answer_tile
+
             # If no candidate succeeded
-            if vision_result is None:
+            elif vision_result is None:
                 answer_tile.status = "error"
                 tried_info = "\n".join(
                     f"  • {att['model']}: {att['error']}"
@@ -1754,6 +1998,29 @@ async def run_agent(
         else:
             # LLM for all other intents
             answer_tile.kind = "llm"
+
+            # Signature check (extra step): locate → segment → score → visual
+            # assessment by the Signature model, before the answer.
+            if signature_on:
+                sig_q = _pick_questioned_doc(answer_docs, subject_docs)
+                sig_refs = signature_ref_docs or [d for d, _ in docs if sig_card and d.id == sig_card["doc_id"]]
+                if sig_q is None or not sig_refs:
+                    warn = "No document with a page image to take the questioned signature from"
+                    sig_tile = Tile(id=_doc_sig.TILE_ID, kind="signature", title=_doc_sig.TILE_TITLE,
+                                    status="error", detail=warn)
+                    yield {"tile": sig_tile.to_dict()}
+                    tiles_emitted[sig_tile.id] = sig_tile
+                    signature_result = {"ok": False, "warning": warn}
+                else:
+                    async for ev in _doc_sig.run_signature_step(
+                        hooks, run_id=run_id, questioned_doc=sig_q, reference_docs=sig_refs, assess=True,
+                    ):
+                        if "_signature_result" in ev:
+                            signature_result = ev["_signature_result"]
+                        elif not any(k.startswith("_") for k in ev):
+                            yield ev
+                            if "tile" in ev:
+                                tiles_emitted[ev["tile"]["id"]] = ev["tile"]
 
             # Resolve model
             category = "docs" if primary_docs else "text"
@@ -1912,6 +2179,7 @@ async def run_agent(
                     computed_result=computed_result,
                     task_notes=sheet_notes or None,
                     doc_roles=prompt_roles or None,
+                    signature_result=signature_result,
                 )
                 if excerpts:
                     longest = max(v["chars"] for v in excerpts.values())
@@ -1971,6 +2239,16 @@ async def run_agent(
                         yield {"content": run["text"]}
                     answer_text = run["text"]
                     break
+
+                # The signature score must be in the answer exactly as measured
+                if signature_result and signature_result.get("ok") and not _doc_sig.answer_mentions_score(
+                    answer_text, signature_result,
+                ):
+                    extra = "\n\n### Signature verification\n\n" + _doc_sig.signature_section_md(
+                        signature_result, signature_result.get("assessment"),
+                    )
+                    answer_text += extra
+                    yield {"content": extra}
 
                 answer_tile.status = "done"
                 answer_tile.output_preview = answer_text[:300]
@@ -2138,6 +2416,15 @@ async def run_agent(
                     ingest_kwargs["persons"] = persons_for_kg
                 if organizations_for_kg:
                     ingest_kwargs["organizations"] = organizations_for_kg
+                if signature_result and signature_result.get("ok"):
+                    sig_kg = _signature_for_kg(
+                        signature_result, [d for d, _ in docs], answer_text, history,
+                        owners=[o.get("owner") for o in organizations_for_kg if o.get("owner")],
+                        persons=[p.get("name") for p in (persons_for_kg or []) if isinstance(p, dict)]
+                        + ([person_for_kg.get("name")] if isinstance(person_for_kg, dict) else []),
+                    )
+                    if sig_kg:
+                        ingest_kwargs["signature"] = sig_kg
                 counts = await hooks.kg_ingest(**ingest_kwargs)
 
                 # If ingest returned counts, emit a kg-ingest tile
@@ -2282,6 +2569,192 @@ def _find_role(doc: Any, laya_tile: Tile, docs: list[tuple[Any, dict]]) -> str:
         if decision.id == f"role-{doc.id}":
             return decision.value
     return "subject"
+
+
+def _short_model(model: Optional[str]) -> str:
+    """`hf.co/org/Some-Model:q4` → `Some-Model:q4`."""
+    return (model or "").split("/")[-1] or (model or "")
+
+
+def _default_card_probe() -> Optional[Callable[[str], Any]]:
+    """signature_engine.looks_like_signature_card when the engine can run."""
+    try:
+        import signature_engine as _se
+        ok, _why = _se.available()
+        return _se.looks_like_signature_card if ok else None
+    except Exception:
+        return None
+
+
+def _downscaled_copy(path: str, max_side: int = 768) -> Optional[str]:
+    """A small PNG copy of a page image (for a cheap yes/no vision question)."""
+    try:
+        import paths as _paths
+        import signature_engine as _se
+        from PIL import Image
+        img = _se.open_pil(path)
+        img.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
+        out = _paths.uploads_dir() / "_agent_tmp"
+        out.mkdir(parents=True, exist_ok=True)
+        dst = out / f"hwcheck_{uuid.uuid4().hex[:8]}.png"
+        img.save(str(dst), "PNG")
+        return str(dst)
+    except Exception as e:
+        log.debug(f"downscaled copy failed for {path}: {e}")
+        return None
+
+
+def _remember_handwriting(doc: Any, handwritten: bool, source: str, note: str, model: Optional[str] = None) -> None:
+    meta = getattr(doc, "meta", None)
+    if isinstance(meta, dict):
+        meta["handwriting"] = {"handwritten": handwritten, "source": source, "note": note, "model": model}
+
+
+async def _handwriting_model(hooks: Any) -> tuple[str, Optional[str]]:
+    """(model, note) that reads handwriting: the Handwriting role, unless that is
+    an OCR-only model (e.g. Unlimited-OCR returns nothing / layout boxes for a
+    free-form transcription prompt) — then the first vision-capable Signature /
+    Vision candidate (signature_model > vision_model > …) with a tile note."""
+    import doc_signature as _doc_sig
+
+    model = await hooks.resolve_model("handwriting") or ""
+    if not model or not _doc_sig._is_ocr_only(model):
+        return model, None
+    try:
+        cands = await _doc_sig.signature_models(hooks)
+    except Exception:
+        cands = []
+    if not cands:
+        return model, None
+    return cands[0], f"{_short_model(model)} is OCR-only — handwriting read by {_short_model(cands[0])}"
+
+
+async def _handwriting_decision(hooks: Any, doc: Any, message: str) -> Optional[dict]:
+    """Is this document handwritten? {"handwritten", "source", "note"} or None
+    (unknown → the normal OCR path). Cached decision first, then file-name /
+    message hints (rules), then — for images only — a short yes/no question to
+    the Handwriting model on a downscaled copy (only when that model is a
+    vision LLM, never an OCR-only model)."""
+    import doc_signature as _doc_sig
+
+    meta = getattr(doc, "meta", None)
+    if isinstance(meta, dict):
+        cached = meta.get("handwriting")
+        if isinstance(cached, dict) and isinstance(cached.get("handwritten"), bool):
+            note = cached.get("note") or ""
+            return {
+                "handwritten": cached["handwritten"],
+                "source": "probe" if cached.get("source") == "probe" else "rules",
+                "note": f"cached · {note}" if note else "cached",
+            }
+    is_image = _doc_sig.is_image_doc(doc)
+    hint = _doc_sig.handwriting_hint(message, doc)
+    if hint and (is_image or hint.startswith("file name")):
+        _remember_handwriting(doc, True, "rules", hint)
+        return {"handwritten": True, "source": "rules", "note": hint}
+    if not is_image or not getattr(doc, "page_images", None):
+        return None
+    model, _ = await _handwriting_model(hooks)
+    if not model or _doc_sig._is_ocr_only(model):
+        return None
+    small = await asyncio.to_thread(_downscaled_copy, doc.page_images[0], 768)
+    if not small:
+        return None
+    try:
+        reply = await asyncio.wait_for(
+            hooks.vision_call(model, _doc_sig.HANDWRITING_CHECK_PROMPT, [], [small]), timeout=90,
+        )
+    except Exception as e:
+        log.debug(f"handwriting check with {model} failed: {e}")
+        return None
+    finally:
+        try:
+            import os
+            os.unlink(small)
+        except Exception:
+            pass
+    verdict = _doc_sig.parse_handwriting_answer(reply)
+    if verdict is None:
+        return None
+    note = f"asked {_short_model(model)} → {'handwritten' if verdict else 'printed'}"
+    _remember_handwriting(doc, verdict, "probe", note, model)
+    return {"handwritten": verdict, "source": "probe", "note": note}
+
+
+async def _transcribe_handwriting(hooks: Any, doc: Any, model: str) -> str:
+    """Transcribe a handwritten document with the Handwriting model (cached on
+    the doc like OCR text: doc.text, meta handwritten / transcribed_by)."""
+    if hooks.transcribe_handwriting:
+        return await hooks.transcribe_handwriting(doc, model)
+    text = await hooks.run_ocr(doc, model)
+    meta = getattr(doc, "meta", None)
+    if isinstance(meta, dict):
+        meta["handwritten"] = True
+        meta["transcribed_by"] = model
+    return text
+
+
+def _pick_questioned_doc(answer_docs: list[Any], subject_docs: list[Any]) -> Optional[Any]:
+    """The document whose signature is checked: a handwritten / image subject
+    document with page images — never a company-registry extract."""
+    import doc_signature as _doc_sig
+
+    ordered = list(subject_docs) + [d for d in answer_docs if d not in subject_docs]
+    cands = [d for d in ordered if getattr(d, "page_images", None)]
+    if not cands:
+        return None
+
+    def rank(d: Any) -> tuple:
+        meta = getattr(d, "meta", None) or {}
+        return (
+            1 if looks_like_registry(getattr(d, "text", "") or "") else 0,
+            0 if (isinstance(meta, dict) and meta.get("handwritten")) else 1,
+            0 if _doc_sig.is_image_doc(d) else 1,
+            0 if d in subject_docs else 1,
+        )
+
+    return sorted(cands, key=rank)[0]
+
+
+def _signature_for_kg(
+    result: dict,
+    all_docs: list[Any],
+    answer_text: str,
+    history: Optional[list[dict]],
+    owners: Optional[list[str]] = None,
+    persons: Optional[list[Optional[str]]] = None,
+) -> Optional[dict]:
+    """kg_store.ingest_run(signature=…) payload for a verified signature:
+    signer (a name the letter mentions — registry owner, person from the answer,
+    or the card's file name), letter / card documents, score, band."""
+    import doc_signature as _doc_sig
+    import doc_web as _doc_web
+
+    by_id = {getattr(d, "id", None): d for d in all_docs}
+    letter = by_id.get(result.get("questioned_doc_id"))
+    cards = [by_id[i] for i in (result.get("reference_doc_ids") or []) if i in by_id]
+    if letter is None or not cards:
+        return None
+    cands: list[Optional[str]] = list(owners or []) + list(persons or [])
+    try:
+        p = _doc_web.extract_person(answer_text or "", history or [])
+        if p and p.get("name"):
+            cands.append(p["name"])
+    except Exception:
+        pass
+    for c in cards:
+        cands.append(_doc_sig.name_from_filename(getattr(c, "filename", "")))
+    cands.append(_doc_sig.name_from_filename(getattr(letter, "filename", "")))
+    signer = _doc_sig.pick_signer(cands, getattr(letter, "text", "") or "")
+    return {
+        "person": signer,
+        "letter_doc": letter,
+        "card_docs": cards,
+        "score": result.get("score"),
+        "band": result.get("band"),
+        "n_references": result.get("n_references"),
+        "verified_at": result.get("verified_at"),
+    }
 
 
 def _is_junk_graph_entity(entity: dict) -> bool:
@@ -3054,6 +3527,7 @@ def _build_prompt_ex(
     computed_result: Optional[str] = None,
     task_notes: Optional[list[str]] = None,
     doc_roles: Optional[dict[str, str]] = None,
+    signature_result: Optional[dict] = None,
 ) -> tuple[str, dict[str, dict[str, Any]]]:
     """
     Build the LLM prompt. Returns (prompt, excerpts) where excerpts maps
@@ -3122,6 +3596,30 @@ def _build_prompt_ex(
     if not prompt_template and intent != "general_question":
         prompt_template = IDENTIFY_PERSON_PROMPT
 
+    # Signature check on top of the primary intent
+    sig_ok = bool(signature_result and signature_result.get("ok"))
+    if sig_ok:
+        import doc_signature as _doc_sig
+        line = _doc_sig.score_line(signature_result)
+        if intent == "cross_reference":
+            names = [
+                (getattr(d, "filename", "") or "document").replace("|", "/") for d in docs
+            ] or ["Document A", "Document B"]
+            if len(names) == 1:
+                names.append("Document B")
+            prompt_template = _doc_sig.COMBINED_XREF_PROMPT.format(
+                doc_columns=" | ".join(names), score_line=line, caveat=_doc_sig.CAVEAT,
+            )
+        else:
+            note = _doc_sig.SIGNATURE_ANSWER_NOTE.format(score_line=line, caveat=_doc_sig.CAVEAT)
+            prompt_template = (prompt_template + "\n\n" if prompt_template else "") + note
+    elif signature_result:
+        warn = signature_result.get("warning") or "unknown problem"
+        prompt_template = (prompt_template + "\n" if prompt_template else "") + (
+            f'A signature check was requested but could not be completed ({warn}). '
+            'Add a short "Signature verification" section that says so.'
+        )
+
     if excerpts:
         note = (
             "Some documents are long; only excerpts are shown (gaps are marked with … or […]). "
@@ -3150,6 +3648,14 @@ def _build_prompt_ex(
     if history_text:
         parts.append("PRIOR CONVERSATION (context for pronouns only — do not use as a source of facts):\n" + history_text)
     parts.append("DOCUMENT CONTENT:\n" + full_context)
+    if sig_ok:
+        import doc_signature as _doc_sig
+        parts.append(
+            "SIGNATURE VERIFICATION RESULT (local engine — authoritative):\n"
+            + _doc_sig.signature_prompt_block(
+                signature_result, signature_result.get("assessment"), signature_result.get("model"),
+            )
+        )
     if computed_result:
         parts.append(
             "COMPUTED RESULT (exact — computed with pandas over every row of the sheet):\n"

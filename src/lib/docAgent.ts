@@ -24,9 +24,52 @@ export interface TileItem {
   platform?: string | null
 }
 
+/** One row of the signature engine's per-feature breakdown. */
+export interface SignatureFeature {
+  feature: string
+  label: string
+  /** Mean distance of the questioned signature to the references. */
+  questioned_distance: number
+  /** Typical distance between the reference signatures (leave-one-out mean). */
+  reference_spread: number
+  reference_sd?: number
+  /** (questioned − spread) / sd — how unusual the questioned signature is for this feature. */
+  z: number
+  weight?: number
+  verdict: 'consistent' | 'borderline' | 'different'
+}
+
+export interface SignatureCrop {
+  url: string
+  doc?: string | null
+  bbox?: number[] | null
+}
+
+/** `data` of the "signature-check" tile (see server/doc_signature.py). */
+export interface SignatureTileData {
+  type: 'signature'
+  score: number
+  band: 'consistent' | 'inconclusive' | 'inconsistent'
+  band_label: string
+  combined_z?: number | null
+  n_references: number
+  breakdown: SignatureFeature[]
+  reasons: string[]
+  warnings: string[]
+  model: string | null
+  assessment: string | null
+  questioned: SignatureCrop | null
+  references: SignatureCrop[]
+  candidates?: { count: number; picked: number; picked_by: 'model' | 'heuristic'; urls?: string[]; sheet?: string | null } | null
+  engine?: string | null
+  questioned_doc?: string | null
+  reference_docs?: string[]
+  caveat?: string | null
+}
+
 export interface Tile {
   id: string
-  kind: 'laya' | 'extract' | 'ocr' | 'llm' | 'vision' | 'planner' | 'web' | 'query' | 'store' | 'table'
+  kind: 'laya' | 'extract' | 'ocr' | 'llm' | 'vision' | 'planner' | 'web' | 'query' | 'store' | 'table' | 'signature'
   title: string
   status: 'pending' | 'running' | 'done' | 'skipped' | 'error'
   model: string | null
@@ -46,6 +89,14 @@ export interface Tile {
   output_preview: string | null
   doc: { doc_id: string; name: string } | null
   items?: TileItem[]
+  /** Structured payload (signature-check tile: SignatureTileData). */
+  data?: SignatureTileData | Record<string, unknown> | null
+}
+
+/** The signature-check payload of a tile, when it has one. */
+export function signatureData(tile: Pick<Tile, 'data'> | null | undefined): SignatureTileData | null {
+  const d = tile?.data as Record<string, unknown> | null | undefined
+  return d && d.type === 'signature' && typeof d.score === 'number' ? (d as unknown as SignatureTileData) : null
 }
 
 // ── Knowledge Graph Types ──────────────────────────────────────────────────
@@ -62,9 +113,19 @@ export interface KGRelation {
   id: string
   src: string
   dst: string
-  type: 'has_role' | 'works_at' | 'mentioned_in' | 'candidate_profile' | 'likely_profile' | 'located_in'
+  type:
+    | 'has_role'
+    | 'works_at'
+    | 'owns'
+    | 'mentioned_in'
+    | 'candidate_profile'
+    | 'likely_profile'
+    | 'located_in'
+    | 'signed'
+    | 'signature_specimen'
+    | 'verified_against'
   confidence: number
-  source: 'doc_agent' | 'web_lookup'
+  source: 'doc_agent' | 'web_lookup' | 'signature_engine'
   props: Record<string, unknown>
 }
 
@@ -356,7 +417,7 @@ export async function fetchKnowledgeGraph(
 export function docKindFromName(name: string): 'pdf' | 'image' | 'email' | 'docx' | 'sheet' | 'text' | 'other' {
   const lower = name.toLowerCase()
   if (lower.endsWith('.pdf')) return 'pdf'
-  if (/\.(png|jpg|jpeg|gif|webp|svg)$/i.test(lower)) return 'image'
+  if (/\.(png|jpg|jpeg|gif|webp|svg|heic|heif|tif|tiff)$/i.test(lower)) return 'image'
   if (/\.(eml|msg)$/i.test(lower)) return 'email'
   if (/\.(docx?|odt|rtf)$/i.test(lower)) return 'docx'
   if (/\.(xlsx|xlsm|xls|ods|csv|tsv)$/i.test(lower)) return 'sheet'

@@ -43,7 +43,7 @@ LAYA_ROLE_MIN_CONFIDENCE = 0.7
 
 # Document assistant intents: ordered dict mapping intent name to one-line criteria description
 INTENTS = OrderedDict([
-    ("verify_signature", "Compare or verify a signature, handwriting, or document authenticity against a reference specimen or original"),
+    ("verify_signature", "ONLY compares or verifies a signature or handwriting against a reference specimen / signature card — no other task (no reading, summarising or checking the document's contents)"),
     ("identify_person", "Asks WHO a person is / whose document it is / which person it is about / the name of the person — the identity itself"),
     ("summarize", "Summarize content, extract key points, tl;dr, main takeaways, overview of the document"),
     ("extract_data", "Extract structured data from forms, tables, fields, amounts, dates, invoice items, entities, metadata, or billing information"),
@@ -51,7 +51,7 @@ INTENTS = OrderedDict([
     ("redact", "Remove, hide, obscure, or black out personal, sensitive, confidential, or private information"),
     ("general_question", "Asks for a specific fact or detail from the document(s), e.g. a date (date of birth, due date), an amount, an address, an age, a status, or what the document says about someone/something"),
     ("graph_query", "Asks what is known ACROSS the knowledge base / all documents / previous conversations about a person, organization or topic, or which documents mention something — not about one specific attached document"),
-    ("cross_reference", "Asks to compare / cross-reference / check consistency between two or more documents, or to verify one document's claims against another (e.g. CV vs company registry, invoice vs contract)"),
+    ("cross_reference", "Asks to compare / cross-reference / check consistency between two or more documents, or to verify one document's claims against another (e.g. CV vs company registry, invoice vs contract, a letter's company vs the registry — a signature check may be requested on top)"),
 ])
 
 # Singleton state
@@ -741,4 +741,42 @@ def decide_web_lookup(message: str) -> dict | None:
         }
     except Exception as exc:
         log.debug(f"Laya decide_web_lookup failed: {exc}")
+        return None
+
+
+def decide_signature_check(message: str) -> dict | None:
+    """
+    Classify whether a user request asks to check / verify / compare a signature
+    (on top of whatever else it asks). Yes/no, like decide_web_lookup.
+
+    Returns {"value": "yes"|"no", "confidence": float, "probabilities": {...}}
+    or None if Laya is unavailable, the message is empty, or prediction fails.
+    Never raises.
+    """
+    if not message or not isinstance(message, str):
+        return None
+    try:
+        msg_truncated = message[:1500]
+        criteria = {
+            "yes": "The user asks to verify, check or compare a handwritten signature against a reference signature or signature card",
+            "no": "The user does not ask anything about signatures",
+        }
+        result = judge_choice(
+            text=msg_truncated,
+            question_name="signature_check",
+            criteria=criteria,
+            instructions="Does the user ask to verify, check or compare a signature against a reference?",
+        )
+        if result is None:
+            return None
+        value = result.get("choice", "no")
+        if value not in criteria:
+            value = "no"
+        return {
+            "value": value,
+            "confidence": float(result.get("confidence", 0.0)),
+            "probabilities": dict(result.get("probabilities", {})),
+        }
+    except Exception as exc:
+        log.debug(f"Laya decide_signature_check failed: {exc}")
         return None

@@ -557,7 +557,7 @@ export function DocumentsPanel() {
                   e.target.value = '' // allow re-selecting the same file
                   if (files.length > 0) void handleUploadFiles(files)
                 }}
-                accept={`.pdf,.docx,.doc,${SHEET_ACCEPT},.txt,.md,.rtf,.pptx,.odt,.html,.htm,.json,.xml,.eml,.png,.jpg,.jpeg,.webp,.gif`}
+                accept={`.pdf,.docx,.doc,${SHEET_ACCEPT},.txt,.md,.rtf,.pptx,.odt,.html,.htm,.json,.xml,.eml,.png,.jpg,.jpeg,.webp,.gif,.heic,.heif`}
               />
               {uploading ? (
                 <div className="flex flex-col items-center gap-2 text-[var(--accent)]">

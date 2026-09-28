@@ -8,6 +8,15 @@ import { OrnamentalDivider } from './OrnamentalDivider'
 import { withInlineIcons } from './InlineIcons'
 import { clsx } from 'clsx'
 
+// Long file-name headers (e.g. DEMO_company_registry_extract_….pdf) have no
+// spaces, so a table column cannot shrink below them: allow line breaks after
+// _ - . / only (zero-width spaces), so short words like RESULT never split.
+function softBreakChildren(children: React.ReactNode): React.ReactNode {
+  const soft = (c: React.ReactNode) =>
+    typeof c === 'string' ? c.replace(/([_./-])(?=\S)/g, '$1\u200b') : c
+  return Array.isArray(children) ? children.map(soft) : soft(children)
+}
+
 interface RichMarkdownProps {
   children: string
   /** Larger / fancier treatment (drop cap, dividers between H2s, etc).
@@ -188,7 +197,7 @@ function buildComponents(variant: 'chat' | 'report'): Components {
     ),
     th: ({ children }) => (
       <th className="text-left px-2 py-1.5 font-semibold text-[var(--text-primary)] text-[11px] uppercase tracking-wider">
-        {withInlineIcons(children)}
+        {withInlineIcons(softBreakChildren(children))}
       </th>
     ),
     td: ({ children }) => (

@@ -189,3 +189,91 @@ def compose_comparison(
     # Save composite
     canvas.save(out_path, "PNG")
     return out_path
+
+
+# ── Signature verification composites ─────────────────────────────────────
+
+def _load_font(size: int):
+    from PIL import ImageFont
+    for path in ("/System/Library/Fonts/Helvetica.ttc", "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"):
+        try:
+            return ImageFont.truetype(path, size)
+        except Exception:
+            continue
+    return ImageFont.load_default()
+
+
+def _load_rgb(path: str):
+    from PIL import Image
+    img = Image.open(path)
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    return img
+
+
+def _fit(img, max_w: int, max_h: int):
+    from PIL import Image
+    w, h = img.size
+    s = min(max_w / float(w), max_h / float(h), 3.0)
+    return img.resize((max(1, int(w * s)), max(1, int(h * s))), Image.Resampling.LANCZOS)
+
+
+def compose_numbered_candidates(candidate_paths: list[str], out_path: str, width: int = 1000) -> str:
+    """One image with the candidate regions stacked top→bottom, each with a big
+    number on the left ("1", "2", …) — for asking a vision model which one is
+    the handwritten signature."""
+    from PIL import Image, ImageDraw
+
+    if not candidate_paths:
+        raise ValueError("No candidates to compose")
+    label_w, row_h, gap = 90, 170, 16
+    rows = [_fit(_load_rgb(p), width - label_w - 20, row_h) for p in candidate_paths]
+    height = sum(r.height for r in rows) + gap * (len(rows) + 1)
+    canvas = Image.new("RGB", (width, height), (255, 255, 255))
+    draw = ImageDraw.Draw(canvas)
+    font = _load_font(54)
+    y = gap
+    for i, r in enumerate(rows, 1):
+        draw.rectangle([(0, y), (label_w - 10, y + r.height)], fill=(35, 35, 35))
+        draw.text((22, y + max(0, r.height // 2 - 30)), str(i), fill=(255, 255, 255), font=font)
+        canvas.paste(r, (label_w, y))
+        draw.rectangle([(label_w - 2, y - 2), (label_w + r.width + 2, y + r.height + 2)], outline=(170, 170, 170), width=2)
+        y += r.height + gap
+    canvas.save(out_path, "PNG")
+    return out_path
+
+
+def compose_signature_sheet(questioned_path: str, reference_paths: list[str], out_path: str, width: int = 1400) -> str:
+    """Questioned signature (top, labelled) above a grid of numbered reference
+    signatures — one image any vision model can read."""
+    from PIL import Image, ImageDraw
+
+    if not reference_paths:
+        raise ValueError("No reference signatures to compose")
+    banner = 44
+    font = _load_font(26)
+    small = _load_font(22)
+    q = _fit(_load_rgb(questioned_path), width - 40, 260)
+    cols = 2 if len(reference_paths) > 1 else 1
+    cell_w = (width - 40 - (cols - 1) * 20) // cols
+    refs = [_fit(_load_rgb(p), cell_w - 10, 180) for p in reference_paths]
+    rows = (len(refs) + cols - 1) // cols
+    row_h = max(r.height for r in refs) + 36
+    height = banner + q.height + 30 + banner + rows * row_h + 20
+    canvas = Image.new("RGB", (width, height), (255, 255, 255))
+    draw = ImageDraw.Draw(canvas)
+    draw.rectangle([(0, 0), (width, banner)], fill=(40, 40, 40))
+    draw.text((14, 8), "QUESTIONED SIGNATURE (from the document under examination)", fill=(255, 255, 255), font=font)
+    canvas.paste(q, (20, banner + 15))
+    y = banner + q.height + 30
+    draw.rectangle([(0, y), (width, y + banner)], fill=(40, 40, 40))
+    draw.text((14, y + 8), f"REFERENCE SIGNATURES ({len(refs)} known-genuine specimens)", fill=(255, 255, 255), font=font)
+    y += banner + 10
+    for i, r in enumerate(refs):
+        rr, cc = divmod(i, cols)
+        x0 = 20 + cc * (cell_w + 20)
+        y0 = y + rr * row_h
+        draw.text((x0, y0), f"R{i + 1}", fill=(90, 90, 90), font=small)
+        canvas.paste(r, (x0, y0 + 28))
+    canvas.save(out_path, "PNG")
+    return out_path
