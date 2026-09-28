@@ -12,7 +12,7 @@ Tables:
   kg_meta        — key/value flags for one-off migrations
 
 Entity types: person, organization, role, document, profile, location
-Relation types: has_role, works_at, mentioned_in, candidate_profile, likely_profile, located_in
+Relation types: has_role, works_at, owns, mentioned_in, candidate_profile, likely_profile, located_in
 """
 
 from __future__ import annotations
@@ -1485,6 +1485,7 @@ async def ingest_run(
     web_candidates: Optional[list] = None,  # [{url, title, snippet, host}]
     verdict: Optional[str] = None,  # Web lookup verdict text
     persons: Optional[list] = None,  # [{name, role, org, doc_id?}] — several people (identify_person)
+    organizations: Optional[list] = None,  # [{name, doc_id, owner?, legal_form?, registered_since?, demo?, …}] — registry extracts
 ) -> dict:
     """
     Populate the knowledge graph after a document agent run.
@@ -1492,6 +1493,11 @@ async def ingest_run(
     `persons` (optional) lists several people; an entry with a `doc_id` is tied
     to that document only, otherwise to every subject document. When omitted,
     `person` is used for all subject documents.
+
+    `organizations` (optional) are companies parsed from company-registry
+    extracts: organization —mentioned_in→ its document, and (with an owner)
+    person —owns→ organization (props legal_form / registered_since / demo).
+    A demo/fictitious source marks the organization with props {"demo": true}.
 
     Returns {"entities": N, "relations": N, "mentions": N, "entity_list": [...]}
     where the counts are NEW rows only (re-running the same question adds 0).
@@ -1515,10 +1521,13 @@ async def ingest_run(
             counts["entity_list"].append({"name": name, "type": type_})
         return eid
 
-    async def _relation(src: str, dst: str, type_: str, confidence: float, source: str) -> None:
+    async def _relation(
+        src: str, dst: str, type_: str, confidence: float, source: str, props: Optional[dict] = None,
+    ) -> None:
         _, created = await asyncio.to_thread(
             _add_relation_ex_sync, src, dst, type_,
             confidence=confidence, source=source, run_id=run_id, conversation_id=conversation_id,
+            props=props,
         )
         if created:
             counts["relations"] += 1
@@ -1588,6 +1597,48 @@ async def ingest_run(
                     org_entity_id = await _entity("organization", pers["org"])
                     await _relation(person_entity_id, org_entity_id, "works_at", 0.7, "doc_agent")
                     await _relation(org_entity_id, doc_entity_id, "mentioned_in", 0.8, "doc_agent")
+
+            # Company-registry extracts: organisation + ownership
+            for org in organizations or []:
+                if not isinstance(org, dict) or (org.get("doc_id") and org["doc_id"] != doc_id):
+                    continue
+                oname = (org.get("name") or "").strip().strip("*").strip()
+                if not oname or _bad_org(oname):
+                    continue
+                demo = bool(org.get("demo"))
+                org_props = {
+                    k: org[k] for k in (
+                        "legal_form", "registered_since", "sbi", "activities", "status",
+                        "address", "registry_number",
+                    ) if org.get(k)
+                }
+                if demo:
+                    org_props["demo"] = True
+                org_entity_id = await _entity("organization", oname, org_props)
+                await _relation(org_entity_id, doc_entity_id, "mentioned_in", 0.8, "doc_agent")
+                oname_doc_text = getattr(doc, "text", "") or ""
+                if oname in oname_doc_text:
+                    idx = oname_doc_text.find(oname)
+                    await _mention(
+                        org_entity_id, doc_id, None,
+                        oname_doc_text[max(0, idx - 120): idx + len(oname) + 120].strip(),
+                    )
+                owner = (org.get("owner") or "").strip()
+                if not owner or _looks_like_org(owner):
+                    continue
+                owner_id = await _entity("person", owner)
+                doc_text = getattr(doc, "text", "") or ""
+                chunk_info = await find_chunk(doc_id, owner)
+                chunk_id, snippet = chunk_info if chunk_info else (None, None)
+                if not snippet and owner in doc_text:
+                    idx = doc_text.find(owner)
+                    snippet = doc_text[max(0, idx - 120): idx + len(owner) + 120].strip()
+                await _mention(owner_id, doc_id, chunk_id, snippet)
+                await _relation(owner_id, doc_entity_id, "mentioned_in", 0.9, "doc_agent")
+                rel_props = {k: org[k] for k in ("legal_form", "registered_since") if org.get(k)}
+                if demo:
+                    rel_props["demo"] = True
+                await _relation(owner_id, org_entity_id, "owns", 0.7, "doc_agent", rel_props)
 
             # Web lookup: profile entities and relations (for the looked-up person)
             if web_candidates and person and person.get("name"):

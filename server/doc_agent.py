@@ -79,6 +79,7 @@ INTENTS = {
     "redact": "Remove, hide, obscure, or black out personal, sensitive, confidential, or private information",
     "general_question": "Asks for a specific fact or detail from the document(s), e.g. a date (date of birth, due date), an amount, an address, an age, a status, or what the document says about someone/something",
     "graph_query": "Asks what is known ACROSS the knowledge base / all documents / previous conversations about a person, organization or topic, or which documents mention something — not about one specific attached document",
+    "cross_reference": "Asks to compare / cross-reference / check consistency between two or more documents, or to verify one document's claims against another (e.g. CV vs company registry, invoice vs contract)",
 }
 
 # Prompts
@@ -155,6 +156,15 @@ Do NOT copy the facts list verbatim and do NOT repeat any line. Distinguish a *l
 
 Facts:
 {document_content}"""
+
+CROSS_REFERENCE_PROMPT = """Compare the documents field by field. Output:
+(1) a markdown table with columns Field | {doc_columns} | Result, with rows for Person name, Role/position, Company / employer, Business activities vs experience, Relevant dates, Location — Result is ✅ match, ⚠️ partial, ❌ mismatch or — not stated;
+(2) a short answer to the user's actual question;
+(3) an 'Authenticity & caveats' section noting anything that limits trust in a document (e.g. 'DEMO', 'fictitious', watermarks, missing official identifiers, 'not issued by …') — if a document says it is a demo/fictitious, say plainly that it cannot prove the company is real;
+(4) one-line conclusion.
+Refer to people by name; do not assume gender. Only use facts from the documents."""
+# Marker that identifies the cross-reference task in a prompt (tests / debugging)
+CROSS_REFERENCE_MARKER = "Compare the documents field by field."
 
 # ── Data models ────────────────────────────────────────────────────────────
 
@@ -360,12 +370,89 @@ SINGLE_FACT_NOUNS = [
     "datum", "prijs", "kosten", "montant", "prix",
 ]
 STRONG_EXTRACT_KWS = [
-    "extract*", "list all", "list every", "all fields", "all the fields", "every field",
+    # "extract" itself is handled by extract_verb_hits (only the VERB counts:
+    # "registry extract" / "KvK extract" are documents, not requests)
+    "list all", "list every", "all fields", "all the fields", "every field",
     "table of", "as a table", "in a table", "into a table", "tables", "all amounts", "all dates",
     "all the amounts", "all the dates", "all data", "all the data", "structured data",
     "extraheer*", "extraire",
 ]
 WEAK_EXTRACT_KWS = ["table", "amount", "amounts", "invoice number", "dates", "fields", "data"]
+
+# ── "extract": verb (a request) vs noun (a registry/KvK extract document) ──
+_EXTRACT_WORD_RE = re.compile(r"(?<!\w)extract(?:s|ed|ing)?(?!\w)")
+# "…registry extract", "this extract", "KvK-extract" → noun
+_EXTRACT_NOUN_BEFORE_RE = re.compile(
+    r"(?:(?<!\w)(?:a|an|the|this|that|these|those|my|your|our|his|her|their|its|registry|register|"
+    r"company|companies|kvk|coc|commerce|trade|bank|official|handelsregister|business|chamber)"
+    r"[\s-]+|[\w-]+-)$"
+)
+# "extract from the chamber of commerce / KvK / trade register" → noun
+_EXTRACT_NOUN_AFTER_RE = re.compile(
+    r"^\s+(?:from|of|van|uit)\s+(?:the\s+|de\s+|het\s+|a\s+|an\s+)?(?:dutch\s+)?"
+    r"(?:chamber\s+of\s+commerce|kvk|kamer\s+van\s+koophandel|trade\s+regist\w*|company\s+regist\w*|"
+    r"commercial\s+regist\w*|business\s+regist\w*|handelsregister|registry|register)\b"
+)
+# "extract the / all / key / data …" → verb
+_EXTRACT_VERB_AFTER_RE = re.compile(
+    r"^\s+(?:the|all|every|each|any|some|key|main|important|relevant|structured|data|fields?|information|"
+    r"info|details?|names?|dates?|amounts?|values?|text|tables?|entities|line\s+items|items|numbers?|"
+    r"totals?|contacts?|addresses?|emails?|phone|it|them|everything|this|these|those|out)\b"
+)
+# "please extract", "can you extract", sentence start … → verb
+_EXTRACT_VERB_BEFORE_RE = re.compile(
+    r"(?:^|[.!?;:\n]\s*|(?<!\w)(?:please|pls|kindly|can\s+you|could\s+you|would\s+you|will\s+you|can\s+u|"
+    r"to|and|then|also|now|just|and\s+then|help\s+me)\s+)$"
+)
+
+
+def extract_verb_hits(msg_lower: str) -> list[str]:
+    """
+    Occurrences of "extract" used as a VERB ("extract the totals", "please
+    extract all fields", message-initial "Extract …"). The noun — "registry
+    extract", "company extract", "KvK extract", "extract from the chamber of
+    commerce" — is a document, not a request, and returns nothing.
+    """
+    hits: list[str] = []
+    for m in _EXTRACT_WORD_RE.finditer(msg_lower):
+        before = msg_lower[:m.start()]
+        after = msg_lower[m.end():]
+        if _EXTRACT_NOUN_AFTER_RE.match(after):
+            continue
+        if _EXTRACT_NOUN_BEFORE_RE.search(before) and not _EXTRACT_VERB_BEFORE_RE.search(before):
+            continue
+        if _EXTRACT_VERB_AFTER_RE.match(after) or _EXTRACT_VERB_BEFORE_RE.search(before):
+            hits.append(m.group(0))
+    return hits
+
+
+# ── cross_reference: compare / check one document against another ──────────
+CROSS_REFERENCE_PATTERNS = [
+    r"(?<!\w)cross[\s-]?referenc\w*",
+    r"(?<!\w)cross[\s-]?check\w*",
+    r"(?<!\w)compar(?:e|es|ed|ing)(?!\w)(?:\W+\w+){0,10}?\W+(?:with|to|against)(?!\w)",
+    r"(?<!\w)comparison(?!\w)",
+    r"(?<!\w)match(?:es)?\s+(?:the|with)(?!\w)",
+    r"(?<!\w)(?:in)?consisten(?:t|cy|cies)(?!\w)",
+    r"(?<!\w)(?:check|verify)(?!\w)(?:\W+\w+){0,6}?\W+against(?!\w)",
+    r"(?<!\w)correspond(?:s|ing)?(?!\w)",
+    r"(?<!\w)discrepanc(?:y|ies)(?!\w)",
+    r"(?<!\w)mismatch(?:es|ed)?(?!\w)",
+    r"(?<!\w)vergelijk\w*",
+    r"(?<!\w)controleer(?!\w)(?:\W+\w+){0,10}?\W+tegen(?!\w)",
+    r"(?<!\w)kom(?:t|en)(?!\w)(?:\W+\w+){0,5}?\W+overeen(?!\w)",
+]
+_CROSS_REFERENCE_RES = [re.compile(p) for p in CROSS_REFERENCE_PATTERNS]
+
+
+def cross_reference_hits(msg_lower: str) -> list[str]:
+    """Phrases in the (lower-cased) message that ask to compare documents."""
+    hits: list[str] = []
+    for rx in _CROSS_REFERENCE_RES:
+        m = rx.search(msg_lower)
+        if m:
+            hits.append(re.sub(r"\s+", " ", m.group(0)).strip()[:40])
+    return hits
 
 
 def rules_intent(message: str, files: list[dict]) -> tuple[Optional[str], list[str]]:
@@ -403,6 +490,14 @@ def rules_intent(message: str, files: list[dict]) -> tuple[Optional[str], list[s
             fname = (f.get("name") or "").lower()
             if any(ref_kw in fname for ref_kw in ["reference", "specimen", "sample", "card", "template"]):
                 return "verify_signature", matched_kws
+
+    # cross_reference: compare / check documents against each other — only
+    # with two or more documents attached and no explicit signature request
+    # (a signature comparison stays with verify_signature / Laya).
+    if len(files) >= 2 and not sig_hits:
+        xref_hits = cross_reference_hits(msg_lower)
+        if xref_hits:
+            return "cross_reference", xref_hits
 
     # graph_query: what is known across all documents / the knowledge base.
     # With attachments, only an explicit cross-scope marker makes it a graph
@@ -445,7 +540,7 @@ def rules_intent(message: str, files: list[dict]) -> tuple[Optional[str], list[s
         return "translate", translate_matches
 
     # extract_data: explicit extraction requests
-    strong_extract = _kw_hits(msg_lower, STRONG_EXTRACT_KWS)
+    strong_extract = extract_verb_hits(msg_lower) + _kw_hits(msg_lower, STRONG_EXTRACT_KWS)
     if strong_extract:
         return "extract_data", strong_extract
 
@@ -486,6 +581,7 @@ def resolve_intent(
     laya_result: Optional[dict],
     rules_result: tuple[Optional[str], list[str]],
     min_conf: float = LAYA_INTENT_MIN_CONFIDENCE,
+    n_docs: Optional[int] = None,
 ) -> dict[str, Any]:
     """
     Resolve the final intent using Laya and rules.
@@ -494,6 +590,8 @@ def resolve_intent(
         laya_result: {"intent": str, "confidence": float, "probabilities": dict} or None
         rules_result: (intent_name, matched_keywords) from rules_intent()
         min_conf: Minimum confidence threshold for Laya
+        n_docs: number of attached documents (cross_reference needs ≥ 2);
+                None = unknown (no check)
 
     Returns:
         {
@@ -505,6 +603,52 @@ def resolve_intent(
         }
     """
     rules_intent_name, rules_keywords = rules_result
+
+    # cross_reference needs two or more documents: Laya's cross_reference with
+    # a single document falls back to the other signals.
+    if (
+        laya_result and laya_result.get("intent") == "cross_reference"
+        and n_docs is not None and n_docs < 2
+    ):
+        laya_result = None
+
+    # Strong rule guard for cross_reference (rules only fire with ≥ 2 docs and
+    # no signature words): it beats extract_data / general_question /
+    # identify_person / verify_signature from Laya; only a very confident
+    # translate/redact/summarize/graph_query from Laya overrides it.
+    if rules_intent_name == "cross_reference":
+        kw_note = f"keyword rules matched: {'/'.join(rules_keywords)}" if rules_keywords else None
+        if laya_result and laya_result.get("intent") == "cross_reference":
+            return {
+                "intent": "cross_reference",
+                "source": "laya",
+                "confidence": laya_result.get("confidence"),
+                "note": "keyword rules agree",
+                "probabilities": laya_result.get("probabilities"),
+            }
+        if (
+            laya_result
+            and laya_result.get("intent") in ("translate", "redact", "summarize", "graph_query")
+            and laya_result.get("confidence", 0) >= VERIFY_SIGNATURE_STRONG_CONFIDENCE
+        ):
+            return {
+                "intent": laya_result["intent"],
+                "source": "laya",
+                "confidence": laya_result["confidence"],
+                "note": f"Laya confident ({laya_result['confidence']:.2f}) — rules suggested cross_reference",
+                "probabilities": laya_result.get("probabilities"),
+            }
+        note = kw_note
+        if laya_result and laya_result.get("intent"):
+            laya_note = f"Laya suggested {laya_result['intent']} ({laya_result.get('confidence', 0):.2f})"
+            note = f"{kw_note} · {laya_note}" if kw_note else laya_note
+        return {
+            "intent": "cross_reference",
+            "source": "rules",
+            "confidence": None,
+            "note": note,
+            "probabilities": None,
+        }
 
     # Strong rule guard for verify_signature
     if rules_intent_name == "verify_signature":
@@ -869,7 +1013,7 @@ async def run_agent(
         # Add note if message was empty (rules_intent handles this)
         if not message or not message.strip():
             log.debug("Empty message detected — intent decision: 'summarize' via rules")
-        intent_decision = resolve_intent(laya_intent_result, rules_intent_result)
+        intent_decision = resolve_intent(laya_intent_result, rules_intent_result, n_docs=len(docs))
         intent = intent_decision["intent"]
         rules_intent_name = rules_intent_result[0]  # Extract intent name for note display
 
@@ -1010,6 +1154,11 @@ async def run_agent(
 
                         conf_str = f" ({confidence:.0%})" if confidence else ""
                         fact_text = f"- {label}{conf_str}" + (f" (source: {source})" if source else "")
+                        if (rel.get("props") or {}).get("demo") or any(
+                            (entities_map.get(x, {}).get("props") or {}).get("demo")
+                            for x in (src_id, dst_id)
+                        ):
+                            fact_text += " [from a DEMO/fictitious document — not proof of a real company]"
 
                         fact_items.append({
                             "type": rel_type,
@@ -1024,6 +1173,7 @@ async def run_agent(
                     priority_types = {
                         "has_role": 0,
                         "works_at": 1,
+                        "owns": 1.5,
                         "located_in": 2,
                         "mentioned_in": 3,
                         "likely_profile": 4,
@@ -1270,21 +1420,33 @@ async def run_agent(
 
         yield {"tile": laya_tile.to_dict()}
 
-        # (c) Per SUBJECT doc: extraction step
+        # (c) Extraction step per document. Signature comparison only reads
+        # the SUBJECT docs' text (references are images); every other intent
+        # uses every attached document — subjects first, then references
+        # (labelled role="reference" in the prompt).
         subject_docs = []
+        reference_docs = []
+        doc_roles: dict[str, str] = {}
         for doc, att in docs:
-            # Find role from Laya decisions
-            role = "subject"  # default
-            for decision in laya_tile.decisions:
-                if decision.id == f"role-{doc.id}":
-                    role = decision.value
-                    break
-
+            role = _find_role(doc, laya_tile, docs)
+            doc_roles[doc.id] = role
             if role == "subject":
                 subject_docs.append(doc)
+            else:
+                reference_docs.append(doc)
+
+        if intent == "verify_signature":
+            answer_docs = list(subject_docs)
+        else:
+            answer_docs = subject_docs + reference_docs
+        # The document the answer model / web lookup keys on
+        primary_docs = subject_docs or answer_docs
+        prompt_roles = {
+            d.id: "reference" for d in answer_docs if doc_roles.get(d.id) == "reference"
+        }
 
         empty_docs = []
-        for doc in subject_docs:
+        for doc in answer_docs:
             extract_tile = Tile(
                 id=f"extract-{doc.id}",
                 kind="extract",
@@ -1302,7 +1464,7 @@ async def run_agent(
                 and bool(doc.page_images)
                 and (_needs_ocr(doc) or (text_len == 0 and not already_ocrd))
             )
-            doc_budget = _doc_budget(len(subject_docs))
+            doc_budget = _doc_budget(len(answer_docs))
             if ocr_needed:
                 # Too little text for the page images; run OCR
                 extract_tile.kind = "ocr"
@@ -1397,7 +1559,7 @@ async def run_agent(
                 empty_docs.append(doc)
 
         # Check if all subject docs are empty
-        if subject_docs and all(doc in empty_docs for doc in subject_docs) and intent != "verify_signature":
+        if answer_docs and all(doc in empty_docs for doc in answer_docs) and intent != "verify_signature":
             # All subject docs are empty
             answer_tile = Tile(
                 id="answer",
@@ -1406,7 +1568,7 @@ async def run_agent(
                 status="error",
                 started_ms=hooks.now_ms(),
             )
-            doc_names = ", ".join(doc.filename for doc in subject_docs)
+            doc_names = ", ".join(doc.filename for doc in answer_docs)
             answer_tile.detail = "No document content available to answer from"
             answer_tile.output_preview = f"I couldn't read any text from {doc_names}."
             yield {"tile": answer_tile.to_dict()}
@@ -1432,7 +1594,7 @@ async def run_agent(
         answer_tile = Tile(
             id="answer",
             kind="llm",
-            title="Generating answer",
+            title="Cross-reference" if intent == "cross_reference" else "Generating answer",
             status="pending",
             started_ms=hooks.now_ms(),
         )
@@ -1592,15 +1754,15 @@ async def run_agent(
             answer_tile.kind = "llm"
 
             # Resolve model
-            category = "docs" if subject_docs else "text"
+            category = "docs" if primary_docs else "text"
             answer_model_note = f"Text model for {intent}"
 
-            if subject_docs:
-                llm_model = await hooks.resolve_text_model(subject_docs[0], category)
+            if primary_docs:
+                llm_model = await hooks.resolve_text_model(primary_docs[0], category)
                 # Check if we have the info hook for fallback details
                 if hooks.resolve_text_model_info:
                     try:
-                        model_info = await hooks.resolve_text_model_info(subject_docs[0], category)
+                        model_info = await hooks.resolve_text_model_info(primary_docs[0], category)
                         llm_model = model_info.get("model", llm_model)
                         if model_info.get("reason"):
                             answer_model_note = model_info["reason"]
@@ -1629,7 +1791,7 @@ async def run_agent(
             computed_result: Optional[str] = None
             sheet_notes: list[str] = []
             sheet_rows_not_sent: dict[str, int] = {}
-            sheet_docs = [d for d in subject_docs if is_sheet_doc(d)] if intent != "verify_signature" else []
+            sheet_docs = [d for d in answer_docs if is_sheet_doc(d)] if intent != "verify_signature" else []
             if sheet_docs and hooks.sheet_frames:
                 loaded: list[tuple[Any, list[dict]]] = []
                 for d in sheet_docs:
@@ -1726,9 +1888,9 @@ async def run_agent(
 
                 # Retrieval for long documents on passage-level intents
                 retrieved: dict[str, list[Any]] = {}
-                budget = _doc_budget(len([d for d in subject_docs if d.text]) or 1)
+                budget = _doc_budget(len([d for d in answer_docs if d.text]) or 1)
                 if intent in RAG_INTENTS and hooks.retrieve_chunks:
-                    for d in subject_docs:
+                    for d in answer_docs:
                         if d.id in sheet_overrides:
                             continue
                         if d.text and len(d.text) > budget:
@@ -1741,17 +1903,18 @@ async def run_agent(
 
                 # Build prompt
                 prompt, excerpts = _build_prompt_ex(
-                    intent, subject_docs, message_for_answer, history,
+                    intent, answer_docs, message_for_answer, history,
                     max_chars=PROMPT_MAX_CHARS, retrieved=retrieved,
                     web_lookup_on=bool(web_targets),
                     doc_overrides=sheet_overrides or None,
                     computed_result=computed_result,
                     task_notes=sheet_notes or None,
+                    doc_roles=prompt_roles or None,
                 )
                 if excerpts:
                     longest = max(v["chars"] for v in excerpts.values())
                     answer_tile.detail = f"Document is long ({longest:,} chars) — used excerpts"
-                    for d in subject_docs:
+                    for d in answer_docs:
                         info = excerpts.get(d.id)
                         if info:
                             how = {
@@ -1833,10 +1996,10 @@ async def run_agent(
                     # Extract person from the answer; fall back to the document
                     # itself (small JSON extraction by the answer model).
                     person = _doc_web.extract_person(answer_text, history)
-                    if person is None and subject_docs and subject_docs[0].text:
-                        person = await _doc_web.llm_extract_person(hooks, llm_model, subject_docs[0].text)
+                    if person is None and primary_docs and primary_docs[0].text:
+                        person = await _doc_web.llm_extract_person(hooks, llm_model, primary_docs[0].text)
                         if person:
-                            person = _doc_web.merge_person_with_headline(person, subject_docs[0].text)
+                            person = _doc_web.merge_person_with_headline(person, primary_docs[0].text)
                     if person is None:
                         # No person found; emit error tile
                         web_plan_tile = Tile(
@@ -1865,8 +2028,8 @@ async def run_agent(
                         # Prepare full doc text and intelligent excerpt for web lookup
                         doc_text = ""
                         doc_excerpt = ""
-                        if subject_docs and subject_docs[0].text:
-                            doc_text = subject_docs[0].text
+                        if primary_docs and primary_docs[0].text:
+                            doc_text = primary_docs[0].text
                             # Build an intelligent excerpt (skip lines > 200 chars)
                             doc_excerpt = _doc_web.build_excerpt_for_verdict(doc_text)
 
@@ -1915,8 +2078,8 @@ async def run_agent(
                     # Extract person from answer text
                     person_for_kg = _doc_web.extract_person(answer_text, history)
                     # Merge with headline data (role/org) if available from first subject doc
-                    if person_for_kg and subject_docs and subject_docs[0].text:
-                        person_for_kg = _doc_web.merge_person_with_headline(person_for_kg, subject_docs[0].text)
+                    if person_for_kg and primary_docs and primary_docs[0].text:
+                        person_for_kg = _doc_web.merge_person_with_headline(person_for_kg, primary_docs[0].text)
 
                 # Gather web candidates and verdict from web_result
                 web_candidates = []
@@ -1930,8 +2093,8 @@ async def run_agent(
                 persons_for_kg = None
                 if intent == "identify_person":
                     found = _doc_web.extract_persons(answer_text)
-                    if len(found) > 1 or (found and len(subject_docs) > 1):
-                        persons_for_kg = _tie_persons_to_docs(found, subject_docs)
+                    if len(found) > 1 or (found and len(answer_docs) > 1):
+                        persons_for_kg = _tie_persons_to_docs(found, answer_docs)
                         if person_for_kg and person_for_kg.get("name"):
                             key = _normalize_for_dedup(person_for_kg["name"])
                             for p in persons_for_kg:
@@ -1939,12 +2102,31 @@ async def run_agent(
                                     p["role"] = p.get("role") or person_for_kg.get("role")
                                     p["org"] = p.get("org") or person_for_kg.get("org")
 
+                # Company-registry extracts: organisation (trade name) owned by
+                # the person named as owner — deterministic parse, no LLM call.
+                organizations_for_kg: list[dict] = []
+                if intent in REGISTRY_INGEST_INTENTS:
+                    organizations_for_kg = _registry_organizations(answer_docs)
+                if intent == "cross_reference" and organizations_for_kg:
+                    registry_ids = {o["doc_id"] for o in organizations_for_kg}
+                    owners = [o["owner"] for o in organizations_for_kg if o.get("owner")]
+                    if owners and not persons_for_kg:
+                        persons_for_kg = []
+                        for tied in _tie_persons_to_docs(
+                            [{"name": n} for n in dict.fromkeys(owners)], answer_docs,
+                        ):
+                            d = next((x for x in answer_docs if x.id == tied.get("doc_id")), None)
+                            if d is not None and d.id not in registry_ids and d.text:
+                                # e.g. the CV: its headline gives role / employer
+                                tied = _doc_web.merge_person_with_headline(tied, d.text) or tied
+                            persons_for_kg.append(tied)
+
                 # Call kg_ingest with exact signature from kg_store.ingest_run
                 ingest_kwargs = dict(
                     conversation_id=req.get("conversation_id"),
                     run_id=req.get("run_id"),
                     intent=intent,
-                    subject_docs=subject_docs,
+                    subject_docs=answer_docs,
                     answer_text=answer_text,
                     person=person_for_kg,
                     web_candidates=web_candidates,
@@ -1952,6 +2134,8 @@ async def run_agent(
                 )
                 if persons_for_kg:
                     ingest_kwargs["persons"] = persons_for_kg
+                if organizations_for_kg:
+                    ingest_kwargs["organizations"] = organizations_for_kg
                 counts = await hooks.kg_ingest(**ingest_kwargs)
 
                 # If ingest returned counts, emit a kg-ingest tile
@@ -2110,8 +2294,197 @@ def _is_junk_graph_entity(entity: dict) -> bool:
     return False
 
 
+# ── Company-registry extract parsing (deterministic, no LLM) ──────────────
+
+# Intents whose runs ingest organisations found in company-registry extracts
+REGISTRY_INGEST_INTENTS = {"cross_reference", "identify_person", "general_question"}
+
+_REGISTRY_MARKERS_RE = re.compile(
+    r"trade\s*name|handelsnaam|legal\s+form|rechtsvorm|(?<!\w)kvk(?!\w)|kamer\s+van\s+koophandel|"
+    r"chamber\s+of\s+commerce|registry\s+extract|register\s+extract|company\s+registry|"
+    r"uittreksel(?:\s+handelsregister)?|handelsregister",
+    re.IGNORECASE,
+)
+_DEMO_MARKERS_RE = re.compile(
+    r"(?<!\w)demo(?!\w)|fictitious|fictional|fictief|made[\s-]up\s+data|not\s+issued\s+by|"
+    r"specimen\s+only|sample\s+document",
+    re.IGNORECASE,
+)
+# label regex → field. A label may carry a parenthetical ("Address (fictitious)").
+_REGISTRY_LABELS: list[tuple[str, str]] = [
+    ("trade_name", r"trade\s*names?|handelsnaa?m(?:en)?|company\s+name|business\s+name|statutaire\s+naam"),
+    ("legal_form", r"legal\s+form|rechtsvorm"),
+    ("registered_since", r"date\s+of\s+registration|registration\s+date|registered\s+(?:on|since)|"
+                         r"datum\s+(?:van\s+)?inschrijving|date\s+of\s+incorporation|oprichtingsdatum|"
+                         r"datum\s+oprichting|start\s+date|startdatum"),
+    ("registry_number", r"(?:kvk|coc|registry|registration|chamber\s+of\s+commerce)[\s-]*(?:number|nummer|no\.?)"),
+    ("status", r"status"),
+    ("sbi", r"sbi[\s-]*codes?|sbi"),
+    ("activities", r"business\s+activities|activities|activiteiten|description|omschrijving"),
+    ("address", r"(?:visiting\s+|business\s+|vestigings)?address|(?:vestigings)?adres"),
+    ("owner_name", r"(?:owner|eigenaar|proprietor)\s*(?:/|-)?\s*(?:name|naam)|(?:name|naam)\s+(?:owner|eigenaar)"),
+    ("name", r"name|naam"),
+    ("owner_role", r"role|rol|function|functie|position"),
+    ("authority", r"authority|bevoegdheid|authori[sz]ation"),
+    ("since", r"since|sinds|in\s+function\s+since|per"),
+    ("owner_inline", r"owner|eigenaar|proprietor"),
+]
+_REGISTRY_LABEL_RES = [
+    (field, re.compile(
+        r"^(?:" + rx + r")(?:\s*\([^)]*\))?(?:\s*[:：\-–—]\s*|\s+|$)(?P<value>.*)$", re.IGNORECASE,
+    ))
+    for field, rx in _REGISTRY_LABELS
+]
+_OWNER_SECTION_RE = re.compile(
+    r"^(?:owners?|eigena(?:a|ren)r?|proprietors?|authori[sz]ed\s+(?:persons?|signator(?:y|ies))|"
+    r"functionaris(?:sen)?|bestuurders?|directors?)\b",
+    re.IGNORECASE,
+)
+
+
+def _match_registry_label(line: str) -> tuple[Optional[str], str]:
+    """(field, inline value) when `line` starts with a known label."""
+    for field, rx in _REGISTRY_LABEL_RES:
+        m = rx.match(line)
+        if m:
+            return field, (m.group("value") or "").strip()
+    return None, ""
+
+
+def looks_like_registry(text: str) -> bool:
+    """True when a document looks like a company-registry extract."""
+    return bool(text) and bool(_REGISTRY_MARKERS_RE.search(text))
+
+
+def is_demo_document(text: str) -> bool:
+    """True when a document says it is a demo / fictitious / not officially issued."""
+    return bool(text) and bool(_DEMO_MARKERS_RE.search(text))
+
+
+def parse_registry_extract(text: str) -> Optional[dict[str, Any]]:
+    """
+    Parse a company-registry extract (KvK-style) with a small deterministic
+    label/value parser. Labels and values may share a line ("Trade name Acme",
+    "Legal form: Eenmanszaak") or the value may follow on the next line.
+
+    Returns {"trade_name", "legal_form", "registered_since", "registry_number",
+    "status", "sbi", "activities", "address", "owner", "owner_role",
+    "owner_since", "demo"} (missing fields omitted, "demo" always present) or
+    None when the text is not a registry extract or has no trade name.
+    """
+    if not text or not looks_like_registry(text):
+        return None
+    import doc_web as _dw
+
+    lines = [ln.strip() for ln in text.splitlines()]
+    lines = [ln for ln in lines if ln]
+    out: dict[str, Any] = {}
+    in_owner = False
+
+    def _value_after(i: int, inline: str, multiline: bool = False) -> tuple[str, int]:
+        """Inline value, else the next line(s) that are not labels themselves."""
+        if inline:
+            return inline, i
+        if i + 1 >= len(lines):
+            return "", i
+        nxt = lines[i + 1]
+        if _match_registry_label(nxt)[0] and _match_registry_label(nxt)[0] not in ("owner_inline",):
+            return "", i
+        val, j = nxt, i + 1
+        while multiline and j + 1 < len(lines):
+            cont = lines[j + 1]
+            if _match_registry_label(cont)[0] or not cont[:1].islower():
+                break
+            val, j = f"{val} {cont}", j + 1
+        return val, j
+
+    def _clean(v: str) -> str:
+        return re.sub(r"\s+", " ", v).strip(" \t:;,")
+
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        field, inline = _match_registry_label(line)
+        if field is None:
+            i += 1
+            continue
+        if field == "owner_inline":
+            # "Owner / authorised person" (section header), "Owner (eigenaar)"
+            # (a role value) or "Owner: Jane Example" / "Owner Jane Example".
+            cand = _dw._strip_name_decorations(inline.lstrip("/ ").strip())
+            if cand and _dw._is_proper_name(cand) and "owner" not in out:
+                out["owner"] = cand
+                in_owner = True
+            elif _OWNER_SECTION_RE.match(line):
+                in_owner = True
+            i += 1
+            continue
+        if field in ("name",) and not in_owner:
+            i += 1
+            continue
+        if field in ("owner_role", "authority", "since") and not in_owner:
+            i += 1
+            continue
+        value, j = _value_after(i, inline, multiline=(field == "activities"))
+        value = _clean(value)
+        if value:
+            if field in ("owner_name", "name"):
+                cand = _dw._strip_name_decorations(value)
+                if cand and _dw._is_valid_name(cand) and "owner" not in out:
+                    out["owner"] = cand
+                    in_owner = True
+            elif field == "owner_role":
+                out.setdefault("owner_role", value)
+            elif field == "since":
+                out.setdefault("owner_since", value)
+            elif field == "authority":
+                out.setdefault("owner_authority", value)
+            elif field == "activities":
+                prev = out.get("activities")
+                if not prev:
+                    out["activities"] = value
+                elif value not in prev and len(prev) < 400:
+                    out["activities"] = f"{prev} — {value}"
+            else:
+                out.setdefault(field, value)
+        i = j + 1
+
+    if not out.get("trade_name"):
+        return None
+    out["trade_name"] = re.sub(r"\s*\((?:demo|fictitious|fictief)\)\s*$", "", out["trade_name"], flags=re.IGNORECASE)
+    out["demo"] = is_demo_document(text)
+    return out
+
+
+def _registry_organizations(docs: list[Any]) -> list[dict[str, Any]]:
+    """Organisations (with owner) parsed from the registry-extract documents."""
+    orgs: list[dict[str, Any]] = []
+    for d in docs:
+        text = getattr(d, "text", "") or ""
+        try:
+            parsed = parse_registry_extract(text)
+        except Exception as e:  # never break a run on a parse problem
+            log.debug(f"registry parse failed for {getattr(d, 'id', '?')}: {e}")
+            parsed = None
+        if not parsed:
+            continue
+        org = {
+            "name": parsed["trade_name"],
+            "doc_id": getattr(d, "id", None),
+            "owner": parsed.get("owner"),
+            "legal_form": parsed.get("legal_form"),
+            "registered_since": parsed.get("registered_since") or parsed.get("owner_since"),
+            "demo": bool(parsed.get("demo")),
+        }
+        for extra in ("sbi", "activities", "status", "address", "registry_number", "owner_role"):
+            if parsed.get(extra):
+                org[extra] = parsed[extra]
+        orgs.append(org)
+    return orgs
+
+
 # Intents that answer from specific passages → retrieval over long documents
-RAG_INTENTS = {"general_question", "extract_data", "identify_person"}
+RAG_INTENTS = {"general_question", "extract_data", "identify_person", "cross_reference"}
 PROMPT_MAX_CHARS = 24000
 RAG_HEAD_CHARS = 1500
 RAG_TOP_K = 8
@@ -2653,10 +3026,18 @@ def _excerpt_doc(
     )
 
 
-def _doc_block(filename: str, content: str) -> str:
-    """Wrap a document in a delimiter models don't echo back."""
+def _doc_block(filename: str, content: str, role: Optional[str] = None) -> str:
+    """Wrap a document in a delimiter models don't echo back (reference
+    documents carry role="reference")."""
     name = (filename or "document").replace('"', "'")
-    return f'<document name="{name}">\n{content}\n</document>'
+    role_attr = f' role="{role}"' if role else ""
+    return f'<document name="{name}"{role_attr}>\n{content}\n</document>'
+
+
+REFERENCE_DOCS_NOTE = (
+    'Documents marked role="reference" were attached by the user as supporting/reference '
+    "material: use their content too (e.g. to check the other document's claims against them)."
+)
 
 
 def _build_prompt_ex(
@@ -2670,6 +3051,7 @@ def _build_prompt_ex(
     doc_overrides: Optional[dict[str, str]] = None,
     computed_result: Optional[str] = None,
     task_notes: Optional[list[str]] = None,
+    doc_roles: Optional[dict[str, str]] = None,
 ) -> tuple[str, dict[str, dict[str, Any]]]:
     """
     Build the LLM prompt. Returns (prompt, excerpts) where excerpts maps
@@ -2677,9 +3059,11 @@ def _build_prompt_ex(
     document that did not fit its budget (max_chars // number of docs).
     `doc_overrides` (doc_id → content) replaces a document's text as-is
     (spreadsheet schema/sample); `computed_result` is an exact table-query
-    result the model must use for all numbers.
+    result the model must use for all numbers. `doc_roles` (doc_id → "reference")
+    labels reference documents in their <document> block.
     """
     doc_overrides = doc_overrides or {}
+    doc_roles = doc_roles or {}
     retrieved = retrieved or {}
     budget = _doc_budget(len([d for d in docs if getattr(d, "text", "")]) or 1, max_chars)
     doc_texts = []
@@ -2689,7 +3073,7 @@ def _build_prompt_ex(
         text = getattr(doc, "text", "") or ""
         override = doc_overrides.get(getattr(doc, "id", None))
         if override is not None:
-            doc_texts.append(_doc_block(doc.filename, override[: budget + 2000]))
+            doc_texts.append(_doc_block(doc.filename, override[: budget + 2000], doc_roles.get(doc.id)))
             continue
         if not text:
             continue
@@ -2703,7 +3087,7 @@ def _build_prompt_ex(
         any_paged = any_paged or bool(paged)
         if mode:
             excerpts[doc.id] = {"chars": len(text), "mode": mode}
-        doc_texts.append(_doc_block(doc.filename, content))
+        doc_texts.append(_doc_block(doc.filename, content, doc_roles.get(doc.id)))
 
     full_context = "\n\n".join(doc_texts)
     hard_cap = max_chars + 2000  # wrappers + separators
@@ -2730,6 +3114,7 @@ def _build_prompt_ex(
         "redact": REDACT_PROMPT,
         "general_question": GENERAL_QUESTION_PROMPT,
         "graph_query": GRAPH_QUERY_PROMPT,
+        "cross_reference": _build_cross_reference_prompt(docs),
     }.get(intent)
 
     if not prompt_template and intent != "general_question":
@@ -2749,6 +3134,8 @@ def _build_prompt_ex(
             "\nThe document is enclosed in <document> tags. Output only the result — "
             "do not repeat the tags, the file name or any header."
         )
+    if any(doc_roles.get(getattr(d, "id", None)) == "reference" for d in docs):
+        prompt_template = (prompt_template + "\n" if prompt_template else "") + REFERENCE_DOCS_NOTE
     if web_lookup_on:
         prompt_template = (prompt_template + "\n" + ONLINE_LOOKUP_NOTE) if prompt_template else ONLINE_LOOKUP_NOTE
     if computed_result:
@@ -2771,6 +3158,17 @@ def _build_prompt_ex(
     parts.append("USER REQUEST:\n" + message)
 
     return "\n\n".join(parts), excerpts
+
+
+def _build_cross_reference_prompt(docs: list[Any]) -> str:
+    """CROSS_REFERENCE_PROMPT with one table column per document."""
+    names = [
+        (getattr(d, "filename", "") or "document").replace("|", "/")
+        for d in docs
+    ] or ["Document A", "Document B"]
+    if len(names) == 1:
+        names.append("Document B")
+    return CROSS_REFERENCE_PROMPT.format(doc_columns=" | ".join(names))
 
 
 def _build_prompt(

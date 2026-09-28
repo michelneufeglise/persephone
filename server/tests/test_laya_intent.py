@@ -353,6 +353,7 @@ class TestIntentsConstant:
             "redact",
             "general_question",
             "graph_query",
+            "cross_reference",
         }
         assert set(_laya.INTENTS.keys()) == expected
 

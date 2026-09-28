@@ -51,6 +51,7 @@ INTENTS = OrderedDict([
     ("redact", "Remove, hide, obscure, or black out personal, sensitive, confidential, or private information"),
     ("general_question", "Asks for a specific fact or detail from the document(s), e.g. a date (date of birth, due date), an amount, an address, an age, a status, or what the document says about someone/something"),
     ("graph_query", "Asks what is known ACROSS the knowledge base / all documents / previous conversations about a person, organization or topic, or which documents mention something — not about one specific attached document"),
+    ("cross_reference", "Asks to compare / cross-reference / check consistency between two or more documents, or to verify one document's claims against another (e.g. CV vs company registry, invoice vs contract)"),
 ])
 
 # Singleton state
@@ -523,7 +524,7 @@ def decide_intent(message: str, files: list[dict]) -> dict | None:
 
     Uses Laya to judge the user message and attached files against the INTENTS criteria.
     The intents are: verify_signature, identify_person, summarize, extract_data, translate,
-    redact, or general_question.
+    redact, general_question, graph_query or cross_reference.
 
     Args:
         message: user request text (truncated to ~1500 chars internally)
