@@ -10,7 +10,8 @@ interface ChatPaneProps {
   isGenerating: boolean
   onSend: (text: string, files?: File[], opts?: SendOpts) => void | Promise<void>
   onStop: () => void
-  onSpeak?: (text: string) => void
+  /** Read a message aloud (receives the message id so speech can be cached per message). */
+  onSpeak?: (text: string, messageId?: string) => void
   emptyState?: React.ReactNode
   placeholder?: string
   accept?: string
@@ -51,7 +52,7 @@ export function ChatPane({
   const onSelectRef = useRef(onSelectMessage)
   onSpeakRef.current = onSpeak
   onSelectRef.current = onSelectMessage
-  const stableSpeak = useCallback((text: string) => onSpeakRef.current?.(text), [])
+  const stableSpeak = useCallback((text: string, messageId?: string) => onSpeakRef.current?.(text, messageId), [])
   const stableSelect = useCallback((m: Message) => onSelectRef.current?.(m), [])
   const scrollerRef = useRef<HTMLDivElement>(null)
   const [stickBottom, setStickBottom] = useState(true)

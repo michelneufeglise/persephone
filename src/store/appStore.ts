@@ -125,6 +125,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     autoPlay: true,
     streamSentences: true,
     volume: 0.9,
+    spokenMode: 'summary',
   },
   memory: {
     enabled: true,

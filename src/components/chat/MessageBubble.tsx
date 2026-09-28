@@ -9,7 +9,7 @@ import { memo, useState } from 'react'
 
 interface MessageBubbleProps {
   message: Message
-  onSpeak?: (text: string) => void
+  onSpeak?: (text: string, messageId?: string) => void
   isLatest?: boolean
   renderExtra?: (message: Message) => React.ReactNode
   onSelect?: (message: Message) => void
@@ -242,9 +242,10 @@ function MessageBubbleImpl({ message, onSpeak, renderExtra, onSelect, selected }
           <div className={`flex items-center gap-1 mt-1 opacity-0 group-hover:opacity-100 transition-opacity ${isUser ? 'flex-row-reverse' : ''}`}>
             {!isUser && onSpeak && (
               <button
-                onClick={() => onSpeak(message.content)}
+                onClick={() => onSpeak(message.content, message.id)}
                 className="p-1.5 rounded-md text-[var(--text-muted)] hover:text-[var(--accent)] hover:bg-[var(--accent-dim)] transition-colors"
                 title="Read aloud"
+                aria-label="Read aloud"
               >
                 <Volume2 className="w-3.5 h-3.5" />
               </button>

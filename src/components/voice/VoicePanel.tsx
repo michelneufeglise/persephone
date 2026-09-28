@@ -6,6 +6,7 @@ import { VoiceOrb } from './VoiceOrb'
 import { Slider } from '@/components/ui/Slider'
 import { Toggle } from '@/components/ui/Toggle'
 import { stopTTS, enqueueTTS } from '@/lib/tts'
+import { setVoiceEnabled, stopSpeaking } from '@/lib/speech'
 
 const VOICE_PREVIEW: Record<string, string> = {
   af_heart:    'I dwell between worlds, queen of both.',
@@ -78,11 +79,11 @@ export function VoicePanel() {
         <div className="flex items-center gap-3">
           <Toggle
             checked={tts.enabled}
-            onChange={v => { updateTTSSettings({ enabled: v }); if (!v) stopTTS() }}
+            onChange={v => setVoiceEnabled(v)}
             label="Voice on"
           />
           {isSpeaking && (
-            <button onClick={() => stopTTS()}
+            <button onClick={() => stopSpeaking()}
               className="flex items-center gap-1 text-xs text-[var(--accent)] hover:text-[var(--accent-hover)] transition-colors">
               <VolumeX className="w-3.5 h-3.5" />Stop
             </button>

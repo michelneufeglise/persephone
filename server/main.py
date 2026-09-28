@@ -53,6 +53,7 @@ import flow_code as _flow_code
 import doc_graph as _doc_graph
 import doc_agent_hooks as _doc_agent_hooks
 import doc_agent_service as _doc_agent_service
+import speech_summary as _speech
 try:
     import laya_decider as _laya
 except (ImportError, Exception):
@@ -2151,6 +2152,33 @@ async def tts(req: TTSRequest):
 @app.get("/api/tts/voices")
 async def tts_voices():
     return {"voices": _tts.VOICES}
+
+
+# ── /api/tts/speech-text — what to SAY for an assistant answer ───────────────
+# Central "spoken response" step used by every TTS call site in the frontend:
+# cleans markdown/code/tables/URLs/emoji and, in summary mode, asks the small
+# judge model for a 2–3 sentence spoken summary (fallback: first paragraph).
+# speech_summary gets config + model helpers injected (no import of main).
+_speech.install_hooks(
+    get_config       = _db.get_config,
+    installed_models = _installed_models,
+    ollama_base      = OLLAMA_BASE,
+    laya_id          = LAYA_JUDGE_ID,
+)
+
+
+class SpeechTextRequest(BaseModel):
+    text: str
+    message_id: str | None = None
+    lang: str | None = None
+    mode: str = "summary"          # "summary" | "full"
+
+
+@app.post("/api/tts/speech-text")
+async def tts_speech_text(req: SpeechTextRequest):
+    return await _speech.speech_text(
+        req.text, message_id=req.message_id, lang=req.lang, mode=req.mode,
+    )
 
 
 # ── /api/reels — short-form vertical video studio ────────────────────────────

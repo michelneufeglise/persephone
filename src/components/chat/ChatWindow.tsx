@@ -5,10 +5,7 @@ import { useAppStore } from '@/store/appStore'
 import { PersephoneIcon } from '@/components/PersephoneIcon'
 import { streamChat } from '@/lib/ollama'
 import { uploadDocument } from '@/lib/idp'
-import {
-  enqueueTTS, stopTTS, extractNewSentences, extractTail,
-  type SentenceCursor,
-} from '@/lib/tts'
+import { speakResponse, stopSpeaking } from '@/lib/speech'
 import { ChatPane } from './ChatPane'
 import { ChatTabs } from './ChatTabs'
 import { ModelSelector } from './ModelSelector'
@@ -36,7 +33,7 @@ export function ChatWindow() {
     addMessage, updateMessage,
     startGenerating, stopGenerating, isConvGenerating,
     generatingConvs,
-    createNewConversation, clearMessages, setIsSpeaking, setAudioLevel,
+    createNewConversation, clearMessages,
   } = useAppStore()
 
   // Per-conversation abort controllers. A `Map<convId, AbortController>`
@@ -54,20 +51,10 @@ export function ChatWindow() {
     if (!activeConversationId) createNewConversation()
   }, [])
 
-  // Manual "Read aloud" — read latest voice/speed/volume from store at call-time.
-  const handleSpeak = useCallback((text: string) => {
-    const tts = useAppStore.getState().settings.tts
-    if (!tts.enabled || !text.trim()) return
-    stopTTS()
-    setIsSpeaking(true)
-    enqueueTTS(
-      text,
-      tts.voice,
-      tts.speed,
-      tts.volume,
-      level => setAudioLevel(level),
-      () => { setIsSpeaking(false); setAudioLevel(0) },
-    )
+  // Manual "Read aloud" — same spoken-response pipeline (summary / full text
+  // per Settings → Voice) as the automatic speak after a reply finishes.
+  const handleSpeak = useCallback((text: string, messageId?: string) => {
+    void speakResponse(text, { messageId })
   }, [])
 
   async function handleSend(text: string, files?: File[], opts?: SendOpts) {
@@ -141,32 +128,13 @@ export function ChatWindow() {
 
     // Stop TTS from any previous turn (TTS is a single audio pipeline,
     // so we accept it being global — the active tab drives voice).
-    stopTTS()
+    stopSpeaking()
 
     // Per-conversation abort controller. Aborting the ACTIVE tab from
     // handleStop only cancels this stream; concurrent streams in other
     // tabs keep going.
     const controller = new AbortController()
     abortMapRef.current.set(convId, controller)
-
-    // Streaming-TTS state
-    const cursor: SentenceCursor = { pos: 0 }
-    let ttsActive = false   // becomes true after first sentence is enqueued
-    const onSpeakStart = () => {
-      if (!ttsActive) { ttsActive = true; setIsSpeaking(true) }
-    }
-    const onSpeakLevel = (lvl: number) => setAudioLevel(lvl)
-    const onAllSpoken  = () => { setIsSpeaking(false); setAudioLevel(0) }
-
-    function maybeSpeakSentences(responseText: string) {
-      const tts = useAppStore.getState().settings.tts
-      if (!tts.enabled || !tts.autoPlay) return
-      const sentences = extractNewSentences(responseText, cursor)
-      for (const s of sentences) {
-        onSpeakStart()
-        enqueueTTS(s, tts.voice, tts.speed, tts.volume, onSpeakLevel, onAllSpoken)
-      }
-    }
 
     try {
       const currentConv = useAppStore.getState().getActiveConversation()
@@ -246,11 +214,9 @@ export function ChatWindow() {
           thinkBuf    = fullText.slice(thinkOpen + 7, thinkClose)
           responseBuf = fullText.slice(thinkClose + 8).trim()
           updateMessage(convId, aiMsgId, { thinkingContent: thinkBuf, content: responseBuf, isStreaming: !chunk.done })
-          maybeSpeakSentences(responseBuf)
         } else {
           responseBuf = fullText
           updateMessage(convId, aiMsgId, { content: responseBuf, isStreaming: !chunk.done })
-          maybeSpeakSentences(responseBuf)
         }
 
         if (chunk.done) {
@@ -266,15 +232,10 @@ export function ChatWindow() {
           }
           updateMessage(convId, aiMsgId, finalMsg)
 
-          // Speak any trailing fragment that has no terminating punctuation
-          const tts = useAppStore.getState().settings.tts
-          if (tts.enabled && tts.autoPlay) {
-            const tail = extractTail(finalContent, cursor)
-            if (tail) {
-              onSpeakStart()
-              enqueueTTS(tail, tts.voice, tts.speed, tts.volume, onSpeakLevel, onAllSpoken)
-            }
-          }
+          // Speak the finished answer (spoken summary or cleaned full text —
+          // see lib/speech.ts). Started right away so the summary request
+          // overlaps the persistence work below.
+          void speakResponse(finalContent, { messageId: aiMsgId, auto: true })
 
           // Auto-title
           const fresh = useAppStore.getState().getActiveConversation()
@@ -297,6 +258,10 @@ export function ChatWindow() {
           break
         }
       }
+    } catch (err) {
+      // Stop aborts the fetch / stream read: expected, not an error.
+      // Anything else still surfaces.
+      if ((err as { name?: string } | null)?.name !== 'AbortError' && !controller.signal.aborted) throw err
     } finally {
       stopGenerating(convId)
       abortMapRef.current.delete(convId)
@@ -310,9 +275,7 @@ export function ChatWindow() {
     controller?.abort()
     abortMapRef.current.delete(activeConversationId)
     stopGenerating(activeConversationId)
-    stopTTS()
-    setIsSpeaking(false)
-    setAudioLevel(0)
+    stopSpeaking()
     const c = getActiveConversation()
     if (c) {
       const last = c.messages[c.messages.length - 1]

@@ -105,6 +105,9 @@ export interface TTSSettings {
   autoPlay: boolean
   streamSentences: boolean
   volume: number
+  /** What gets spoken for assistant answers: a short spoken summary (default)
+   *  or the full (cleaned) text. Optional so older persisted settings load. */
+  spokenMode?: 'summary' | 'full'
 }
 
 export interface MemorySettings {

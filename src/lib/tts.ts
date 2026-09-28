@@ -1,8 +1,11 @@
 /**
- * Streaming TTS — speaks sentences as they arrive from the LLM.
+ * Sentence-queued TTS. Assistant answers reach this via speakResponse() in
+ * speech.ts (after streaming, summary or cleaned full text); voice previews
+ * call enqueueTTS/speakText directly.
  *
  * Pipeline:
- *   1. enqueueTTS(sentence) — kicks off the /api/tts fetch immediately (parallel).
+ *   1. enqueueTTS(sentence) — queues it; the head sentence is synthesised on
+ *      its own, the next PREFETCH ones while it plays.
  *   2. A worker drains the queue: decodes audio, plays sequentially, drives onLevel.
  *   3. Subsequent fetches overlap playback — so when one sentence finishes,
  *      the next is already buffered, eliminating gaps between sentences.
@@ -17,7 +20,26 @@ interface QueueItem {
   voice: string
   speed: number
   volume: number
-  fetchPromise: Promise<ArrayBuffer | null>
+  /** Started lazily — at most PREFETCH items ahead of the one playing. */
+  fetchPromise: Promise<ArrayBuffer | null> | null
+}
+
+// How many queued sentences may be synthesising ahead of the one currently
+// playing. Firing every sentence at once (a whole answer arrives in one go
+// since speech starts after streaming) makes Kokoro requests contend for CPU
+// and for the browser's ~6 connections per host, which delays the FIRST
+// sentence (≈1.3 s alone vs ≈3.5 s with three in parallel) and blocks other
+// /api calls. The head sentence is synthesised alone; two are prefetched
+// while it plays.
+const PREFETCH = 2
+
+function ensureFetch(item: QueueItem): Promise<ArrayBuffer | null> {
+  if (!item.fetchPromise) item.fetchPromise = fetchTTS(item.text, item.voice, item.speed)
+  return item.fetchPromise
+}
+
+function prefetchAhead() {
+  for (let i = 0; i < Math.min(PREFETCH, queue.length); i++) ensureFetch(queue[i])
 }
 
 const queue: QueueItem[] = []
@@ -97,7 +119,10 @@ async function worker() {
   try {
     while (queue.length > 0) {
       const item = queue.shift()!
-      const buf = await item.fetchPromise
+      // Synthesise the head sentence alone (fastest time-to-first-audio), then
+      // prefetch the next ones while this one plays.
+      const buf = await ensureFetch(item)
+      if (item.sessionId === currentSession) prefetchAhead()
       // Drop items from a prior session — these were enqueued before stopTTS().
       if (!buf || item.sessionId !== currentSession) continue
       try { await playBuffer(buf, item.volume) } catch {}
@@ -113,8 +138,9 @@ async function worker() {
 }
 
 /**
- * Enqueue one sentence. The /api/tts request starts NOW (parallel with any current playback)
- * and the audio plays after every earlier item in the queue has finished.
+ * Enqueue one sentence. Its /api/tts request starts when it reaches the head
+ * of the queue or falls within the PREFETCH window while earlier audio plays;
+ * the audio plays after every earlier item has finished.
  */
 export function enqueueTTS(
   text: string,
@@ -136,8 +162,11 @@ export function enqueueTTS(
     voice,
     speed,
     volume,
-    fetchPromise: fetchTTS(cleaned, voice, speed),
+    fetchPromise: null,
   })
+  // While audio is already playing, keep the look-ahead window filled; an
+  // idle queue is started by the worker (head sentence first, on its own).
+  if (currentSource) prefetchAhead()
 
   pendingDoneFire = true
   worker()
@@ -159,7 +188,25 @@ export function stopTTS() {
   levelCb?.(0)
 }
 
-/** Convenience wrapper for single-shot synthesis (used by tests / Read-aloud button). */
+/** Current playback session id — changes every time stopTTS() runs. Lets
+ *  async callers (e.g. speakResponse waiting on a summary) detect that they
+ *  were cancelled or superseded before they enqueue audio. */
+export function getTTSSession(): number {
+  return currentSession
+}
+
+/** Split already-speakable text into sentences so the first one can be
+ *  synthesised (and start playing) while the rest are still being fetched. */
+export function splitIntoSentences(text: string): string[] {
+  const cursor: SentenceCursor = { pos: 0 }
+  const out = extractNewSentences(text, cursor)
+  const tail = extractTail(text, cursor)
+  if (tail) out.push(tail)
+  return out
+}
+
+/** Convenience wrapper for single-shot synthesis of fixed phrases (voice tests
+ *  and previews). Assistant responses go through speakResponse() in speech.ts. */
 export async function speakText(
   text: string,
   voice: string,

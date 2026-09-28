@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { Message, SendOpts } from '@/types'
 import { nanoid } from '@/store/nanoid'
 import { uploadDocument } from '@/lib/idp'
+import { speakResponse, stopSpeaking } from '@/lib/speech'
 import {
   streamDocAgent,
   listDocConversations,
@@ -304,6 +305,8 @@ export function useDocChat(opts?: UseDocChatOpts): UseDocChatReturn {
   const send = useCallback(
     async (text: string, files?: File[], sendOpts?: DocChatSendOpts) => {
       if (isGenerating || uploading) return
+      // A new question interrupts the previous answer's speech (as in main chat).
+      stopSpeaking()
 
       const uploadedAttachments: { doc_id: string; name: string; kind: ReturnType<typeof docKindFromName>; size: number; role: 'auto' | 'subject' | 'reference' }[] = []
       const selectedDocsArray = sendOpts?.selectedDocs ?? []
@@ -552,6 +555,10 @@ export function useDocChat(opts?: UseDocChatOpts): UseDocChatReturn {
             finished = true
             stats = ev.stats
             finalizeMessage(null)
+            // Voice on → speak the finished answer (summary / full per settings).
+            if (contentBuffer.trim()) {
+              void speakResponse(contentBuffer, { messageId: assistantMsgId, auto: true })
+            }
             await refreshConversations()
           }
         }

@@ -448,6 +448,134 @@ input[type='range'] { -webkit-appearance: none; appearance: none; }
   box-shadow: 0 0 0 3px var(--accent-dim);
 }
 
+/* ── Chat composer — one glass bar: attach · text · voice · send ─────── */
+.composer-bar {
+  display: flex;
+  align-items: flex-end;           /* multi-line: buttons stay on the bottom edge */
+  gap: 2px;
+  padding: 5px;
+  border-radius: 23px;             /* 36px button + 5px padding → concentric */
+  background: var(--glass-fill);
+  border: 1px solid var(--glass-stroke-strong);
+  -webkit-backdrop-filter: blur(16px) saturate(140%);
+  backdrop-filter: blur(16px) saturate(140%);
+  box-shadow: inset 0 1px 0 var(--glass-highlight, rgba(255,255,255,0.08)), 0 10px 28px -18px rgba(0,0,0,0.55);
+  cursor: text;
+  transition: border-color 0.2s, box-shadow 0.2s, background-color 0.2s;
+}
+.composer-bar:hover { border-color: var(--border-bright); }
+.composer-bar:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-dim), 0 12px 32px -16px var(--accent-glow), inset 0 1px 0 var(--glass-highlight, rgba(255,255,255,0.08));
+}
+.composer-bar.is-drag {
+  border-color: var(--accent);
+  border-style: dashed;
+  background: var(--glass-fill-hover);
+  box-shadow: 0 0 0 3px var(--accent-dim);
+}
+.composer-textarea {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 36px;
+  max-height: 200px;
+  padding: 8px 6px;
+  font-size: 14px;
+  line-height: 20px;
+  color: var(--text-primary);
+  background: transparent;
+  border: 0;
+  outline: none;
+  resize: none;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar, var(--glass-stroke-strong)) transparent;
+}
+.composer-textarea::placeholder {
+  color: var(--text-muted);
+  opacity: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.composer-textarea:focus,
+.composer-textarea:focus-visible { outline: none; }   /* the bar shows focus */
+.composer-btn {
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: 9999px !important;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: color 0.15s, background-color 0.15s, box-shadow 0.2s, opacity 0.2s, filter 0.2s;
+}
+.composer-btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.composer-ghost {
+  color: var(--text-muted);
+  background: transparent;
+}
+.composer-ghost:hover,
+.composer-ghost:focus-visible {
+  color: var(--accent);
+  background: var(--glass-fill-hover);
+}
+.composer-ghost.is-on { color: var(--text-secondary); }
+.composer-ghost.is-on:hover,
+.composer-ghost.is-on:focus-visible { color: var(--accent); }
+.composer-ghost.is-speaking {
+  color: var(--accent);
+  background: var(--accent-dim);
+  animation: composer-speaking 1.6s ease-in-out infinite;
+}
+@keyframes composer-speaking {
+  0%, 100% { box-shadow: 0 0 0 0 var(--accent-dim); }
+  50%      { box-shadow: 0 0 0 4px var(--accent-dim); }
+}
+.composer-send {
+  color: #fff;
+  background: linear-gradient(135deg, var(--accent), var(--accent-deep));
+  box-shadow: 0 6px 18px -8px var(--accent-glow), inset 0 1px 0 rgba(255,255,255,0.22);
+}
+.composer-send:hover:not(:disabled) {
+  filter: brightness(1.1);
+  box-shadow: 0 8px 22px -8px var(--accent-glow), 0 0 22px -6px var(--accent-glow), inset 0 1px 0 rgba(255,255,255,0.25);
+}
+.composer-send:disabled {
+  opacity: 0.35;
+  filter: saturate(0.5);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+.composer-stop {
+  color: #fff;
+  background: linear-gradient(135deg, #ef4444, #b91c1c);
+  box-shadow: 0 6px 18px -8px rgba(239,68,68,0.6), inset 0 1px 0 rgba(255,255,255,0.2);
+}
+.composer-stop:hover { filter: brightness(1.1); }
+.composer-wrap { container-type: inline-size; }
+.composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+/* Very narrow chat column: text gets its own full-width row, buttons below. */
+@container (max-width: 300px) {
+  .composer-bar { flex-wrap: wrap; row-gap: 0; }
+  .composer-textarea { order: -1; flex-basis: 100%; }
+  .composer-actions { margin-left: auto; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .composer-ghost.is-speaking { animation: none; }
+}
+html[data-motion="reduced"] .composer-ghost.is-speaking,
+html[data-motion="none"] .composer-ghost.is-speaking { animation: none; }
+
 /* Pill buttons — filled (primary) and outline (secondary) */
 .pill-btn {
   display: inline-flex;

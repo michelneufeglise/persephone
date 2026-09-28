@@ -8,6 +8,8 @@ import type { Message, SendOpts } from '@/types'
 import type { IDPDocument } from '@/types'
 import type { UseDocChatReturn } from './useDocChat'
 import { SHEET_ACCEPT } from '@/lib/docAgent'
+import { useAppStore } from '@/store/appStore'
+import { speakResponse } from '@/lib/speech'
 
 interface DocChatProps {
   chat: UseDocChatReturn
@@ -138,6 +140,14 @@ export function DocChat({
 
   const handleSelectMessage = useCallback((m: Message) => selectMessage(m.id), [selectMessage])
 
+  // Same Voice on/off as the main chat (settings.tts.enabled): per-message
+  // "Read aloud" appears when voice is on; finished answers are auto-spoken
+  // from useDocChat.
+  const voiceOn = useAppStore(s => s.settings.tts.enabled)
+  const handleSpeak = useCallback((text: string, messageId?: string) => {
+    void speakResponse(text, { messageId })
+  }, [])
+
   return (
     <div className="flex-1 min-h-0 flex flex-col ">
       {/* Selected docs strip */}
@@ -188,6 +198,7 @@ export function DocChat({
         isGenerating={chat.isGenerating}
         onSend={handleSend}
         onStop={chat.stop}
+        onSpeak={voiceOn ? handleSpeak : undefined}
         enableRoles={true}
         largePasteChars={1500}
         accept={`image/*,.heic,.heif,.pdf,.docx,.doc,${SHEET_ACCEPT},.txt,.md,.rtf,.pptx,.odt,.html,.htm,.json,.xml,.eml`}

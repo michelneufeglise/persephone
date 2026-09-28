@@ -1,7 +1,8 @@
-import { useState, useRef, useEffect } from 'react'
-import { Send, Square, Paperclip, X } from 'lucide-react'
+import { useState, useRef, useEffect, useLayoutEffect } from 'react'
+import { ArrowUp, Square, Paperclip, X, Volume2, VolumeX } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useAppStore } from '@/store/appStore'
+import { setVoiceEnabled, stopSpeaking } from '@/lib/speech'
 import type { SendOpts } from '@/types'
 
 interface ChatInputProps {
@@ -14,7 +15,13 @@ interface ChatInputProps {
   largePasteChars?: number
   /** Pre-fill the textarea; bump `nonce` to re-apply. `select` = substring to pre-select. */
   prefill?: { text: string; nonce: number; select?: string } | null
+  /** Show the voice (TTS) on/off button inside the bar. Default true. */
+  showVoiceToggle?: boolean
 }
+
+/** One text line: 20px line-height + 8px top/bottom padding = the 36px button size. */
+const LINE_BOX_PX = 36
+const MAX_TEXTAREA_PX = 200
 
 export function ChatInput({
   onSend,
@@ -25,6 +32,7 @@ export function ChatInput({
   enableRoles,
   largePasteChars,
   prefill,
+  showVoiceToggle = true,
 }: ChatInputProps) {
   const [value, setValue] = useState('')
   const [files, setFiles] = useState<File[]>([])
@@ -38,11 +46,20 @@ export function ChatInput({
   const generatingConvs = useAppStore(s => s.generatingConvs)
   const isGenerating = isGeneratingProp ?? (!!activeConversationId && generatingConvs.includes(activeConversationId))
 
-  useEffect(() => {
+  // Voice (TTS) — the same `settings.tts.enabled` flag as the Voice panel toggle.
+  const voiceOn = useAppStore(s => s.settings.tts.enabled)
+  const isSpeaking = useAppStore(s => s.isSpeaking)
+
+  const canSend = !!value.trim() || files.length > 0
+
+  // Auto-grow: one line when empty (a long placeholder must not inflate the
+  // box), then follow the content up to MAX_TEXTAREA_PX.
+  useLayoutEffect(() => {
     const ta = textareaRef.current
     if (!ta) return
-    ta.style.height = 'auto'
-    ta.style.height = `${Math.min(ta.scrollHeight, 200)}px`
+    ta.style.height = `${LINE_BOX_PX}px`
+    if (!value) return
+    ta.style.height = `${Math.min(Math.max(ta.scrollHeight, LINE_BOX_PX), MAX_TEXTAREA_PX)}px`
   }, [value])
 
   // Apply an external pre-fill (example prompt chips) and focus the composer.
@@ -62,7 +79,7 @@ export function ChatInput({
   }, [prefill?.nonce])
 
   function handleKeyDown(e: React.KeyboardEvent) {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault()
       handleSend()
     }
@@ -199,20 +216,29 @@ export function ChatInput({
     setFileRoles(newRoles)
   }
 
+  // Voice button: while speaking, a click stops the current speech (voice
+  // stays on); otherwise it toggles voice replies on/off.
+  const speakingNow = voiceOn && isSpeaking
+  const voiceLabel = speakingNow
+    ? 'Stop speaking'
+    : voiceOn
+    ? 'Voice replies on — click to mute'
+    : 'Voice replies off — click to turn on'
+  function handleVoiceClick() {
+    if (speakingNow) stopSpeaking()
+    else setVoiceEnabled(!voiceOn)
+  }
+
   return (
     <div
-      className="flex flex-col p-4 border-t border-[var(--glass-stroke)] rounded-b-3xl"
+      className="composer-wrap flex flex-col px-4 pt-2 pb-4"
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      style={dragActive && enableRoles ? {
-        backgroundColor: 'var(--glass-fill-hover)',
-        borderColor: 'var(--accent)',
-      } : {}}
     >
       {/* File chips row — shown when files are selected */}
       {files.length > 0 && (
-        <div className="flex flex-wrap gap-2 mb-3">
+        <div className="flex flex-wrap gap-2 mb-2 px-1">
           {files.map((file, i) => (
             <div key={i} className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full glass-card">
               <span className="text-xs text-[var(--text-primary)] max-w-[200px] truncate">{file.name}</span>
@@ -222,6 +248,7 @@ export function ChatInput({
                   onChange={(e) => setFileRole(i, e.target.value as 'auto' | 'subject' | 'reference')}
                   className="text-xs glass-input rounded px-1.5 py-0.5 text-[var(--text-secondary)]"
                   title="Document classification"
+                  aria-label={`Classification for ${file.name}`}
                 >
                   <option value="auto">Auto</option>
                   <option value="subject">Document</option>
@@ -229,9 +256,11 @@ export function ChatInput({
                 </select>
               )}
               <button
+                type="button"
                 onClick={() => removeFile(i)}
                 className="flex-shrink-0 text-[var(--text-muted)] hover:text-[var(--accent)] transition-colors"
                 title="Remove file"
+                aria-label={`Remove ${file.name}`}
               >
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -250,88 +279,88 @@ export function ChatInput({
         multiple
       />
 
-      {/* hairline gradient above the input — implies depth */}
-      <span
-        className="absolute left-6 right-6 -top-[0.5px] h-[1px] pointer-events-none"
-        style={{ background: 'linear-gradient(90deg, transparent, var(--border-bright), transparent)' }}
-      />
-
-      {/* Input row with textarea, attach button, and send/stop */}
-      <div className="relative flex items-end gap-2">
-        <div className="flex-1 relative">
-          <textarea
-            ref={textareaRef}
-            value={value}
-            onChange={e => setValue(e.target.value)}
-            onKeyDown={handleKeyDown}
-            onPaste={handlePaste}
-            placeholder={placeholder}
-            rows={1}
-            className="w-full resize-none rounded-2xl glass-input
-              px-4 py-3 text-[14px] text-[var(--text-primary)] leading-relaxed
-              placeholder:text-[var(--text-muted)]
-              transition-all duration-300 max-h-[200px] overflow-y-auto"
-            style={{
-              scrollbarWidth: 'thin',
-            }}
-          />
-        </div>
-
-        {/* Attach button */}
+      {/* The composer bar: attach · text · voice · send/stop */}
+      <div
+        className={`composer-bar${dragActive && enableRoles ? ' is-drag' : ''}`}
+        onClick={e => {
+          // Clicking the bar's padding focuses the text field.
+          if (e.target === e.currentTarget) textareaRef.current?.focus()
+        }}
+      >
         <button
+          type="button"
           onClick={() => fileRef.current?.click()}
-          className="flex-shrink-0 w-12 h-12 rounded-2xl glass-input flex items-center justify-center transition-all duration-200"
-          style={{
-            color: 'var(--text-muted)',
-          }}
-          onMouseEnter={(e) => (e.currentTarget.style.color = 'var(--accent)')}
-          onMouseLeave={(e) => (e.currentTarget.style.color = 'var(--text-muted)')}
+          className="composer-btn composer-ghost"
           title="Attach files or images"
+          aria-label="Attach files or images"
         >
-          <Paperclip className="w-4 h-4" />
+          <Paperclip className="w-[18px] h-[18px]" />
         </button>
 
-        <AnimatePresence mode="wait">
-          {isGenerating ? (
-            <motion.button
-              key="stop"
-              initial={{ scale: 0.8, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.8, opacity: 0 }}
-              onClick={onStop}
-              className="flex-shrink-0 w-12 h-12 rounded-2xl text-white flex items-center justify-center transition-all duration-200"
-              style={{
-                background: 'linear-gradient(135deg, #ef4444, #b91c1c)',
-                boxShadow: '0 8px 22px -8px rgba(239,68,68,0.6), inset 0 1px 0 rgba(255,255,255,0.2)',
-              }}
-              title="Stop generation"
+        <textarea
+          ref={textareaRef}
+          value={value}
+          onChange={e => setValue(e.target.value)}
+          onKeyDown={handleKeyDown}
+          onPaste={handlePaste}
+          placeholder={placeholder}
+          aria-label="Message"
+          rows={1}
+          className="composer-textarea"
+        />
+
+        <div className="composer-actions">
+          {showVoiceToggle && (
+            <button
+              type="button"
+              onClick={handleVoiceClick}
+              className={`composer-btn composer-ghost${voiceOn ? ' is-on' : ''}${speakingNow ? ' is-speaking' : ''}`}
+              title={voiceLabel}
+              aria-label={voiceLabel}
+              aria-pressed={voiceOn}
             >
-              <Square className="w-4 h-4 fill-current" />
-            </motion.button>
-          ) : (
-            <motion.button
-              key="send"
-              initial={{ scale: 0.8, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.8, opacity: 0 }}
-              whileHover={{ scale: (value.trim() || files.length > 0) ? 1.04 : 1 }}
-              whileTap={{ scale: 0.96 }}
-              onClick={handleSend}
-              disabled={!value.trim() && files.length === 0}
-              className="flex-shrink-0 w-12 h-12 rounded-2xl pill-btn !p-0 flex items-center justify-center
-                transition-all duration-300 disabled:opacity-40 disabled:cursor-not-allowed"
-              style={{
-                background: 'linear-gradient(135deg, var(--accent), var(--accent-deep))',
-                boxShadow: (value.trim() || files.length > 0)
-                  ? '0 8px 22px -8px var(--accent-glow), 0 0 28px -6px var(--accent-glow), inset 0 1px 0 rgba(255,255,255,0.2)'
-                  : 'inset 0 1px 0 rgba(255,255,255,0.06)',
-              }}
-              title="Send (Enter)"
-            >
-              <Send className="w-4 h-4" />
-            </motion.button>
+              {voiceOn
+                ? <Volume2 className="w-[18px] h-[18px]" />
+                : <VolumeX className="w-[18px] h-[18px]" />}
+            </button>
           )}
-        </AnimatePresence>
+
+          <AnimatePresence mode="wait" initial={false}>
+            {isGenerating ? (
+              <motion.button
+                key="stop"
+                type="button"
+                initial={{ scale: 0.8, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.8, opacity: 0 }}
+                transition={{ duration: 0.15 }}
+                onClick={onStop}
+                className="composer-btn composer-stop"
+                title="Stop generating"
+                aria-label="Stop generating"
+              >
+                <Square className="w-3.5 h-3.5 fill-current" />
+              </motion.button>
+            ) : (
+              <motion.button
+                key="send"
+                type="button"
+                initial={{ scale: 0.8, opacity: 0 }}
+                animate={{ scale: 1, opacity: 1 }}
+                exit={{ scale: 0.8, opacity: 0 }}
+                transition={{ duration: 0.15 }}
+                whileTap={canSend ? { scale: 0.92 } : undefined}
+                onClick={handleSend}
+                disabled={!canSend}
+                className="composer-btn composer-send"
+                title={canSend ? 'Send (Enter)' : 'Type a message to send'}
+                aria-label="Send message"
+              >
+                <ArrowUp className="w-[18px] h-[18px]" strokeWidth={2.4} />
+              </motion.button>
+            )}
+          </AnimatePresence>
+        </div>
       </div>
     </div>
   )

@@ -4,6 +4,7 @@ import { Slider } from '@/components/ui/Slider'
 import { Toggle } from '@/components/ui/Toggle'
 import { Panel } from '@/components/ui/Panel'
 import { speakText } from '@/lib/tts'
+import { setVoiceEnabled } from '@/lib/speech'
 import { Button } from '@/components/ui/Button'
 import { Play } from 'lucide-react'
 
@@ -18,6 +19,7 @@ interface Voice {
 export function VoiceSection() {
   const { settings, updateTTSSettings } = useAppStore()
   const tts = settings.tts
+  const spokenMode = tts.spokenMode === 'full' ? 'full' : 'summary'
   const [voices, setVoices]      = useState<Voice[]>([])
   const [testing, setTesting]    = useState(false)
   const [accentFilter, setAccentFilter] = useState<'all' | 'US' | 'UK' | 'ES'>('all')
@@ -62,7 +64,7 @@ export function VoiceSection() {
       <Panel className="p-4 space-y-4">
         <Toggle
           checked={tts.enabled}
-          onChange={v => updateTTSSettings({ enabled: v })}
+          onChange={v => setVoiceEnabled(v)}
           label="Enable Voice"
           description="Generate speech for AI responses using Kokoro TTS"
         />
@@ -72,6 +74,38 @@ export function VoiceSection() {
           label="Auto-play responses"
           description="Automatically speak each AI response"
         />
+        <div className="flex items-start justify-between gap-4 pt-1">
+          <div className="min-w-0">
+            <div className="text-sm font-medium text-[var(--text-primary)]" id="spoken-mode-label">Spoken responses</div>
+            <div className="text-xs text-[var(--text-muted)] mt-0.5">
+              {spokenMode === 'summary'
+                ? 'Say a short 2–3 sentence summary of long answers (the full answer stays on screen).'
+                : 'Read the whole answer aloud — markdown, code, tables and links are skipped.'}
+            </div>
+          </div>
+          <div
+            role="radiogroup"
+            aria-labelledby="spoken-mode-label"
+            className="flex flex-shrink-0 p-0.5 rounded-full glass-card"
+          >
+            {([['summary', 'Summary'], ['full', 'Full text']] as const).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                role="radio"
+                aria-checked={spokenMode === id}
+                onClick={() => updateTTSSettings({ spokenMode: id })}
+                className={`px-3 py-1 rounded-full text-xs font-medium transition-colors ${
+                  spokenMode === id
+                    ? 'bg-[var(--accent-dim)] text-[var(--accent)]'
+                    : 'text-[var(--text-muted)] hover:text-[var(--text-secondary)]'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
       </Panel>
 
       <div className="space-y-3">
