@@ -155,7 +155,7 @@ Write a concise answer in 3–6 sentences or a short bullet list grouped as:
 - Signatures (only when there are signed / verified_against / signature_specimen facts: which document was signed, the signature score and band, against which reference card — an automated check, not a forensic determination)
 - Online presence
 
-Do NOT copy the facts list verbatim and do NOT repeat any line. Distinguish a *likely* LinkedIn profile from mere *candidates*. Cite the document names or website hosts given as "source" in parentheses (e.g. "(cv.pdf)", "(linkedin.com)"); never cite internal labels such as doc_agent or web_lookup. If something isn't in the facts, say it's unknown. Refer to people by their name; do not assume gender or use he/she.
+Do NOT copy the facts list verbatim and do NOT repeat any line. Each fact line stands on its own: never pair a role from one line with an organisation from another line (write "<role> (source 1)" and "works at <organisation> (source 2)", not "<role> at <organisation>") unless the role line itself names that organisation. Distinguish a *likely* LinkedIn profile from mere *candidates*. Cite the document names or website hosts given as "source" in parentheses (e.g. "(cv.pdf)", "(linkedin.com)"); never cite internal labels such as doc_agent or web_lookup. If something isn't in the facts, say it's unknown. Refer to people by their name; do not assume gender or use he/she.
 
 Facts:
 {document_content}"""
@@ -1133,6 +1133,8 @@ async def run_agent(
                     # Where each fact comes from: document names (via mentioned_in)
                     # and website hosts — never internal labels like "doc_agent".
                     docs_of: dict[str, list[str]] = {}
+                    # Same, per extraction run: the document a fact was read from
+                    docs_of_run: dict[tuple, list[str]] = {}
                     for rel in relations:
                         if rel.get("type") == "mentioned_in":
                             dst_e = entities_map.get(rel.get("dst"), {})
@@ -1140,6 +1142,10 @@ async def run_agent(
                                 dname = (dst_e.get("props") or {}).get("filename") or dst_e.get("name") or ""
                                 if dname and dname not in docs_of.setdefault(rel.get("src"), []):
                                     docs_of[rel.get("src")].append(dname)
+                                if dname and rel.get("run_id"):
+                                    lst = docs_of_run.setdefault((rel.get("src"), rel.get("run_id")), [])
+                                    if dname not in lst:
+                                        lst.append(dname)
 
                     def _cite(rel: dict) -> str:
                         src_e = entities_map.get(rel.get("src"), {})
@@ -1149,10 +1155,27 @@ async def run_agent(
                                 props = e.get("props") or {}
                                 host = props.get("host") or _doc_web._hostname(props.get("url", ""))
                                 return (host or "").removeprefix("www.")
-                        if dst_e.get("type") == "document":
-                            return (dst_e.get("props") or {}).get("filename") or dst_e.get("name") or ""
-                        names = docs_of.get(rel.get("src")) or docs_of.get(rel.get("dst")) or []
+                        for e in (dst_e, src_e):
+                            if e.get("type") == "document":
+                                return (e.get("props") or {}).get("filename") or e.get("name") or ""
+                        run = rel.get("run_id")
+                        names = (
+                            (run and (docs_of_run.get((rel.get("src"), run)) or docs_of_run.get((rel.get("dst"), run))))
+                            or docs_of.get(rel.get("src")) or docs_of.get(rel.get("dst")) or []
+                        )
                         return ", ".join(names[:3])
+
+                    # Organisation stated in the SAME extraction run as a role
+                    # (e.g. "Solution Architect" + works_at Rabobank from the CV),
+                    # so the model never pairs a role with another document's company.
+                    orgs_of_run: dict[tuple, list[str]] = {}
+                    for rel in relations:
+                        if rel.get("type") in ("works_at", "owns") and rel.get("run_id"):
+                            oname = entities_map.get(rel.get("dst"), {}).get("name")
+                            if oname:
+                                lst = orgs_of_run.setdefault((rel.get("src"), rel.get("run_id")), [])
+                                if oname not in lst:
+                                    lst.append(oname)
 
                     # Build fact dicts with rendered labels
                     fact_items = []
@@ -1195,6 +1218,10 @@ async def run_agent(
                             # Not a similarity score: the card holds the person's reference signatures
                             n_refs = rprops.get("n_references")
                             conf_str = f" [reference signature card{f' with {n_refs} specimen signatures' if n_refs else ''}]"
+                        if rel_type == "has_role":
+                            ctx_orgs = orgs_of_run.get((src_id, rel.get("run_id"))) if rel.get("run_id") else None
+                            if ctx_orgs:
+                                conf_str += f" [role stated together with {', '.join(ctx_orgs[:2])} in the same document]"
                         fact_text = f"- {label}{conf_str}" + (f" (source: {source})" if source else "")
                         if (rel.get("props") or {}).get("demo") or any(
                             (entities_map.get(x, {}).get("props") or {}).get("demo")
@@ -1211,7 +1238,11 @@ async def run_agent(
                             "dst_name": dst_name,
                         })
 
-                    # Sort by type: has_role/works_at/located_in first, then mentioned_in, likely_profile, then candidate_profile (max 3)
+                    # Order: facts about the matched subject first, then by type —
+                    # identity / verification (roles, employer, ownership,
+                    # signatures, profiles) before plain mentioned_in, so the
+                    # 12-fact cap never drops e.g. the LinkedIn match.
+                    # candidate_profile is capped at 3.
                     priority_types = {
                         "has_role": 0,
                         "works_at": 1,
@@ -1220,23 +1251,27 @@ async def run_agent(
                         "signature_specimen": 1.7,
                         "verified_against": 1.8,
                         "located_in": 2,
+                        "likely_profile": 2.5,
+                        "candidate_profile": 2.7,
                         "mentioned_in": 3,
-                        "likely_profile": 4,
-                        "candidate_profile": 5,
                     }
 
-                    # Count candidate_profile facts
-                    candidate_count = 0
-                    ordered_facts = []
+                    def _fact_key(f: dict) -> tuple:
+                        r = f["rel"]
+                        about_subject = entity_id in (r.get("src"), r.get("dst"))
+                        return (0 if about_subject else 1, priority_types.get(f["type"], 99), -f["confidence"])
 
-                    for fact in sorted(fact_items, key=lambda f: (priority_types.get(f["type"], 99), -f["confidence"])):
+                    candidate_count = 0
+                    ordered_items: list[dict] = []
+                    for fact in sorted(fact_items, key=_fact_key):
                         if fact["type"] == "candidate_profile":
                             if candidate_count >= 3:
                                 continue
                             candidate_count += 1
-                        ordered_facts.append(fact["text"])
-                        if len(ordered_facts) >= 12:
+                        ordered_items.append(fact)
+                        if len(ordered_items) >= 12:
                             break
+                    ordered_facts = [f["text"] for f in ordered_items]
 
                     facts_text = "\n".join(ordered_facts)
 
@@ -1247,12 +1282,7 @@ async def run_agent(
 
                     # Build items for the tile using deduplicated facts
                     items = []
-                    for fact in sorted(fact_items, key=lambda f: (priority_types.get(f["type"], 99), -f["confidence"]))[:12]:
-                        if fact["type"] == "candidate_profile":
-                            if candidate_count >= 3:
-                                continue
-                            candidate_count += 1
-
+                    for fact in ordered_items:
                         rel = fact["rel"]
                         dst_id = rel.get("dst")
                         dst_entity = entities_map.get(dst_id, {})

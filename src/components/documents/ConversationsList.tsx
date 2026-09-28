@@ -51,7 +51,7 @@ export function ConversationsList({
   if (conversations.length === 0) return null
 
   return (
-    <div className="border-t border-[var(--glass-stroke)] mt-2 pt-2">
+    <div className="flex-shrink-0 border-t border-[var(--glass-stroke)] mt-2 pt-2">
       {/* Header */}
       <div className="flex items-center justify-between px-3 py-2">
         <button
@@ -66,20 +66,21 @@ export function ConversationsList({
           Conversations ({conversations.length})
         </button>
 
-        {!collapsed && (
-          <button
-            onClick={onNewConversation}
-            title="New conversation"
-            className="p-1.5 text-[var(--text-muted)] hover:text-[var(--accent)] rounded-md hover:bg-[var(--glass-fill-hover)] transition-colors"
-          >
-            <Plus className="w-3.5 h-3.5" />
-          </button>
-        )}
+        {/* Always available, also when the list is collapsed */}
+        <button
+          onClick={onNewConversation}
+          title="New conversation"
+          aria-label="New conversation"
+          className="p-1.5 text-[var(--text-muted)] hover:text-[var(--accent)] rounded-md hover:bg-[var(--glass-fill-hover)] transition-colors"
+        >
+          <Plus className="w-3.5 h-3.5" />
+        </button>
       </div>
 
       {/* List */}
       {!collapsed && (
-        <div className="space-y-1 px-2">
+        // Capped + scrollable so a long history never squeezes the document library above
+        <div className="space-y-1 px-2 pb-2 max-h-[35vh] overflow-y-auto" style={{ scrollbarWidth: 'thin' }}>
           {conversations.map(conv => {
             const isActive = activeId === conv.id
             // Row = select button + sibling delete button (a <button> must not

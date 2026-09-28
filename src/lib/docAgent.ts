@@ -437,8 +437,18 @@ export interface KGRelationEvidence {
   reference_doc: KGEvidenceDoc | null
   conversation: { id: string; title: string | null } | null
   snippet: string | null
-  snippet_source: 'document' | 'mention' | null
+  snippet_source: 'document' | 'mention' | 'profile' | null
   highlights: string[]
+  /** likely_profile / candidate_profile: the web profile itself is the evidence. */
+  profile?: {
+    title: string
+    url: string | null
+    host: string | null
+    platform: string
+    confidence: number | null
+    verified_at: string | null
+    snippet: string | null
+  } | null
   signature: {
     score: number | null
     band: string | null

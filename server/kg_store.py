@@ -999,7 +999,7 @@ def _neighborhood_sync(entity_id: str, hops: int = 2, limit: int = 60) -> dict:
         # Get relations between visited entities
         relations = []
         cur = conn.execute(
-            f"SELECT id, src_id, dst_id, type, confidence, source, props FROM kg_relations WHERE src_id IN ({placeholders}) OR dst_id IN ({placeholders})",
+            f"SELECT id, src_id, dst_id, type, confidence, source, props, run_id FROM kg_relations WHERE src_id IN ({placeholders}) OR dst_id IN ({placeholders})",
             list(visited) + list(visited),
         )
         for row in cur.fetchall():
@@ -1011,6 +1011,7 @@ def _neighborhood_sync(entity_id: str, hops: int = 2, limit: int = 60) -> dict:
                 "confidence": row["confidence"],
                 "source": row["source"],
                 "props": json.loads(row["props"] or "{}"),
+                "run_id": row["run_id"],
             })
 
         return {"entities": entities, "relations": relations}
@@ -1314,6 +1315,42 @@ _EVIDENCE_KEYWORDS = {
 }
 
 
+# Personal contact data never leaves the backend in an evidence snippet:
+# e-mail addresses, phone numbers, (Dutch) postcodes and street + house number.
+# Document text is often concatenated without spaces ("Kneppelhoutstraat
+# 173515EW"), so the patterns avoid relying on word boundaries.
+REDACTED = "[redacted]"
+_RX_EMAIL = re.compile(r"(?:\[redacted\])?[\w.+-]+@[\w-]+(?:\.[\w-]+)*\.[a-z]{2,24}")
+_RX_PHONE_INTL = re.compile(r"(?:\+|\b00)\d{2}[ .-]?(?:\(0\)[ .-]?)?\d(?:[ .-]?\d){7,9}(?!\d)")
+_RX_PHONE_NL = re.compile(r"(?<![\d+])0\d(?:[ .-]?\d){8}(?!\d)")
+_RX_DATE_LIKE = re.compile(r"\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4}|(?:19|20)\d{2}-\d{2}")
+_RX_POSTCODE = re.compile(r"[1-9]\d{3} ?[A-Z]{2}(?![A-Za-z])")
+_RX_STREET = re.compile(
+    r"[A-Z][a-z\u00df-\u00ff'\u2019-]*"
+    r"(?:straat|laan|weg|plein|gracht|kade|singel|dijk|dreef|steeg|hof|markt|plantsoen|boulevard|park|wal)"
+    r"\s+\d{1,4}(?:[-/]\d{1,4}|\s?[a-zA-Z](?![a-zA-Z]))?"
+    r"|\b\d{1,5}\s+(?:[A-Z][a-z]+\s){1,3}(?:Street|St\.|Road|Rd\.|Avenue|Ave\.|Lane|Drive|Boulevard)\b"
+)
+_RX_REDACTED_RUN = re.compile(r"\[redacted\](?:[\s,]*\[redacted\])+")
+
+
+def redact_contact_data(text: Optional[str]) -> Optional[str]:
+    """Replace e-mail addresses, phone numbers, postcodes ("1234 AB") and
+    street + house number ("Hoofdstraat 12a") with "[redacted]"."""
+    if not text:
+        return text
+    phone = lambda m: m.group(0) if _RX_DATE_LIKE.search(m.group(0)) else REDACTED  # noqa: E731
+    out = _RX_PHONE_INTL.sub(phone, text)
+    out = _RX_PHONE_NL.sub(phone, out)
+    out = _RX_EMAIL.sub(REDACTED, out)
+    out = _RX_POSTCODE.sub(REDACTED, out)
+    out = _RX_STREET.sub(REDACTED, out)
+    return _RX_REDACTED_RUN.sub(REDACTED, out)
+
+
+PROFILE_RELATIONS = ("likely_profile", "candidate_profile")
+
+
 def _fold(text: str) -> str:
     """Lower-case, accent-free copy of `text` with the SAME length (one output
     char per input char), so positions found in the fold map back 1:1."""
@@ -1423,10 +1460,41 @@ def _relation_evidence_sync(relation_id: str, get_doc_text=None, crop_exists=Non
             except sqlite3.OperationalError:
                 pass  # conversations table absent (tests)
 
+        # ── Profile (web lookup): the profile itself is the evidence, never
+        # a window of a document (a CV window would show a home address) ──
+        profile = None
+        profile_ent = dst if dst["type"] == "profile" else (src if src["type"] == "profile" else None)
+        if rtype in PROFILE_RELATIONS or profile_ent is not None:
+            pe = profile_ent or dst
+            pp = pe.get("props") or {}
+            url = pp.get("url") or ""
+            verified_at = props.get("verified_at")
+            if not verified_at and row["created_at"]:
+                try:
+                    import datetime as _dt
+                    verified_at = _dt.datetime.fromtimestamp(float(row["created_at"])).date().isoformat()
+                except Exception:
+                    verified_at = None
+            try:
+                platform = pp.get("platform") or (_platform_of(url) if url else None) or "web"
+            except Exception:
+                platform = pp.get("platform") or "web"
+            profile = {
+                "title": pe.get("name") or url,
+                "url": url if url.lower().startswith(("http://", "https://")) else None,
+                "host": (pp.get("host") or "").removeprefix("www.") or None,
+                "platform": platform,
+                "confidence": row["confidence"],
+                "verified_at": verified_at,
+                "snippet": redact_contact_data(pp.get("snippet") or None),
+            }
+
         # ── Source document ──
         source_ent: Optional[dict] = None
         reference_ent: Optional[dict] = None
-        if rtype == "verified_against":
+        if profile is not None:
+            pass  # evidence is the profile, not a document
+        elif rtype == "verified_against":
             source_ent, reference_ent = src, dst
         elif rtype == "signature_specimen":
             source_ent = src
@@ -1491,7 +1559,7 @@ def _relation_evidence_sync(relation_id: str, get_doc_text=None, crop_exists=Non
                     text = get_doc_text(source_doc["doc_id"])
                 except Exception:
                     text = None
-            snippet = _evidence_snippet(text or "", anchors, _EVIDENCE_KEYWORDS.get(rtype, ()))
+            snippet = redact_contact_data(_evidence_snippet(text or "", anchors, _EVIDENCE_KEYWORDS.get(rtype, ())))
             if snippet:
                 snippet_source = "document"
             else:
@@ -1501,8 +1569,10 @@ def _relation_evidence_sync(relation_id: str, get_doc_text=None, crop_exists=Non
                         (eid, source_doc["doc_id"]),
                     ).fetchone()
                     if m:
-                        snippet, snippet_source = m["snippet"], "mention"
+                        snippet, snippet_source = redact_contact_data(m["snippet"]), "mention"
                         break
+        elif profile is not None and profile.get("snippet"):
+            snippet, snippet_source = profile["snippet"], "profile"
 
         # ── Signature check ──
         signature = None
@@ -1548,6 +1618,7 @@ def _relation_evidence_sync(relation_id: str, get_doc_text=None, crop_exists=Non
             "snippet_source": snippet_source,
             "highlights": highlights,
             "signature": signature,
+            "profile": profile,
         }
     finally:
         conn.close()

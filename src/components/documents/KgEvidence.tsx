@@ -30,6 +30,12 @@ function fmtTime(v: number | string | null | undefined): string {
   return d.toLocaleString(undefined, { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
 }
 
+function fmtDate(v: string): string {
+  const d = new Date(v)
+  if (Number.isNaN(d.getTime())) return v
+  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
 /** Snippet with the entity names highlighted. */
 function Highlighted({ text, terms }: { text: string; terms: string[] }) {
   const parts = useMemo(() => {
@@ -206,6 +212,32 @@ export function KgEvidencePanel({
                 </Section>
               )}
 
+              {ev.profile && (
+                <Section title="Profile">
+                  <div className="flex items-start gap-2 min-w-0">
+                    <Globe className="w-3.5 h-3.5 mt-0.5 flex-shrink-0 text-[var(--text-muted)]" />
+                    <div className="min-w-0 space-y-0.5">
+                      <div className="text-[0.8rem] font-semibold text-[var(--text-primary)] leading-snug break-words">{ev.profile.title}</div>
+                      {ev.profile.url && (
+                        <a
+                          href={ev.profile.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="block text-[0.66rem] font-mono text-[var(--accent)] hover:underline break-all"
+                        >
+                          {ev.profile.url}
+                        </a>
+                      )}
+                      <div className="text-[0.66rem] text-[var(--text-muted)]">
+                        {ev.profile.platform === 'linkedin' ? 'LinkedIn' : ev.profile.platform}
+                        {typeof ev.profile.confidence === 'number' ? ` · match ${Math.round(ev.profile.confidence * 100)}%` : ''}
+                        {ev.profile.verified_at ? ` · found ${fmtDate(ev.profile.verified_at)}` : ''}
+                      </div>
+                    </div>
+                  </div>
+                </Section>
+              )}
+
               {ev.source_doc && (
                 <Section title={sig ? 'Questioned document' : 'Source document'}>
                   <DocLine doc={ev.source_doc} ownerNames={ownerNames} />
@@ -225,7 +257,11 @@ export function KgEvidencePanel({
                         <Highlighted text={ev.snippet} terms={ev.highlights || []} />
                       </blockquote>
                       <div className="text-[0.62rem] text-[var(--text-muted)] mt-1">
-                        {ev.snippet_source === 'document' ? 'Excerpt from the document text' : 'Stored mention'}
+                        {ev.snippet_source === 'document'
+                          ? 'Excerpt from the document text'
+                          : ev.snippet_source === 'profile'
+                            ? 'Search result snippet'
+                            : 'Stored mention'}
                       </div>
                     </>
                   ) : (
