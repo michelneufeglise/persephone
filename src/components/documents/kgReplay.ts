@@ -997,7 +997,9 @@ export function buildRunTrail(input: RunTrailInput): ReplayStep[] {
     const names = items(t)
       .map(it => /^(.*)\s+\((person|organization|role|profile|location)\)$/.exec(str(it.label)))
       .filter((m): m is RegExpExecArray => !!m)
-      .map(m => m[1])
+      // "…and signer." → "…and signer" (a legal form such as "B.V." keeps its period)
+      .map(m => m[1].trim().replace(/[\s,;:]+$/, '').replace(/(?<=[a-z]{3})\.+$/, '').replace(/\.{2,}$/, '.'))
+      .filter(Boolean)
     const isNew = !!c && (c.newEntities > 0 || c.newRelations > 0)
     const counts = c
       ? [c.entities != null ? plural(c.entities, 'entity', 'entities') : '', c.relations != null ? plural(c.relations, 'relation') : ''].filter(Boolean).join(' and ')
@@ -1012,7 +1014,7 @@ export function buildRunTrail(input: RunTrailInput): ReplayStep[] {
       kind: 'store',
       eyebrow: 'Knowledge store',
       title: isNew ? 'Learned new facts' : 'Knowledge store updated',
-      body: `The run's facts went into the local knowledge store${counts ? ` (${counts})` : ''}${names.length ? ` about ${joinList(names.slice(0, 3))}` : ''}. ${learned}`.trim(),
+      body: `${`The run's facts went into the local knowledge store${counts ? ` (${counts})` : ''}${names.length ? ` about ${joinList(names.slice(0, 3))}` : ''}`.replace(/\.*$/, '.')} ${learned}`.trim(),
       chips: [
         c?.newEntities ? { label: `+${c.newEntities} ${c.newEntities === 1 ? 'entity' : 'entities'}`, tone: 'ok' as const } : null,
         c?.newRelations ? { label: `+${c.newRelations} ${c.newRelations === 1 ? 'relation' : 'relations'}`, tone: 'ok' as const } : null,

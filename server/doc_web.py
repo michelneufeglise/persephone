@@ -969,6 +969,7 @@ _NAME_STOPWORDS = {
     "contact", "info", "type", "status", "number", "table", "section", "page", "pages",
     "important", "decisions", "email", "phone", "linkedin", "facebook", "instagram", "twitter",
     "web", "search", "results", "result", "document's", "cv", "resume", "id", "card",
+    "title", "titel", "functie", "position",
 }
 _NAME_PARTICLES = {"de", "van", "der", "den", "von", "la", "le", "di", "da", "du", "del", "ter", "te", "het", "'t", "bin", "al", "dos", "das", "y"}
 
@@ -1024,35 +1025,341 @@ def _clean_md(text: str) -> str:
     return text.strip()
 
 
-def _role_org_from(text: str) -> tuple[Optional[str], Optional[str]]:
-    """The first "Role:" and "Organization/Company/Employer:" values in `text`."""
+# ── Role / organisation clean-up (knowledge store) ─────────────────────────
+# Extra legal forms not covered by looks_like_organization (Dutch forms, dot-less).
+_LEGAL_FORM_EXTRA_RE = re.compile(
+    r"(?:^|[\s,])(?:V\.?O\.?F\.?|VOF|B\.V|N\.V|LLP|Eenmanszaak|eenmanszaak|EENMANSZAAK)(?=$|[\s,.)])"
+)
+# Generic party words: "(supplier)", "(klant)" … never a role or an organisation by themselves.
+_GENERIC_PARTY_WORDS = {
+    "supplier", "suppliers", "customer", "customers", "client", "clients", "klant", "klanten",
+    "leverancier", "leveranciers", "buyer", "seller", "vendor", "contractor", "opdrachtgever",
+    "opdrachtnemer", "party", "parties", "partij", "partijen", "signer", "signatory", "signatories",
+    "ondertekenaar", "landlord", "tenant", "huurder", "verhuurder", "lessor", "lessee", "licensor",
+    "licensee", "provider", "dienstverlener", "demo", "fictitious", "fictief", "company", "organisation",
+    "organization", "employer", "werkgever", "side",
+}
+_PARTY_FILLER_WORDS = {"the", "for", "of", "on", "behalf", "de", "het", "van", "namens", "and", "en", "a", "an", "voor"}
+# Head nouns of job titles ("Account Manager", "Cloud Engineer", "Owner", "eigenaar" …).
+_ROLE_HEAD_WORDS = {
+    "manager", "engineer", "owner", "eigenaar", "director", "directeur", "ceo", "cto", "cfo", "coo", "cio",
+    "ciso", "founder", "co-founder", "cofounder", "oprichter", "architect", "consultant", "developer",
+    "ontwikkelaar", "designer", "analyst", "specialist", "advisor", "adviser", "adviseur", "officer",
+    "lead", "head", "president", "partner", "accountant", "lawyer", "advocaat", "notary", "notaris",
+    "representative", "coordinator", "coördinator", "assistant", "administrator", "secretary",
+    "secretaris", "chairman", "chairwoman", "chair", "voorzitter", "treasurer", "penningmeester",
+    "bestuurder", "zaakvoerder", "proprietor", "scientist", "researcher", "programmer", "technician",
+    "supervisor", "executive", "associate", "intern", "trainee", "teacher", "docent", "professor",
+    "nurse", "doctor", "physician", "clerk", "broker", "auditor", "controller", "medewerker",
+    "beheerder", "planner", "recruiter", "strategist", "editor", "journalist", "photographer",
+    "marketeer", "marketer", "operator", "mechanic", "vp", "principal", "steward", "officier",
+}
+# Label words that are never an entity name ("Job Title", "Role", "Company" …).
+_LABEL_WORDS = {
+    "job title", "title", "titel", "role", "rol", "roles", "company", "organization", "organisation",
+    "employer", "werkgever", "functie", "functietitel", "position", "name", "naam", "bedrijf",
+    "job", "occupation", "beroep",
+}
+
+
+def is_label_word(name: Optional[str]) -> bool:
+    """True for a bare field label such as "Job Title" / "Role" / "Company"."""
+    if not name:
+        return False
+    return _normalize_text(name).strip(" .,;:*_") in _LABEL_WORDS
+
+
+_DOTTED_ABBR_END_RE = re.compile(r"(?:^|[\s(])(?:[^\W\d_]\.)+[^\W\d_]$")
+_ABBR_WORD_END_RE = re.compile(r"(?:^|\s)(?:Inc|Ltd|Co|Corp|Bros|Jr|Sr|St|Dr|Drs|Ir|Mr|Mrs|Ms)$")
+
+
+def clean_entity_name(name: Any) -> str:
+    """A person/role/organisation name without markdown quotes and trailing
+    punctuation: "Representative of the supplier and signer." → "…signer",
+    "Noordlicht Cloud Services B.V.." → "…B.V." (a dotted legal form keeps its
+    final period, a bare "B.V" gets it back)."""
+    if not name:
+        return ""
+    n = re.sub(r"\s+", " ", str(name)).strip()
+    n = n.strip("*_`\"'“”‘’ ").strip()
+    core = re.sub(r"[\s.,;:]+$", "", n)
+    if not core:
+        return ""
+    had_dot = "." in n[len(core):]
+    if _DOTTED_ABBR_END_RE.search(core) or (had_dot and _ABBR_WORD_END_RE.search(core)):
+        core += "."
+    return core
+
+
+def _is_generic_party(text: str) -> bool:
+    """"supplier", "the customer", "for the supplier", "DEMO" …"""
+    words = [w for w in re.findall(r"[^\W\d_]+", (text or "").lower()) if w not in _PARTY_FILLER_WORDS]
+    return bool(words) and all(w in _GENERIC_PARTY_WORDS for w in words)
+
+
+def _org_key(name: Optional[str]) -> str:
+    return _normalize_text(clean_entity_name(name or "")).rstrip(".,;: ")
+
+
+def looks_like_legal_org(name: Optional[str]) -> bool:
+    """An organisation by its legal form (B.V., N.V., Ltd, GmbH, Inc, LLC, VOF,
+    Eenmanszaak …) or organisation word (Holding, Foundation …)."""
+    if not name:
+        return False
+    return looks_like_organization(name) or bool(_LEGAL_FORM_EXTRA_RE.search(name.strip()))
+
+
+def clean_org_name(name: Any) -> str:
+    """An organisation name without a trailing generic parenthetical such as
+    "(DEMO)" or "(supplier)", and without trailing punctuation."""
+    o = clean_entity_name(name)
+    while True:
+        m = re.search(r"\s*\(([^()]*)\)\s*$", o)
+        if not m or not _is_generic_party(m.group(1)):
+            break
+        o = clean_entity_name(o[:m.start()])
+    return o
+
+
+def _role_head_ok(words: list[str]) -> bool:
+    return bool(words) and words[-1].lower().strip(".,") in _ROLE_HEAD_WORDS
+
+
+def _split_role_paren(
+    role: str, org: Optional[str] = None, known_orgs: Optional[Any] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """Resolve a parenthetical inside a role value → (role, org_from_parenthetical).
+
+    - "(Noordlicht Cloud Services B.V.)" (a legal form / an organisation named in
+      the same answer): the parenthetical is the employer, the text outside it is
+      the role.
+    - "(supplier)" / "(klant)": a generic party word — dropped.
+    - "(Neuféglise Digital Solutions)" (capitalised, not a job title) next to a
+      descriptive role: treated as the organisation.
+    - otherwise the old rule: prefer the text inside ("Subject of the CV
+      (Solution Architect)" → "Solution Architect").
+    """
+    m = re.search(r"\(([^()]+)\)", role or "")
+    if not m:
+        return role, None
+    inner = _clean_md(m.group(1)).strip()
+    outside = re.sub(r"\s+", " ", (role[:m.start()] + " " + role[m.end():])).strip()
+    outside = re.sub(r"\s+([.,;:])", r"\1", outside).strip()
+    known = {_org_key(o) for o in (known_orgs or []) if o}
+    if org:
+        known.add(_org_key(org))
+    inner_key = _org_key(inner)
+    if looks_like_legal_org(inner) or (inner_key and inner_key in known):
+        return (outside or None), clean_org_name(inner) or None
+    if _is_generic_party(inner):
+        return (outside or None), None
+    words = inner.split()
+    capitalised = [w for w in words if w[:1].isupper()]
+    if outside and len(words) >= 2 and len(capitalised) >= 2 and not _role_head_ok(words):
+        return outside, clean_org_name(inner) or None
+    return inner, None
+
+
+_TITLE_LABELS = ("Job Title", "Job title", "Functietitel", "Functie", "Title", "Titel", "Position")
+_ROLE_LABELS = ("Role", "Rol")
+
+
+def _label_value(text: str, labels: tuple) -> Optional[str]:
+    """The value of the first "**Label:** value" / "**Label**: value" / "Label: value" line."""
+    alt = "|".join(re.escape(label) for label in labels)
+    m = re.search(rf'\*\*(?:{alt}):\*?\*?\s+(.+?)(?:\n|$)', text, re.IGNORECASE)
+    if not m:
+        m = re.search(rf'\*\*(?:{alt})\*\*[ \t]*:[ \t]*(.+?)(?:\n|$)', text, re.IGNORECASE)
+    if not m:
+        m = re.search(
+            rf'(?:^|\n)[ \t]*(?:(?:[-*•+]|\d+[.)])[ \t]+)?(?:{alt}):\s+(.+?)(?:\n|$)', text, re.IGNORECASE
+        )
+    if not m:
+        return None
+    return _clean_md(m.group(1).strip()) or None
+
+
+def _role_org_from(text: str, known_orgs: Optional[Any] = None) -> tuple[Optional[str], Optional[str]]:
+    """The role ("Job Title:"/"Functie:"/"Title:" preferred over "Role:") and the
+    "Organization/Company/Employer:" value in `text`. An organisation in the
+    role's parenthetical becomes the org (when no org label is given)."""
     role: Optional[str] = None
     org: Optional[str] = None
     if not text:
         return None, None
-    role_match = re.search(r'\*\*Role:\*?\*?\s+(.+?)(?:\n|$)', text, re.IGNORECASE)
-    if not role_match:
-        role_match = re.search(r'(?:^|\n)[ \t]*(?:(?:[-*•+]|\d+[.)])[ \t]+)?Role:\s+(.+?)(?:\n|$)', text, re.IGNORECASE)
-    if role_match:
-        r = _clean_md(role_match.group(1).strip())
-        # If role contains parentheses, prefer text inside
-        paren_match = re.search(r'\(([^)]+)\)', r)
-        if paren_match:
-            r = _clean_md(paren_match.group(1))
-        if r and not _is_generic_role(r):
-            role = r
     for org_label in ["Organization", "Organisation", "Company", "Employer"]:
-        org_match = re.search(rf'\*\*{org_label}:\*?\*?\s+(.+?)(?:\n|$)', text, re.IGNORECASE)
-        if not org_match:
-            org_match = re.search(
-                rf'(?:^|\n)[ \t]*(?:(?:[-*•+]|\d+[.)])[ \t]+)?{org_label}:\s+(.+?)(?:\n|$)', text, re.IGNORECASE
-            )
-        if org_match:
-            o = _clean_md(org_match.group(1).strip())
-            if o:
-                org = o
-                break
+        o = _label_value(text, (org_label,))
+        if o and not is_label_word(o):
+            org = o
+            break
+    paren_org: Optional[str] = None
+    for labels in (_TITLE_LABELS, _ROLE_LABELS):
+        r = _label_value(text, labels)
+        if not r:
+            continue
+        r, p_org = _split_role_paren(r, org, known_orgs)
+        r = clean_entity_name(r) if r else r
+        if r and not _is_generic_role(r) and not is_label_word(r) and not looks_like_legal_org(r):
+            role = r
+            paren_org = paren_org or p_org
+            break
+        paren_org = paren_org or p_org
+    if not org and paren_org:
+        org = paren_org
     return role, org
+
+
+def _answer_orgs(text: str) -> list[str]:
+    """Organisations named anywhere in an answer: org labels and bold/parenthesised
+    names with a legal form."""
+    out: list[str] = []
+    if not text:
+        return out
+    for m in re.finditer(
+        r'(?:Organization|Organisation|Company|Employer)(?:\*\*)?:(?:\*\*)?[ \t]+(.+?)(?:\n|$)', text, re.IGNORECASE
+    ):
+        o = clean_org_name(_clean_md(m.group(1)))
+        if o:
+            out.append(o)
+    for m in re.finditer(r'\*\*(.+?)\*\*|\(([^()]+)\)', text):
+        cand = _clean_md(m.group(1) or m.group(2) or "")
+        if cand and looks_like_legal_org(cand):
+            out.append(clean_org_name(cand))
+    return out
+
+
+def _fold_same_length(s: str) -> str:
+    """Lower-case, accent-free copy of `s` with the SAME length (index-aligned)."""
+    import unicodedata
+    return "".join(((unicodedata.normalize("NFKD", c)[:1] or c).lower()[:1] or c) for c in s)
+
+
+_TITLE_AFTER_COMMA_RE = re.compile(r"[ \t]*,[ \t]*([^\W\d_][\w'’&/.-]*(?:[ \t]+[^\W\d_][\w'’&/.-]*){0,5})")
+_TITLE_IN_PAREN_RE = re.compile(r"[ \t]*\(([^\W\d_][\w'’&/. -]{1,48})\)")
+_TITLE_STOP_WORDS = {"at", "bij", "from", "with", "for", "voor", "in", "of", "van", "namens", "on", "op"}
+
+
+def _title_candidate(raw: str) -> Optional[str]:
+    """"Account Manager at Noordlicht" → "Account Manager"; "Owner" → "Owner";
+    "eigenaar" → "Eigenaar"; "Amsterdam" → None (no job-title head word)."""
+    words = raw.split()
+    head_of = {"head", "hoofd", "director", "directeur", "vp", "chief"}
+    # a title never runs on past a preposition ("… at Acme", "… bij Acme"),
+    # except "Head of Sales"-style titles
+    for i, w in enumerate(words):
+        lw = w.lower()
+        if i > 0 and lw in _TITLE_STOP_WORDS:
+            if lw in ("of", "van") and i == 1 and words[0].lower() in head_of:
+                continue
+            words = words[:i]
+            break
+    words = words[:4]
+    for n in range(len(words), 0, -1):
+        cand = words[:n]
+        is_head_of = len(cand) >= 3 and cand[0].lower() in head_of and cand[1].lower() in ("of", "van")
+        if not (_role_head_ok(cand) or is_head_of):
+            continue
+        if not all(w[:1].isupper() or w.lower() in _ROLE_HEAD_WORDS or w.lower() in ("of", "van", "&") for w in cand):
+            continue
+        title = clean_entity_name(" ".join(cand))
+        if title and not looks_like_legal_org(title):
+            return title[:1].upper() + title[1:]
+    return None
+
+
+def title_from_document(name: Optional[str], doc_text: Optional[str]) -> Optional[str]:
+    """The job title the document itself states next to the person's name:
+    "Sanne de Vries, Account Manager" → "Account Manager",
+    "Michel Neuféglise, Owner (eigenaar)" → "Owner", "Jane Doe (Cloud Engineer)"
+    → "Cloud Engineer". Accent/case-insensitive; the first occurrence with a
+    recognisable job title wins. None when the document states no title."""
+    if not name or not doc_text:
+        return None
+    words = _normalize_text(name.strip()).split()
+    if len(words) < 2:
+        return None
+    folded = _fold_same_length(doc_text)
+    if len(folded) != len(doc_text):
+        return None
+    pat = re.compile(r"(?<!\w)" + r"\s+".join(re.escape(w) for w in words) + r"(?!\w)")
+    for m in pat.finditer(folded):
+        for rx in (_TITLE_AFTER_COMMA_RE, _TITLE_IN_PAREN_RE):
+            t = rx.match(doc_text, m.end())
+            if not t:
+                continue
+            title = _title_candidate(t.group(1))
+            if title and _is_generic_role(title):
+                # "Owner (eigenaar)": the bare "Owner" reads as "CV owner" — use
+                # the parenthetical title right after it instead
+                p = _TITLE_IN_PAREN_RE.match(doc_text, t.end())
+                title = _title_candidate(p.group(1)) if p else None
+            if title and not _is_generic_role(title):
+                return title
+    return None
+
+
+def concise_role(role: Optional[str], max_words: int = 5) -> Optional[str]:
+    """A descriptive role shortened deterministically: first clause only
+    ("…, and signer" / "… and signer" dropped), at most `max_words` words,
+    no dangling function word, no trailing punctuation."""
+    r = clean_entity_name(role)
+    if not r:
+        return None
+    r = re.split(r"\s*[;,]\s+|\s+[–—-]\s+", r)[0]
+    m = re.search(r"\s+(?:and|en|&)\s+(?=[a-z])", r)
+    if m and len(r[:m.start()].split()) >= 2:
+        r = r[:m.start()]
+    words = r.split()
+    if len(words) > max_words:
+        r = " ".join(words[:max_words])
+    r = re.sub(r"(?:\s+(?:of|for|the|a|an|and|at|in|to|with|van|voor|de|het|bij|en|&))+$", "", r, flags=re.IGNORECASE)
+    return clean_entity_name(r) or None
+
+
+def refine_person_facts(
+    name: Optional[str],
+    role: Optional[str],
+    org: Optional[str],
+    doc_text: Optional[str] = None,
+    known_orgs: Optional[Any] = None,
+    person_names: Optional[Any] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """Final (role, org) for a person before it enters the knowledge store.
+
+    - names are normalised (trailing punctuation; "B.V.." → "B.V.");
+    - an organisation in the role (legal form / parenthetical / known org) moves
+      to `org` and never becomes a role; "(supplier)"-style words are dropped;
+    - a title stated in the document next to the person's name wins
+      ("Sanne de Vries, Account Manager" → "Account Manager");
+    - otherwise a descriptive role is shortened (≤ 5 words, first clause);
+    - label words ("Job Title", "Role", "Company") are never kept.
+    """
+    known = [o for o in (known_orgs or []) if o]
+    r = clean_entity_name(role) or None
+    o = clean_org_name(org) or None
+    if r and "(" in r:
+        r, p_org = _split_role_paren(r, o, known)
+        r = clean_entity_name(r) or None
+        o = o or p_org
+    known_keys = {_org_key(k) for k in known}
+    if o:
+        known_keys.add(_org_key(o))
+    if r and (_org_key(r) in known_keys or looks_like_legal_org(r)):
+        o = o or (clean_org_name(r) or None)
+        r = None
+    if r and is_label_word(r):
+        r = None
+    title = title_from_document(name, doc_text)
+    if title:
+        r = title
+    elif r:
+        r = concise_role(r)
+    if r and _is_generic_role(r):
+        r = None
+    person_keys = {_normalize_text(p) for p in (person_names or []) if p}
+    if o and (is_label_word(o) or _normalize_text(o) in person_keys or _is_generic_party(o)):
+        o = None
+    return r, o
 
 
 _NAME_LABEL_RE = re.compile(r'(?:^|\n)[ \t]*(?:[-*•]\s*)?(?:\*\*)?Name:(?:\*\*)?\s+(.+?)(?:\n|$)', re.IGNORECASE)
@@ -1066,8 +1373,8 @@ def _entity_markers(text: str) -> list[tuple[int, str]]:
     out: list[tuple[int, str]] = []
     for m in re.finditer(r'\*\*(.+?)\*\*', text):
         raw = m.group(1).strip()
-        if raw.endswith(":"):
-            continue
+        if raw.endswith(":") or (text[m.end():m.end() + 2].lstrip().startswith(":") and is_label_word(raw)):
+            continue  # "**Role:**" / "**Company**:" are labels, not entities ("**Jane Doe**:" still is one)
         cleaned = _clean_md(raw)
         name = _strip_name_decorations(cleaned)
         if _is_proper_name(name) or looks_like_organization(name) or looks_like_organization(cleaned):
@@ -1130,6 +1437,10 @@ def extract_persons(answer_text: str) -> list[dict]:
     for m in _NAME_LABEL_RE.finditer(answer_text):
         _add(m.start(1), m.end(1), m.group(1), require_proper=False, labelled=True)
     for m in re.finditer(r'\*\*(.+?)\*\*', answer_text):
+        # "**Job Title:**" / "**Role**:" are field labels, never persons — but
+        # "**Sanne de Vries**: Account Manager" / "**Sanne de Vries:** …" name one
+        if is_label_word(m.group(1)):
+            continue
         _add(m.start(1), m.end(1), m.group(1))
     name_re = r"([^\W\d_][\w'’-]*(?:\s+(?:[a-z]{1,3}\s+)*[^\W\d_][\w'’-]*){1,4})\s*\("
     for m in re.finditer(name_re, answer_text):
@@ -1137,14 +1448,15 @@ def extract_persons(answer_text: str) -> list[dict]:
 
     found.sort(key=lambda x: x[0])
     markers = _entity_markers(answer_text)
+    known_orgs = _answer_orgs(answer_text)
     out: list[dict] = []
     seen: set = set()
     for pos, endpos, name, labelled in found:
         key = _normalize_text(name)
-        if key in seen:
+        if key in seen or is_label_word(name):
             continue
         seen.add(key)
-        role, org = _role_org_from(_entity_block(answer_text, pos, endpos, labelled, markers))
+        role, org = _role_org_from(_entity_block(answer_text, pos, endpos, labelled, markers), known_orgs)
         out.append({"name": name, "role": role, "org": org})
     if len(out) == 1:
         single = extract_person(answer_text, [])
@@ -1303,16 +1615,17 @@ def extract_person(answer_text: str, history: list[dict]) -> Optional[dict]:
         org: Optional[str] = None
         if result["name"] and span:
             markers = _entity_markers(text)
+            known_orgs = _answer_orgs(text)
             block = _entity_block(text, span[0], span[1], labelled, markers)
-            role, org = _role_org_from(block)
+            role, org = _role_org_from(block, known_orgs)
             entities = {k for _, k in markers if k}
             entities.add(_normalize_text(result["name"]))
             if len(entities) <= 1:
-                g_role, g_org = _role_org_from(text)
+                g_role, g_org = _role_org_from(text, known_orgs)
                 role = role or g_role
                 org = org or g_org
         else:
-            role, org = _role_org_from(text)
+            role, org = _role_org_from(text, _answer_orgs(text))
         result["role"] = role
         result["org"] = org
         return result

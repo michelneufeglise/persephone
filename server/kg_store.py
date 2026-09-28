@@ -254,6 +254,15 @@ def _upsert_entity_sync(type_: str, name: str, props: Optional[dict] = None, ent
     return _upsert_entity_ex_sync(type_, name, props, entity_id)[0]
 
 
+def _organization_names_sync() -> list[str]:
+    """Names of every organisation entity in the knowledge store."""
+    conn = _connect()
+    try:
+        return [r["name"] for r in conn.execute("SELECT name FROM kg_entities WHERE type='organization'")]
+    finally:
+        conn.close()
+
+
 def _upsert_entity_ex_sync(
     type_: str, name: str, props: Optional[dict] = None, entity_id: Optional[str] = None
 ) -> tuple[str, bool]:
@@ -1929,6 +1938,10 @@ async def ingest_run(
     from doc_web import name_matches as _name_matches
     from doc_web import looks_like_organization as _looks_like_org
     from doc_web import _is_generic_role as _generic_role, _is_bad_org as _bad_org
+    from doc_web import (
+        clean_entity_name as _clean_name, clean_org_name as _clean_org,
+        is_label_word as _label_word, refine_person_facts as _refine_person,
+    )
 
     counts = {
         "entities": 0, "relations": 0, "mentions": 0, "entity_list": [],
@@ -1942,6 +1955,8 @@ async def ingest_run(
     seen_mentions: set = set()
 
     async def _entity(type_: str, name: str, props: Optional[dict] = None, entity_id: Optional[str] = None) -> str:
+        if type_ in ("person", "organization", "role"):
+            name = _clean_name(name) or name  # no trailing "." / "B.V.." (keeps "B.V.")
         eid, created = await asyncio.to_thread(_upsert_entity_ex_sync, type_, name, props, entity_id)
         if created:
             counts["entities"] += 1
@@ -1978,7 +1993,19 @@ async def ingest_run(
     people: list[dict] = []
     for p in (persons or ([person] if person else [])):
         if isinstance(p, dict) and (p.get("name") or "").strip():
+            if _label_word(p["name"]):
+                continue  # "Job Title" / "Role" parsed as a name — never an entity
             people.append(p)
+    # Organisations this run knows about (answer, registry extracts, knowledge
+    # store): a role equal to one of them is the employer, never a role.
+    known_orgs: list[str] = [p.get("org") for p in people if p.get("org")]
+    known_orgs += [o.get("name") for o in (organizations or []) if isinstance(o, dict) and o.get("name")]
+    if people:
+        try:
+            known_orgs += await asyncio.to_thread(_organization_names_sync)
+        except Exception as exc:  # pragma: no cover — best effort
+            log.debug(f"known organisations lookup failed: {exc}")
+    person_names = [p["name"] for p in people]
 
     try:
         for doc in subject_docs:
@@ -2002,16 +2029,22 @@ async def ingest_run(
             for pers in people:
                 if pers.get("doc_id") and pers["doc_id"] != doc_id:
                     continue
-                pname = pers["name"].strip()
+                pname = _clean_name(pers["name"]) or pers["name"].strip()
                 if _looks_like_org(pname):
                     # "Acme B.V." is an organisation named in the document, not a person
-                    org_entity_id = await _entity("organization", pname.strip(" .*"))
+                    org_entity_id = await _entity("organization", _clean_org(pname.strip(" *")) or pname)
                     await _relation(org_entity_id, doc_entity_id, "mentioned_in", 0.8, "doc_agent")
                     continue
                 person_entity_id = await _entity("person", pname)
 
                 # Mention in document
                 doc_text = getattr(doc, "text", "") or ""
+                # Concise, document-grounded role/org: "Sanne de Vries, Account
+                # Manager" in the document beats "Representative for the supplier
+                # (Acme B.V.) and signer." from the answer.
+                p_role, p_org = _refine_person(
+                    pname, pers.get("role"), pers.get("org"), doc_text, known_orgs, person_names,
+                )
                 chunk_info = await find_chunk(doc_id, pname)
                 chunk_id, snippet = chunk_info if chunk_info else (None, None)
 
@@ -2025,12 +2058,12 @@ async def ingest_run(
                 await _mention(person_entity_id, doc_id, chunk_id, snippet)
                 await _relation(person_entity_id, doc_entity_id, "mentioned_in", 0.9, "doc_agent")
 
-                if pers.get("role") and not _generic_role(pers["role"]):
-                    role_entity_id = await _entity("role", pers["role"])
+                if p_role and not _generic_role(p_role):
+                    role_entity_id = await _entity("role", p_role)
                     await _relation(person_entity_id, role_entity_id, "has_role", 0.7, "doc_agent")
 
-                if pers.get("org") and not _bad_org(pers["org"]):
-                    org_entity_id = await _entity("organization", pers["org"])
+                if p_org and not _bad_org(p_org):
+                    org_entity_id = await _entity("organization", p_org)
                     await _relation(person_entity_id, org_entity_id, "works_at", 0.7, "doc_agent")
                     await _relation(org_entity_id, doc_entity_id, "mentioned_in", 0.8, "doc_agent")
 

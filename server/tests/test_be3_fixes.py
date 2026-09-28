@@ -565,7 +565,7 @@ def test_ingest_stores_organisation_not_person():
             conn.close()
 
     ents = _kg_run(body)
-    assert ("organization", "Acme B.V") in ents
+    assert ("organization", "Acme B.V.") in ents  # legal form keeps its final period
     assert not any(t == "person" and "Acme" in n for t, n in ents)
     assert ("person", "Jane Example") in ents
     assert not any(t == "role" for t, _ in ents)
