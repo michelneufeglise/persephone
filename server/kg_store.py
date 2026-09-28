@@ -1194,6 +1194,68 @@ async def neighborhood(entity_id: str, hops: int = 2, limit: int = 60) -> dict:
     return await asyncio.to_thread(_neighborhood_sync, entity_id, hops, limit)
 
 
+def _known_profiles_sync(person_name: str) -> list[dict]:
+    """
+    Profiles stored for a person (read-only): profile entities linked to the
+    person entity (matched on its normalised name) via likely_profile or
+    candidate_profile. Each: {url, title, platform, relation, confidence,
+    verified_at (ISO date of the relation's last write)}. likely first, newest first.
+    """
+    norm = _norm_key("person", person_name or "")
+    if not norm:
+        return []
+    import datetime as _dt
+    conn = _connect()
+    try:
+        tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if "kg_entities" not in tables or "kg_relations" not in tables:
+            return []
+        rows = conn.execute(
+            """
+            SELECT r.type AS rel_type, r.confidence AS confidence, r.created_at AS rel_at,
+                   e.name AS title, e.props AS props, e.updated_at AS ent_at
+            FROM kg_entities p
+            JOIN kg_relations r ON r.src_id = p.id
+            JOIN kg_entities e ON e.id = r.dst_id
+            WHERE p.type = 'person' AND (p.norm_name = ? OR p.id = ?)
+              AND r.type IN ('likely_profile', 'candidate_profile')
+              AND e.type = 'profile'
+            ORDER BY (CASE WHEN r.type = 'likely_profile' THEN 0 ELSE 1 END), r.created_at DESC
+            """,
+            (norm, f"person:{norm}"),
+        ).fetchall()
+        out = []
+        for row in rows:
+            try:
+                props = json.loads(row["props"] or "{}")
+            except Exception:
+                props = {}
+            url = (props.get("url") or "").strip()
+            if not url.lower().startswith(("http://", "https://")):
+                continue
+            ts = row["rel_at"] or row["ent_at"]
+            try:
+                verified_at = _dt.datetime.fromtimestamp(float(ts)).date().isoformat() if ts else None
+            except Exception:
+                verified_at = None
+            out.append({
+                "url": url,
+                "title": row["title"] or url,
+                "platform": props.get("platform") or _platform_of(url) or "web",
+                "relation": row["rel_type"],
+                "confidence": row["confidence"],
+                "verified_at": verified_at,
+            })
+        return out
+    finally:
+        conn.close()
+
+
+async def known_profiles(person_name: str) -> list[dict]:
+    """Async wrapper: stored likely/candidate profiles for a person (read-only)."""
+    return await asyncio.to_thread(_known_profiles_sync, person_name)
+
+
 async def delete_document(doc_id: str) -> int:
     """Async wrapper."""
     return await asyncio.to_thread(_delete_document_sync, doc_id)

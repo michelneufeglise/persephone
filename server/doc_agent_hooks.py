@@ -18,6 +18,26 @@ from typing import Any, AsyncIterator, Callable, Optional
 log = logging.getLogger("doc_agent_hooks")
 
 
+# ── Tool-calling context sizing ───────────────────────────────────────────
+TOOL_NUM_CTX_MIN = 8192
+TOOL_NUM_CTX_MAX = 16384
+TOOL_KEEP_ALIVE = "2m"
+
+
+def tool_num_ctx(messages: list[dict], tools: list[dict] | None) -> int:
+    """num_ctx for a tool-calling chat: power of two >= (chars of messages +
+    tools JSON)//3 + 1024, clamped to [8192, 16384]. Always explicit so Ollama
+    never falls back to the model's (possibly 256k) trained default."""
+    import json
+    try:
+        chars = len(json.dumps(messages or [], ensure_ascii=False, default=str))
+        chars += len(json.dumps(tools or [], ensure_ascii=False, default=str))
+    except Exception:
+        chars = sum(len(str(m)) for m in (messages or [])) + len(str(tools or ""))
+    est = chars // 3 + 1024
+    return min(TOOL_NUM_CTX_MAX, max(TOOL_NUM_CTX_MIN, 1 << (max(est, 1) - 1).bit_length()))
+
+
 # ── Page rendering helpers ────────────────────────────────────────────────
 
 def _original_pdf_path(doc: Any) -> Optional[Path]:
@@ -986,9 +1006,15 @@ async def build_hooks(deps: HookDeps) -> "AgentHooks":
             "model": model,
             "messages": messages,
             "stream": False,
+            # Explicit num_ctx: without it Ollama uses the model's trained
+            # default (qwen3-instruct-2507 = 256k) and allocates a giant KV
+            # cache (a 2.5 GB model loaded at 42 GB -> Metal OOM). keep_alive
+            # short so the tool model unloads soon after the lookup.
             "options": {
                 "temperature": 0.2,
-            }
+                "num_ctx": tool_num_ctx(messages, tools),
+            },
+            "keep_alive": TOOL_KEEP_ALIVE,
         }
         if tools:
             payload["tools"] = tools

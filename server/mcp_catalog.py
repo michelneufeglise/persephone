@@ -50,7 +50,9 @@ MCP_SERVERS: list[dict] = [
         "tags": ["search", "web", "no-api-key", "free"],
         "install": {
             "command": "uvx",
-            "args": ["duckduckgo-mcp-server"],
+            # [browser] extra = Chrome TLS impersonation; without it DuckDuckGo's
+            # bot detection blocks this machine's TLS fingerprint after a few queries.
+            "args": ["--from", "duckduckgo-mcp-server[browser]", "duckduckgo-mcp-server"],
             "env_vars": {},
         },
         "requires_setup": False,

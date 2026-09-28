@@ -241,8 +241,88 @@ def is_blocked_notice(text: Any) -> bool:
     return "no results were found" in low and "duckduckgo" in low
 
 
+class SearchSkipped(SearchBlocked):
+    """DuckDuckGo was NOT called: it blocked us recently and the process-wide
+    cool-down is still running (and Brave isn't available). Treated exactly
+    like a blocked search by callers; `remaining` = seconds of cool-down left."""
+
+    def __init__(self, remaining: float) -> None:
+        self.remaining = max(0.0, float(remaining))
+        super().__init__(f"DuckDuckGo cool-down: {self.remaining:.0f} s left")
+
+
 DDG_SERVER = "duckduckgo-search"
 BRAVE_SERVER = "brave-search"
+
+# Process-wide DuckDuckGo politeness (see SearchGovernor)
+DDG_MIN_INTERVAL_S = 3.0  # minimum gap between two consecutive DuckDuckGo queries
+DDG_COOLDOWN_S = 90.0  # after a bot-detection block: don't call DuckDuckGo at all for this long
+
+COOLDOWN_NOTE_PREFIX = "Cool-down after DuckDuckGo block"
+PACING_NOTE_PREFIX = "Pacing:"
+EARLY_STOP_NOTE = "Stopped early: profile found"
+ENOUGH_RESULTS_MSG = "Enough results found — give your final answer now."
+
+
+class SearchGovernor:
+    """
+    Process-wide DuckDuckGo pacing + cool-down (one shared instance,
+    DDG_GOVERNOR, is used by every doc-agent run so a demo retry can't keep
+    hammering DuckDuckGo and extend its block).
+
+    - pace(): waits until at least `min_interval` seconds have passed since the
+      previous DuckDuckGo query (serialised by an asyncio.Lock), then stamps
+      the new query time. Returns the seconds waited.
+    - note_blocked(): starts a `cooldown` window during which callers must not
+      call DuckDuckGo (cooldown_remaining() > 0).
+
+    `clock` (monotonic seconds) and `sleep` are injectable for tests.
+    """
+
+    def __init__(
+        self,
+        *,
+        min_interval: float = DDG_MIN_INTERVAL_S,
+        cooldown: float = DDG_COOLDOWN_S,
+        clock: Optional[Callable[[], float]] = None,
+        sleep: Optional[Callable[[float], Any]] = None,
+    ) -> None:
+        self.min_interval = float(min_interval)
+        self.cooldown = float(cooldown)
+        self._clock = clock or time.monotonic
+        self._sleep = sleep or asyncio.sleep
+        self._lock = asyncio.Lock()
+        self._last_query: Optional[float] = None
+        self._cooldown_until: float = 0.0
+
+    def cooldown_remaining(self) -> float:
+        return max(0.0, self._cooldown_until - self._clock())
+
+    def note_blocked(self) -> None:
+        """DuckDuckGo answered with its bot-detection notice: start (or extend) the cool-down."""
+        self._cooldown_until = max(self._cooldown_until, self._clock() + self.cooldown)
+        log.info("DuckDuckGo blocked — cool-down for %.0fs (no DuckDuckGo calls)", self.cooldown)
+
+    async def pace(self, min_gap: Optional[float] = None) -> float:
+        """Wait out the minimum gap since the previous DuckDuckGo query; returns seconds waited."""
+        gap = self.min_interval if min_gap is None else max(self.min_interval, float(min_gap))
+        async with self._lock:
+            waited = 0.0
+            if self._last_query is not None:
+                remaining = self._last_query + gap - self._clock()
+                if remaining > 0:
+                    await self._sleep(remaining)
+                    waited = remaining
+            self._last_query = self._clock()
+            return waited
+
+    def reset(self) -> None:
+        self._last_query = None
+        self._cooldown_until = 0.0
+
+
+# The one process-wide governor (main.py passes it to every WebSearcher)
+DDG_GOVERNOR = SearchGovernor()
 
 
 class WebSearcher:
@@ -250,8 +330,13 @@ class WebSearcher:
     Per-run web search over the DuckDuckGo / Brave MCP servers.
 
     - DuckDuckGo first. When it answers with its bot-detection notice, retry once
-      (after `retry_delay` seconds, first time in the run only); if still
-      blocked, fall back to Brave Search when that server is running.
+      (after `retry_delay` seconds, first time in the run only, and never while
+      the cool-down runs); if still blocked, fall back to Brave Search when that
+      server is running.
+    - With a `governor` (process-wide SearchGovernor): DuckDuckGo queries are
+      spaced at least `min_interval` apart, and a block starts a cool-down during
+      which DuckDuckGo is not called at all — Brave is used when running, else
+      SearchSkipped (a SearchBlocked) is raised immediately.
     - When DuckDuckGo stays blocked and Brave isn't available, raise
       SearchBlocked (callers must never turn that into a "no match" verdict).
     - WebSearchUnavailable when no search server is running at all.
@@ -269,36 +354,66 @@ class WebSearcher:
         *,
         retry_delay: float = 3.0,
         sleep: Optional[Callable[[float], Any]] = None,
+        governor: Optional[SearchGovernor] = None,
     ) -> None:
         self._call = call
         self._running = running
         self._parse = parse
         self.retry_delay = retry_delay
         self._sleep = sleep or asyncio.sleep
+        self._governor = governor
         self._retried = False
         self.blocked_queries = 0
+        self.ddg_calls = 0
+        self._paced_pending = 0.0  # seconds waited for pacing since the last drain_notes()
+
+    def drain_notes(self) -> list[dict]:
+        """Pacing events since the last call: [{"kind": "paced", "seconds": s}]."""
+        out = []
+        if self._paced_pending > 0:
+            out.append({"kind": "paced", "seconds": self._paced_pending})
+        self._paced_pending = 0.0
+        return out
+
+    async def _ddg(self, query: str, *, retry: bool = False) -> Any:
+        if self._governor is not None:
+            waited = await self._governor.pace(self.retry_delay if retry else None)
+            self._paced_pending += waited
+        elif retry:
+            await self._sleep(self.retry_delay)
+        self.ddg_calls += 1
+        return await self._call(DDG_SERVER, query)
+
+    def _cooldown_left(self) -> float:
+        return self._governor.cooldown_remaining() if self._governor is not None else 0.0
 
     async def __call__(self, query: str) -> list[dict]:
         running = list(self._running() or [])
         if DDG_SERVER not in running and BRAVE_SERVER not in running:
             raise WebSearchUnavailable("No web search MCP server running")
         blocked_text = None
+        skipped_left = 0.0
         if DDG_SERVER in running:
-            try:
-                text = await self._call(DDG_SERVER, query)
-                if is_blocked_notice(text) and not self._retried:
-                    self._retried = True
-                    log.info("DuckDuckGo returned its bot-detection notice — retrying in %.0fs", self.retry_delay)
-                    await self._sleep(self.retry_delay)
-                    text = await self._call(DDG_SERVER, query)
-                if is_blocked_notice(text):
-                    blocked_text = text
-                else:
-                    return self._parse(text or "")
-            except (WebSearchUnavailable, SearchBlocked):
-                raise
-            except Exception as exc:
-                log.warning("search via %s failed: %s", DDG_SERVER, exc)
+            skipped_left = self._cooldown_left()
+            if skipped_left > 0:
+                log.info("DuckDuckGo cool-down (%.0fs left) — not calling it for %r", skipped_left, query)
+            else:
+                try:
+                    text = await self._ddg(query)
+                    if is_blocked_notice(text) and not self._retried and self._cooldown_left() <= 0:
+                        self._retried = True
+                        log.info("DuckDuckGo returned its bot-detection notice — retrying in %.0fs", self.retry_delay)
+                        text = await self._ddg(query, retry=True)
+                    if is_blocked_notice(text):
+                        blocked_text = text
+                        if self._governor is not None:
+                            self._governor.note_blocked()
+                    else:
+                        return self._parse(text or "")
+                except (WebSearchUnavailable, SearchBlocked):
+                    raise
+                except Exception as exc:
+                    log.warning("search via %s failed: %s", DDG_SERVER, exc)
         if BRAVE_SERVER in running:
             try:
                 text = await self._call(BRAVE_SERVER, query)
@@ -308,6 +423,9 @@ class WebSearcher:
         if blocked_text is not None:
             self.blocked_queries += 1
             raise SearchBlocked(str(blocked_text)[:300])
+        if skipped_left > 0:
+            self.blocked_queries += 1
+            raise SearchSkipped(skipped_left)
         return []
 
 
@@ -1411,17 +1529,21 @@ async def _rescue_blocked_searches(
             results = await hooks.web_search(query)
         except WebSearchUnavailable:
             raise
-        except SearchBlocked:
+        except SearchBlocked as exc:
+            _drain_search_notes(hooks, search_tile)
             stats["blocked"] += 1
             search_tile.items.append({
                 "kind": "query",
                 "label": query,
-                "detail": "blocked (DuckDuckGo bot detection)",
+                "detail": _search_exc_detail(exc),
             })
+            _note_search_skip(search_tile, exc)
             continue
         except Exception as e:
+            _drain_search_notes(hooks, search_tile)
             log.debug(f"web_search failed: {e}")
             continue
+        _drain_search_notes(hooks, search_tile)
         results = results or []
         stats["ok"] += 1
         stats["raw"] += len(results)
@@ -1830,6 +1952,224 @@ async def _emit_search_unavailable(
     yield {"tile": search_tile.to_dict()}
 
 
+# ── Search robustness helpers (early stop, pacing/cool-down notes, cache) ──
+
+
+def _search_exc_detail(exc: BaseException) -> str:
+    """Tile detail for a search that did not really run."""
+    if isinstance(exc, SearchSkipped):
+        return f"skipped (DuckDuckGo cool-down, {exc.remaining:.0f} s left)"
+    return "blocked (DuckDuckGo bot detection)"
+
+
+def _note_search_skip(search_tile: Any, exc: BaseException) -> None:
+    """Once per run: explain that DuckDuckGo is in its cool-down window."""
+    if not isinstance(exc, SearchSkipped):
+        return
+    if any(str(it.get("label", "")).startswith(COOLDOWN_NOTE_PREFIX) for it in search_tile.items):
+        return
+    search_tile.items.append({
+        "kind": "note",
+        "label": f"{COOLDOWN_NOTE_PREFIX}: {exc.remaining:.0f} s left — skipped live search",
+    })
+
+
+def _drain_search_notes(hooks: Any, search_tile: Any) -> None:
+    """Fold the searcher's pacing events into ONE running tile note."""
+    drain = getattr(hooks, "search_notes", None)
+    if not drain:
+        return
+    try:
+        events = drain() or []
+    except Exception:
+        return
+    waited = sum(float(e.get("seconds") or 0) for e in events if e.get("kind") == "paced")
+    if waited <= 0:
+        return
+    item = next(
+        (it for it in search_tile.items if str(it.get("label", "")).startswith(PACING_NOTE_PREFIX)), None
+    )
+    prev = 0.0
+    if item:
+        m = re.search(r"waited ([\d.]+) s", str(item.get("label", "")))
+        prev = float(m.group(1)) if m else 0.0
+    total = waited + prev
+    label = (
+        f"{PACING_NOTE_PREFIX} waited {total:.1f} s in total — DuckDuckGo queries are spaced "
+        f"{DDG_MIN_INTERVAL_S:.0f} s apart"
+    )
+    if item:
+        item["label"] = label
+    else:
+        search_tile.items.append({"kind": "note", "label": label})
+
+
+def _profiles_in(results: list, name: str, targets: list[str], q_target: Optional[str]) -> set:
+    """Requested platforms for which these search results contain a name-matching
+    PROFILE. A profile only counts for the platform the query was aimed at (or for
+    any platform when the query had no specific platform)."""
+    found = set()
+    for res in results or []:
+        url = (res.get("url") or "").strip()
+        pid = platform_of(url)
+        if not pid or pid not in targets or not is_profile_url(url, pid):
+            continue
+        if q_target in PLATFORMS and q_target != pid:
+            continue
+        if name_matches(name, f"{res.get('title', '')} {url} {res.get('snippet', '')}"):
+            found.add(pid)
+    return found
+
+
+def _all_profiles_found(found: set, targets: list[str]) -> bool:
+    """True when every requested target is a social platform with a matching profile
+    found — further searches can't improve the verdict ("web" never qualifies)."""
+    if not targets or any(t not in PLATFORMS for t in targets):
+        return False
+    return set(targets) <= set(found)
+
+
+def _note_early_stop(search_tile: Any) -> None:
+    if not any(it.get("label") == EARLY_STOP_NOTE for it in search_tile.items):
+        search_tile.items.append({"kind": "note", "label": EARLY_STOP_NOTE})
+
+
+def _format_verified_date(value: Any) -> str:
+    """"2026-09-28" / ISO datetime / epoch seconds → "28 Sep 2026" ('' when unknown)."""
+    import datetime as _dt
+    if value in (None, ""):
+        return ""
+    try:
+        if isinstance(value, (int, float)):
+            d = _dt.datetime.fromtimestamp(float(value)).date()
+        else:
+            d = _dt.date.fromisoformat(str(value).strip()[:10])
+    except Exception:
+        return str(value)
+    months = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+    return f"{d.day} {months[d.month - 1]} {d.year}"
+
+
+async def _known_profiles_by_target(person: dict, targets: list[str], hooks: Any) -> dict:
+    """{target: best stored profile} from the knowledge store (likely_profile before
+    candidate_profile, then the most recent) — only for social platforms."""
+    fn = getattr(hooks, "kg_known_profiles", None)
+    name = (person or {}).get("name", "")
+    if not fn or not name:
+        return {}
+    try:
+        rows = await fn(name) or []
+    except Exception as e:
+        log.debug(f"kg_known_profiles failed: {e}")
+        return {}
+    best: dict = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        url = (row.get("url") or "").strip()
+        if not url.lower().startswith(("http://", "https://")):
+            continue
+        pid = row.get("platform") if row.get("platform") in PLATFORMS else platform_of(url)
+        if pid not in targets or pid not in PLATFORMS or not is_profile_url(url, pid):
+            continue
+        rel = row.get("relation") or "candidate_profile"
+        key = (1 if rel == "likely_profile" else 0, str(row.get("verified_at") or ""))
+        cur = best.get(pid)
+        if cur is None or key > cur[0]:
+            best[pid] = (key, {**row, "url": url, "platform": pid})
+    return {pid: v[1] for pid, v in best.items()}
+
+
+def _cached_verdict_line(target: str, prof: dict) -> str:
+    label = platform_label(target)
+    title = (prof.get("title") or prof.get("url") or "").replace("[", "(").replace("]", ")")
+    date = _format_verified_date(prof.get("verified_at"))
+    on = f" on {date}" if date else ""
+    if prof.get("relation") == "likely_profile":
+        return (
+            f"**{label}:** Live search is blocked right now — previously verified{on}: "
+            f"[{title}]({prof['url']}) (likely match, from the knowledge store)."
+        )
+    return (
+        f"**{label}:** Live search is blocked right now — previously found{on}: "
+        f"[{title}]({prof['url']}) (possible match, from the knowledge store)."
+    )
+
+
+async def _emit_blocked_outcome(
+    person: dict, targets: list[str], search_tile: Any, n_searches: int, hooks: Any,
+) -> AsyncIterator[dict]:
+    """Every live search was blocked/skipped. If the knowledge store holds an
+    earlier verification for a requested platform, report THAT (clearly marked as
+    earlier, not live); otherwise "Search unavailable" (never "no match")."""
+    cached = await _known_profiles_by_target(person, targets, hooks)
+    if not cached:
+        async for ev in _emit_search_unavailable(person, targets, search_tile, n_searches):
+            yield ev
+        return
+
+    lines = []
+    for t in targets or ["web"]:
+        prof = cached.get(t)
+        if prof:
+            lines.append(_cached_verdict_line(t, prof))
+        else:
+            lines.append(
+                f"**{platform_label(t)}:** {SEARCH_UNAVAILABLE_STATE} — DuckDuckGo is temporarily "
+                "blocking automated searches."
+            )
+    lines.append(
+        "**Overall:** Live search is unavailable right now — showing an earlier verification "
+        "from the knowledge store (not a live result)."
+    )
+    text = (
+        "\n".join(lines)
+        + f"\n\n{CAVEAT}\n\n_Try again in a few minutes for a live check, or enable **Brave Search** in Settings → Tools._"
+    )
+    # Not a live result: nothing new for kg_ingest (keeps verified_at honest)
+    yield {
+        "_web_result": {
+            "person": person,
+            "targets": targets,
+            "candidates": [],
+            "verdict": "",
+            "unavailable": True,
+            "cached": True,
+        }
+    }
+    yield {"content": "\n\n---\n\n### Online verification\n\n" + text}
+    search_tile.status = "done"
+    search_tile.detail = "Live search blocked — used earlier verification"
+    search_tile.items.append({
+        "kind": "note",
+        "label": f"{n_searches} live search(es) blocked by DuckDuckGo",
+    })
+    for t in targets:
+        prof = cached.get(t)
+        if not prof:
+            continue
+        date = _format_verified_date(prof.get("verified_at")) or "an earlier run"
+        search_tile.items.append({
+            "kind": "note",
+            "label": f"Used knowledge-store verification from {date}",
+        })
+        search_tile.items.append({
+            "kind": "result",
+            "label": prof.get("title") or prof["url"],
+            "url": prof["url"],
+            "detail": (
+                ("Likely match" if prof.get("relation") == "likely_profile" else "Possible match")
+                + (f" · verified {date}" if prof.get("verified_at") else "")
+                + " · from the knowledge store"
+            ),
+            "platform": t,
+        })
+    search_tile.output_preview = text[:300]
+    if getattr(search_tile, "started_ms", None):
+        search_tile.ms = int(time.time() * 1000) - search_tile.started_ms
+    yield {"tile": search_tile.to_dict()}
+
+
 # ── Web lookup execution ──────────────────────────────────────────────────
 
 
@@ -2041,6 +2381,7 @@ async def _tool_path(
     executed: set = set()  # queries actually sent this run
     blocked_targets: set = set()  # targets with a blocked search
     ok_targets: set = set()  # targets with a search that really ran
+    found_platforms: set = set()  # targets with a matching profile found (early stop)
 
     # Tool loop (max 3 rounds)
     for round_num in range(3):
@@ -2081,6 +2422,22 @@ async def _tool_path(
                 if not query:
                     continue
 
+                # Early stop: a matching profile is already known for every
+                # requested platform — don't spend (DuckDuckGo) searches on more
+                if _all_profiles_found(found_platforms, targets):
+                    _note_early_stop(search_tile)
+                    search_tile.items.append({
+                        "kind": "query",
+                        "label": query,
+                        "detail": "Skipped (profile already found)",
+                    })
+                    messages.append({
+                        "role": "tool",
+                        "content": ENOUGH_RESULTS_MSG,
+                    })
+                    yield {"tile": search_tile.to_dict()}
+                    continue
+
                 # Check if we've hit the cap
                 if search_count >= max_searches:
                     # Add budget exhausted message
@@ -2114,20 +2471,23 @@ async def _tool_path(
                 errored = False
                 executed.add(query)
                 q_target = _query_target(query, targets)
+                blocked_exc: Optional[BaseException] = None
                 try:
                     results = await hooks.web_search(query)
                 except WebSearchUnavailable:
                     # Propagate to caller - must not swallow this
                     raise
-                except SearchBlocked:
+                except SearchBlocked as exc:
                     results = []
                     blocked = True
+                    blocked_exc = exc
                     blocked_count += 1
                     blocked_targets.update([q_target] if q_target else targets)
                 except Exception as e:
                     results = []
                     errored = True
                     log.debug(f"web_search failed: {e}")
+                _drain_search_notes(hooks, search_tile)
                 if not blocked and not errored:
                     ok_count += 1
                     if q_target:
@@ -2139,8 +2499,9 @@ async def _tool_path(
                     search_tile.items.append({
                         "kind": "query",
                         "label": query,
-                        "detail": "blocked (DuckDuckGo bot detection)",
+                        "detail": _search_exc_detail(blocked_exc),
                     })
+                    _note_search_skip(search_tile, blocked_exc)
                     messages.append({
                         "role": "tool",
                         "content": "Search unavailable: DuckDuckGo is blocking automated searches right now. "
@@ -2155,6 +2516,7 @@ async def _tool_path(
 
                 # Filter results by name matching (drops social posts/directories)
                 matching_results = [res for res in results if _accept_result(name, res)]
+                found_platforms |= _profiles_in(matching_results, name, targets, q_target)
 
                 total_results = len(results)
                 matching_count = len(matching_results)
@@ -2261,7 +2623,7 @@ async def _tool_path(
 
     # Every search (site: and plain) blocked → "search unavailable", never "no match"
     if blocked_count and ok_count == 0 and raw_total == 0:
-        async for ev in _emit_search_unavailable(person, targets, search_tile, blocked_count):
+        async for ev in _emit_blocked_outcome(person, targets, search_tile, blocked_count, hooks):
             yield ev
         return
 
@@ -2319,29 +2681,46 @@ async def _fallback_path(
     blocked_targets: set = set()
     ok_targets: set = set()
 
+    skipped_early = 0  # queries not run because the platform's profile was already found
+    found_platforms: set = set()  # targets with a matching profile found (early stop)
+
     # Perform searches
     for query in queries:
-        executed.add(query)
         q_target = _query_target(query, targets)
+        # Early stop: this platform already has a matching profile — skip its
+        # remaining queries (saves DuckDuckGo searches, avoids its bot detection)
+        if q_target in PLATFORMS and q_target in found_platforms:
+            skipped_early += 1
+            _note_early_stop(search_tile)
+            search_tile.items.append({
+                "kind": "query",
+                "label": query,
+                "detail": "Skipped (profile already found)",
+            })
+            continue
+        executed.add(query)
         errored = False
         try:
             results = await hooks.web_search(query)
         except WebSearchUnavailable:
             # Propagate to caller - must not swallow this
             raise
-        except SearchBlocked:
+        except SearchBlocked as exc:
+            _drain_search_notes(hooks, search_tile)
             blocked_count += 1
             blocked_targets.update([q_target] if q_target else targets)
             search_tile.items.append({
                 "kind": "query",
                 "label": query,
-                "detail": "blocked (DuckDuckGo bot detection)",
+                "detail": _search_exc_detail(exc),
             })
+            _note_search_skip(search_tile, exc)
             continue
         except Exception as e:
             log.debug(f"web_search failed: {e}")
             results = []
             errored = True
+        _drain_search_notes(hooks, search_tile)
         if not errored:
             ok_count += 1
             if q_target:
@@ -2351,6 +2730,7 @@ async def _fallback_path(
 
         # Filter results by name matching (drops social posts/directories)
         matching_results = [res for res in results if _accept_result(name, res)]
+        found_platforms |= _profiles_in(matching_results, name, targets, q_target)
 
         # Add query item to tile
         search_tile.items.append({
@@ -2384,7 +2764,7 @@ async def _fallback_path(
 
     # Every search (site: and plain) blocked → "search unavailable", never "no match"
     if blocked_count and ok_count == 0 and raw_total == 0:
-        async for ev in _emit_search_unavailable(person, targets, search_tile, blocked_count):
+        async for ev in _emit_blocked_outcome(person, targets, search_tile, blocked_count, hooks):
             yield ev
         return
 
@@ -2413,7 +2793,7 @@ async def _fallback_path(
 
     search_tile.status = "done"
     search_tile.detail = (
-        f"{len(queries)} search(es), {len(all_results)} matching result(s) · direct search"
+        f"{len(queries) - skipped_early} search(es), {len(all_results)} matching result(s) · direct search"
     )
     search_tile.items.append({
         "kind": "note",

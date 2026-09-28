@@ -306,6 +306,8 @@ class AgentHooks:
     kg_search: Optional[Callable[[str], Any]] = None  # (text) -> awaitable list[dict] of entities
     kg_neighborhood: Optional[Callable[[str], Any]] = None  # (entity_id) -> awaitable dict with entities/relations
     kg_ingest: Optional[Callable[..., Any]] = None  # (conversation_id, run_id, intent, ...) -> awaitable dict
+    kg_known_profiles: Optional[Callable[[str], Any]] = None  # (person_name) -> awaitable list[dict] of stored profiles (web lookup cache when search is blocked)
+    search_notes: Optional[Callable[[], list]] = None  # () -> [{"kind": "paced", "seconds": s}] pacing events since last call (sync)
     retrieve_chunks: Optional[Callable[[str, str, int], Any]] = None  # (doc_id, query, k) -> awaitable list[str] (RAG over the doc)
     sheet_frames: Optional[Callable[[Any], Any]] = None  # (doc) -> list[dict] parsed sheets (sheets.py) | None; sync/blocking
     now_ms: Callable[[], int] = field(default_factory=lambda: lambda: int(time.time() * 1000))

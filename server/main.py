@@ -5208,12 +5208,15 @@ async def idp_agent(req: AgentRequest):
 
     # One searcher per run: DuckDuckGo first; on its bot-detection notice retry
     # once after 3 s, then fall back to Brave Search when running, else report
-    # the search as blocked (never as "no match").
+    # the search as blocked (never as "no match"). The process-wide governor
+    # spaces DuckDuckGo queries >= 3 s apart and, after a block, skips
+    # DuckDuckGo entirely during its cool-down (so demo retries don't extend it).
     _doc_searcher = _doc_web_mod.WebSearcher(
         call=_call_search_server,
         running=_running_search_servers,
         parse=_research._parse_search_results,
         retry_delay=3.0,
+        governor=_doc_web_mod.DDG_GOVERNOR,
     )
 
     async def _doc_web_search(query: str) -> list[dict]:
@@ -5273,6 +5276,10 @@ async def idp_agent(req: AgentRequest):
         return [h["text"] for h in hits if h.get("text")]
 
     hooks.retrieve_chunks = _doc_retrieve_chunks
+    # Web lookup robustness: pacing notes for the tile, and earlier (stored)
+    # profile verifications to show when live search is blocked.
+    hooks.search_notes = _doc_searcher.drain_notes
+    hooks.kg_known_profiles = _kg_store.known_profiles
 
     return StreamingResponse(
         _doc_agent_service.agent_sse(req_dict, hooks, _db), media_type="text/event-stream",
