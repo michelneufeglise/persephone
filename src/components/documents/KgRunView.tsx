@@ -20,6 +20,7 @@ import {
   useReactFlow,
   type Node,
   type Edge,
+  type Viewport,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 import { Search, Maximize, X, ExternalLink, MessageSquare, ChevronsDownUp, ChevronsUpDown, ChevronDown, ChevronUp } from 'lucide-react'
@@ -46,6 +47,7 @@ import {
 import { layoutRunGraphElk, type ElkLayoutResult, type Pt } from './kgLayout'
 import { RunCardNode, RunBandNode, LaneBandNode, LaneHeaderNode, RUN_KIND_COLOR, RUN_KIND_LABEL } from './kgRunNodes'
 import { RunGraphEdge } from './kgElkEdge'
+import { flyToNodes, flyToOverview, restoreViewport, type ReplayFocus } from './kgReplayView'
 
 const nodeTypes = { runCard: RunCardNode, runBand: RunBandNode, laneBand: LaneBandNode, laneHeader: LaneHeaderNode }
 const edgeTypes = { runEdge: RunGraphEdge }
@@ -123,6 +125,10 @@ export interface KgRunViewProps {
   isExpanded?: boolean
   /** Container width bucket — part of the layout cache key. */
   widthBucket: number
+  /** Replay step to highlight (null = normal behaviour). */
+  replay?: ReplayFocus | null
+  /** The replay finished: show the whole graph (normal, interactive) until it is closed. */
+  replayOverview?: boolean
 }
 
 export function KgRunView(props: KgRunViewProps) {
@@ -133,7 +139,7 @@ export function KgRunView(props: KgRunViewProps) {
   )
 }
 
-function KgRunViewInner({ mode, convs, selectedMessageId, onSelectMessage, isExpanded = false, widthBucket }: KgRunViewProps) {
+function KgRunViewInner({ mode, convs, selectedMessageId, onSelectMessage, isExpanded = false, widthBucket, replay = null, replayOverview = false }: KgRunViewProps) {
   const rf = useReactFlow()
   const [collapseOlder, setCollapseOlder] = usePersistedFlag('persephone-docs-kg-net-collapse', false)
   // Legend: an explicit user choice is persisted; with no stored choice it
@@ -175,9 +181,11 @@ function KgRunViewInner({ mode, convs, selectedMessageId, onSelectMessage, isExp
     setSelectedId(null)
   }, [mode])
 
+  // The replayed run is always expanded (it may be an older, collapsed one).
+  const forceExpandId = replay?.runKey || selectedMessageId
   const graph: RunGraph = useMemo(
-    () => buildRunGraph(convs, { collapseOlder, expandedRuns, forceExpandMessageId: selectedMessageId }),
-    [convs, collapseOlder, expandedRuns, selectedMessageId],
+    () => buildRunGraph(convs, { collapseOlder, expandedRuns, forceExpandMessageId: forceExpandId }),
+    [convs, collapseOlder, expandedRuns, forceExpandId],
   )
   const graphNodeById = useMemo(() => new Map(graph.nodes.map(n => [n.id, n])), [graph])
   const graphEdgeById = useMemo(() => new Map(graph.edges.map(e => [e.id, e])), [graph])
@@ -259,8 +267,11 @@ function KgRunViewInner({ mode, convs, selectedMessageId, onSelectMessage, isExp
   // ── Selection / focus ──
   const selectedRender = selectedId && render.byId.has(selectedId) ? selectedId : null
   const selectedGraphNode: RunNode | null = selectedRender ? graphNodeById.get(render.byId.get(selectedRender)!.refOf) ?? null : null
+  const selectedRenderState = selectedRender
+  const selectedGraphNodeState = selectedGraphNode
   const selectedRun = useMemo(() => findRunForMessage(graph.runs, selectedMessageId), [graph.runs, selectedMessageId])
   const focusRunKey = activeRunKey && runByKey.has(activeRunKey) ? activeRunKey : !runFocusCleared ? selectedRun?.key ?? null : null
+  const focusRunKeyState = focusRunKey
   const q = query.trim().toLowerCase()
 
   const matches = useMemo(() => {
@@ -305,6 +316,20 @@ function KgRunViewInner({ mode, convs, selectedMessageId, onSelectMessage, isExp
     }
     return null
   }, [selectedRender, render, q, matches, focusRunKey, runByKey, mode, graph])
+  const focusState = focus
+
+  // ── Replay: graph ids → drawn ids (Layers repeats shared nodes per lane as `<id>@<runKey>`) ──
+  const replayDrawn = useMemo(() => {
+    if (!replay) return null
+    const toDrawn = (id: string) => (render.byId.has(id) ? id : replay.runKey && render.byId.has(`${id}@${replay.runKey}`) ? `${id}@${replay.runKey}` : null)
+    const nodes = replay.nodes.map(toDrawn).filter((x): x is string => !!x)
+    const prevNodes = replay.prevNodes.map(toDrawn).filter((x): x is string => !!x)
+    const edgeSet = new Set(replay.edges)
+    const edges = new Set(render.edges.filter(e => edgeSet.has(e.edgeId) && (!replay.runKey || e.laneKey === replay.runKey || mode === 'network')).map(e => e.id))
+    return { key: replay.key, nodes: new Set(nodes), primary: nodes, prevNodes, edges }
+  }, [replay, render, mode])
+  const replayRef = useRef(replay)
+  replayRef.current = replay
 
   const selectRun = useCallback(
     (run: RunInfo) => {
@@ -319,6 +344,12 @@ function KgRunViewInner({ mode, convs, selectedMessageId, onSelectMessage, isExp
   // ── React Flow nodes / edges ──
   useEffect(() => {
     const out: Node[] = []
+    const rp = replayDrawn
+    // While a replay runs, its step replaces focus / selection / search highlighting.
+    const focus = rp ? null : focusState
+    const focusRunKey = rp ? replay?.runKey ?? null : focusRunKeyState
+    const selectedRender = rp ? null : selectedRenderState
+    const selectedGraphNode = rp ? null : selectedGraphNodeState
     const selectedRunKey = selectedGraphNode?.runKey ?? null
     if (mode === 'network' && elk) {
       for (const band of elk.result.bands) {
@@ -346,6 +377,7 @@ function KgRunViewInner({ mode, convs, selectedMessageId, onSelectMessage, isExp
             dim: !!focus && !active && !touched,
             onSelect: () => selectRun(run),
           },
+          ...(rp ? { className: active ? undefined : 'kg-rp-dim' } : {}),
         })
       }
     }
@@ -388,6 +420,7 @@ function KgRunViewInner({ mode, convs, selectedMessageId, onSelectMessage, isExp
             dim: !!focus && !active && !touched,
             onSelect: () => selectRun(lane.run),
           },
+          ...(rp ? { className: active ? undefined : 'kg-rp-dim' } : {}),
         })
       }
     }
@@ -395,6 +428,8 @@ function KgRunViewInner({ mode, convs, selectedMessageId, onSelectMessage, isExp
       const g = graphNodeById.get(rn.refOf)
       if (!g) continue
       const dim = !!focus && !focus.nodes.has(rn.id)
+      const rpActive = !!rp && rp.nodes.has(rn.id)
+      const rpContext = !!rp && !rpActive && rp.prevNodes.includes(rn.id)
       out.push({
         id: rn.id,
         type: 'runCard',
@@ -403,13 +438,14 @@ function KgRunViewInner({ mode, convs, selectedMessageId, onSelectMessage, isExp
         height: rn.height,
         style: { width: rn.width, height: rn.height, opacity: dim ? 0.25 : 1, transition: 'opacity 200ms ease' },
         draggable: false,
+        ...(rp ? { className: rpActive ? 'kg-rp-active' : rpContext ? 'kg-rp-context' : 'kg-rp-dim' } : {}),
         data: {
           kind: g.kind,
           label: g.label,
           data: g.data,
           variant: mode === 'layers' ? 'lanes' : 'network',
           isRef: rn.isRef,
-          selected: rn.id === selectedRender,
+          selected: rp ? rpActive : rn.id === selectedRender,
           focused: !!focus && focus.mode !== 'search' && focus.nodes.has(rn.id),
           match: !!focus && focus.mode === 'search' && matches.has(rn.id),
         },
@@ -422,6 +458,7 @@ function KgRunViewInner({ mode, convs, selectedMessageId, onSelectMessage, isExp
         const ge = graphEdgeById.get(re.edgeId)
         const inFocus = !!focus && focus.edges.has(re.id)
         const dim = !!focus && (focus.mode === 'search' ? !(matches.has(re.source) && matches.has(re.target)) : !inFocus)
+        const rpFlow = !!rp && rp.edges.has(re.id)
         return {
           id: re.id,
           source: re.source,
@@ -429,20 +466,21 @@ function KgRunViewInner({ mode, convs, selectedMessageId, onSelectMessage, isExp
           type: 'runEdge',
           selectable: false,
           focusable: false,
+          ...(rp ? { className: rpFlow ? 'kg-rp-flow' : 'kg-rp-dim', zIndex: rpFlow ? 4 : 0 } : {}),
           data: {
             points: re.points,
             category: (ge?.category || 'other') as EdgeCategory,
             label: ge?.label || '',
             title: ge?.title,
-            active: inFocus && focus?.mode !== 'search',
-            dim,
+            active: rp ? rpFlow : inFocus && focus?.mode !== 'search',
+            dim: rp ? !rpFlow : dim,
             failed: !!ge?.failed,
-            showLabel: inFocus && focus?.mode === 'node',
+            showLabel: rp ? rpFlow : inFocus && focus?.mode === 'node',
           },
         }
       }),
     )
-  }, [mode, elk, lanes, render, graphNodeById, graphEdgeById, runByKey, focus, focusRunKey, selectedRender, selectedGraphNode, matches, selectRun, setNodes, setEdges])
+  }, [mode, elk, lanes, render, graphNodeById, graphEdgeById, runByKey, focusState, focusRunKeyState, selectedRenderState, selectedGraphNodeState, matches, selectRun, setNodes, setEdges, replayDrawn, replay?.runKey])
 
   // ── Viewport ──
   /** Fit everything ("Fit" button, explicit). */
@@ -465,6 +503,7 @@ function KgRunViewInner({ mode, convs, selectedMessageId, onSelectMessage, isExp
         : [`band:${run.key}`, ...run.nodeIds.filter(id => render.byId.has(id))]
   }
   const fitReadable = useCallback(() => {
+    if (replayRef.current) return // the replay drives the camera
     const el = wrapperRef.current?.querySelector('.react-flow') as HTMLElement | null
     const all = rf.getNodes()
     if (!el || all.length === 0) return
@@ -504,6 +543,7 @@ function KgRunViewInner({ mode, convs, selectedMessageId, onSelectMessage, isExp
   // Chat selection changed → bring that run into view.
   const lastSelectedMsg = useRef<string | null | undefined>(selectedMessageId)
   useEffect(() => {
+    if (replayRef.current) return
     if (lastSelectedMsg.current === selectedMessageId || !selectedRun || render.nodes.length === 0) return
     lastSelectedMsg.current = selectedMessageId
     const ids =
@@ -539,6 +579,38 @@ function KgRunViewInner({ mode, convs, selectedMessageId, onSelectMessage, isExp
       ro.disconnect()
     }
   }, [fitReadable])
+
+  // ── Replay camera: save the viewport when a replay starts, fly to each step,
+  // zoom out to the whole graph when it finishes, and on stop restore the exact
+  // viewport — unless it is closed from the finished overview (that view stays). ──
+  const savedViewportRef = useRef<Viewport | null>(null)
+  const overviewRef = useRef(false)
+  const replaySession = !!replay || replayOverview
+  useEffect(() => {
+    if (replaySession) {
+      if (!savedViewportRef.current) savedViewportRef.current = rf.getViewport()
+      overviewRef.current = replayOverview
+      if (!replayOverview) return
+      const t = setTimeout(() => flyToOverview(rf, 0.08), 40)
+      return () => clearTimeout(t)
+    }
+    const vp = savedViewportRef.current
+    const keep = overviewRef.current
+    savedViewportRef.current = null
+    overviewRef.current = false
+    if (vp && !keep) restoreViewport(rf, vp)
+  }, [replaySession, replayOverview, rf])
+  useEffect(() => {
+    if (!replayDrawn) return
+    const t = setTimeout(() => {
+      const el = wrapperRef.current?.querySelector('.react-flow') as HTMLElement | null
+      if (!el) return
+      flyToNodes(rf, replayDrawn.primary, replayDrawn.prevNodes, { width: el.clientWidth, height: el.clientHeight }, { minZoom: 0.5, maxZoom: 1.15 })
+    }, 40)
+    return () => clearTimeout(t)
+    // Re-fly when the step changes or its nodes first appear (async ELK layout).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [replayDrawn?.key, replayDrawn?.primary.length, rf])
 
   const focusFirstMatch = useCallback(() => {
     const first = render.nodes.find(n => matches.has(n.id))
@@ -669,7 +741,7 @@ function KgRunViewInner({ mode, convs, selectedMessageId, onSelectMessage, isExp
               showFitView={false}
               showInteractive={false}
               position="bottom-right"
-              className={clsx('!border-[var(--border-glass)] !bg-[var(--bg-glass-strong)] !shadow-[var(--shadow-soft)]', panelOpen && 'kg-controls-shifted')}
+              className={clsx('!border-[var(--border-glass)] !bg-[var(--bg-glass-strong)] !shadow-[var(--shadow-soft)]', panelOpen && !replay && 'kg-controls-shifted')}
             />
           </ReactFlow>
         )}
@@ -685,7 +757,7 @@ function KgRunViewInner({ mode, convs, selectedMessageId, onSelectMessage, isExp
           </div>
         )}
 
-        {selectedGraphNode && (
+        {selectedGraphNode && !replay && (
           <RunDetailPanel
             node={selectedGraphNode}
             run={detailRun}

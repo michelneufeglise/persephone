@@ -34,8 +34,47 @@ interface QueueItem {
 const PREFETCH = 2
 
 function ensureFetch(item: QueueItem): Promise<ArrayBuffer | null> {
-  if (!item.fetchPromise) item.fetchPromise = fetchTTS(item.text, item.voice, item.speed)
+  if (!item.fetchPromise) {
+    item.fetchPromise = prefetched.get(prefetchKey(item.text, item.voice, item.speed)) ?? fetchTTS(item.text, item.voice, item.speed)
+  }
   return item.fetchPromise
+}
+
+// ── Explicit prefetch (knowledge-graph replay narration) ──────────────────────
+// Audio synthesised ahead of time with prefetchTTS() is kept in a small LRU
+// cache and used by the queue instead of a second /api/tts request, so the next
+// replay step starts speaking without a gap. Nothing else fills this cache.
+const PREFETCH_CACHE_MAX = 24
+const prefetched = new Map<string, Promise<ArrayBuffer | null>>()
+
+function prefetchKey(text: string, voice: string, speed: number): string {
+  return `${voice}\u0000${speed}\u0000${text.trim()}`
+}
+
+/** Synthesise `text` now (cached) so a later enqueueTTS() of the same text plays at once.
+ *  Resolves true when audio is available, false when synthesis failed. */
+export function prefetchTTS(text: string, voice: string, speed: number): Promise<boolean> {
+  const cleaned = text.trim()
+  if (!cleaned) return Promise.resolve(false)
+  const key = prefetchKey(cleaned, voice, speed)
+  let p = prefetched.get(key)
+  if (p) {
+    prefetched.delete(key) // LRU bump
+  } else {
+    p = fetchTTS(cleaned, voice, speed)
+    const mine = p
+    // A failed synthesis is not cached (a retry may succeed).
+    mine.then(buf => {
+      if (!buf && prefetched.get(key) === mine) prefetched.delete(key)
+    })
+  }
+  prefetched.set(key, p)
+  while (prefetched.size > PREFETCH_CACHE_MAX) {
+    const oldest = prefetched.keys().next().value
+    if (oldest === undefined) break
+    prefetched.delete(oldest)
+  }
+  return p.then(buf => !!buf)
 }
 
 function prefetchAhead() {

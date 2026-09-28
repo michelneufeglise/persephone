@@ -13,9 +13,11 @@ import {
   MarkerType,
   useReactFlow,
   useNodesInitialized,
+  type ReactFlowInstance,
+  type Viewport,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
-import { AlertCircle, X, ExternalLink, Menu, ChevronUp, ChevronDown, Maximize2, Lock } from 'lucide-react'
+import { AlertCircle, X, ExternalLink, Menu, ChevronUp, ChevronDown, Maximize2, Lock, Play } from 'lucide-react'
 import { clsx } from 'clsx'
 import { buildKnowledgeGraph, layoutKnowledgeGraph, NODE_SIZES } from './kgModel'
 import { layoutForce } from './kgForce'
@@ -28,7 +30,51 @@ import { KgRunView } from './KgRunView'
 import { EntityEdge } from './kgEntityEdge'
 import { KgEvidencePanel, KgStoryStrip } from './KgEvidence'
 import { buildStory, type StoryChip } from './kgStory'
+import { flyToNodes, flyToOverview, restoreViewport, type ReplayFocus } from './kgReplayView'
+import type { ReplayStep, ReplayView, ReplayTargetKey } from './kgReplay'
 import type { Message } from '@/types'
+
+// ── Replay (guided walk-through of a run) — player + trail builder load on first use ──
+interface ReplayModule {
+  ReplayPlayer: typeof import('./KgReplayPlayer').ReplayPlayer
+  buildRunTrail: typeof import('./kgReplay').buildRunTrail
+  buildFactTrail: typeof import('./kgReplay').buildFactTrail
+  stepsForView: typeof import('./kgReplay').stepsForView
+}
+let replayModPromise: Promise<ReplayModule> | null = null
+function loadReplay(): Promise<ReplayModule> {
+  if (!replayModPromise) {
+    replayModPromise = Promise.all([import('./KgReplayPlayer'), import('./kgReplay')])
+      .then(([player, trail]) => ({
+        ReplayPlayer: player.ReplayPlayer,
+        buildRunTrail: trail.buildRunTrail,
+        buildFactTrail: trail.buildFactTrail,
+        stepsForView: trail.stepsForView,
+      }))
+      .catch(err => {
+        replayModPromise = null // allow a retry after a failed chunk load
+        throw err
+      })
+  }
+  return replayModPromise
+}
+const REPLAY_TARGET: Record<ReplayView, ReplayTargetKey> = { pipeline: 'pipeline', network: 'run', layers: 'run', entities: 'entities' }
+interface ActiveReplay {
+  mod: ReplayModule
+  view: ReplayView
+  steps: ReplayStep[]
+  runKey: string | null
+  label: string
+}
+interface ReplaySnapshot {
+  view: ReplayView
+  viewport: Viewport | null
+  selectedNodeId: string | null
+  selectedEdgeId: string | null
+  storyActiveKey: string | null
+  /** Replay switched Network from Organic to Structured; switch back on stop. */
+  organic: boolean
+}
 
 /** Cheap signature of a doc_run's tiles (id + status) — changes when a step starts/finishes. */
 function tilesSignature(m: Message | null | undefined): string {
@@ -90,8 +136,19 @@ const nodeTypes = {
 /**
  * ResizeObserver wrapper to fit graph on container resize
  */
-function GraphResizeHandler({ containerRef, padding = 0.15, minZoom = 0.4, fitKey = '' }: { containerRef: React.RefObject<HTMLDivElement>; padding?: number; minZoom?: number; fitKey?: string }) {
-  const { fitView } = useReactFlow()
+function GraphResizeHandler({ containerRef, padding = 0.15, minZoom = 0.4, fitKey = '', suspendedRef, holdUntilRef }: { containerRef: React.RefObject<HTMLDivElement>; padding?: number; minZoom?: number; fitKey?: string; suspendedRef?: React.MutableRefObject<boolean>; holdUntilRef?: React.MutableRefObject<number> }) {
+  const { fitView: fitViewRaw } = useReactFlow()
+  // While a replay drives the camera — and briefly after it restores the viewport or
+  // zooms out at the end (its node restyle re-triggers the "nodes initialized" fit) —
+  // automatic fits stand aside.
+  const fitView = useCallback(
+    (opts: Parameters<typeof fitViewRaw>[0]) => {
+      if (suspendedRef?.current) return
+      if (holdUntilRef && Date.now() < holdUntilRef.current) return
+      void fitViewRaw(opts)
+    },
+    [fitViewRaw, suspendedRef, holdUntilRef],
+  )
 
   useEffect(() => {
     if (!containerRef.current) return
@@ -589,6 +646,7 @@ const KnowledgeGraphInner = memo(
     onSelectMessage,
     isExpanded = false,
     onExpand,
+    isCovered = false,
   }: {
     conversations: DocConversationSummary[]
     currentConversationId: string
@@ -598,6 +656,8 @@ const KnowledgeGraphInner = memo(
     onSelectMessage?: (assistantMessageId: string) => void
     isExpanded?: boolean
     onExpand?: () => void
+    /** The expanded modal covers this (docked) graph — a running replay stops. */
+    isCovered?: boolean
   }) => {
     const [scope, setScope] = useState<'current' | 'all'>('current')
     const [loadedConversations, setLoadedConversations] = useState<
@@ -645,6 +705,25 @@ const KnowledgeGraphInner = memo(
     const [hoveredId, setHoveredId] = useState<string | null>(null)
     const pinnedRef = useRef<Map<string, { x: number; y: number }>>(new Map())
     const containerRef = useRef<HTMLDivElement | null>(null)
+    // Replay: the running walk-through (null = views behave exactly as without it).
+    const [replay, setReplay] = useState<ActiveReplay | null>(null)
+    const [replayIndex, setReplayIndex] = useState(0)
+    const [replayLoading, setReplayLoading] = useState(false)
+    const [replayNotice, setReplayNotice] = useState<string | null>(null)
+    const replayRef = useRef<ActiveReplay | null>(null)
+    replayRef.current = replay
+    // The replay played its last step: the whole graph is shown again, un-dimmed and
+    // interactive, with a small "finished" bar until it is closed.
+    const [replayDone, setReplayDone] = useState(false)
+    const replayDoneRef = useRef(false)
+    replayDoneRef.current = replayDone
+    const replaySnapRef = useRef<ReplaySnapshot | null>(null)
+    const replaySuspendFitRef = useRef(false)
+    replaySuspendFitRef.current = !!replay && !replayDone
+    const replayFitHoldRef = useRef(0)
+    // The outer React Flow (Pipeline / Entities / Organic network) — for camera moves + restore.
+    const rfOuterRef = useRef<ReactFlowInstance | null>(null)
+    const pendingViewportRef = useRef<Viewport | null>(null)
 
     // Load scope and view preferences from localStorage
     useEffect(() => {
@@ -957,6 +1036,213 @@ const KnowledgeGraphInner = memo(
     // Story strip: deterministic summary of the focal person's facts (scope-aware).
     const story = useMemo(() => buildStory(kgData), [kgData])
 
+    // ── Replay: what the current step highlights in the active view ──
+    const replayFocus: ReplayFocus | null = useMemo(() => {
+      if (!replay || replayDone) return null
+      const key = REPLAY_TARGET[replay.view]
+      const step = replay.steps[replayIndex]
+      const t = step?.targets[key]
+      if (!step || !t) return null
+      let edges = t.edges
+      if (replay.view === 'entities') {
+        // Relation ids → the drawn edge that represents each (pairs are aggregated).
+        edges = [...new Set(t.edges.map(id => edgeOfRelation.get(id)?.edgeId).filter((x): x is string => !!x))]
+      }
+      const prev = replay.steps[replayIndex - 1]?.targets[key]
+      return { key: `${replayIndex}:${step.id}`, nodes: t.nodes, edges, prevNodes: prev?.nodes ?? [], runKey: replay.runKey }
+    }, [replay, replayIndex, edgeOfRelation, replayDone])
+    const replayActiveHere = !!replay && replay.view === graphView
+    /** A replay is stepping through this view (not yet finished): it owns selection / camera. */
+    const replayRunningHere = replayActiveHere && !replayDone
+    // Entities replay: light up the matching story-strip chip.
+    const replayStoryKey = useMemo(() => {
+      if (!replay || replayDone || replay.view !== 'entities' || !story) return null
+      const step = replay.steps[replayIndex]
+      if (!step) return null
+      if (step.kind === 'person') return story.chips[0]?.key ?? null
+      return story.chips.find(c => c.edgeId && c.edgeId === step.relationId)?.key ?? null
+    }, [replay, replayIndex, story, replayDone])
+    const canReplay =
+      graphView === 'entities'
+        ? !!story
+        : !!runMessage && !runMessage.isStreaming && Array.isArray(runMessage.meta?.tiles) && (runMessage.meta?.tiles as unknown[]).length > 0
+
+    const stopReplay = useCallback((restore: boolean = true) => {
+      const snap = replaySnapRef.current
+      const finished = replayDoneRef.current
+      replaySnapRef.current = null
+      setReplay(null)
+      setReplayIndex(0)
+      setReplayDone(false)
+      // Closed after it finished: keep the overview (and the user's clicks since) as they are.
+      if (finished) restore = false
+      // Restoring the viewport: keep the auto-fit (re-triggered by the node restyle) from undoing it.
+      else if (restore) replayFitHoldRef.current = Date.now() + 1000
+      // The replay switched Network from Organic to Structured: always give the user's
+      // (persisted) layout back, even when the rest is not restored (tab / scope / run change).
+      if (snap?.organic && !restore) setNetLayout('organic')
+      if (!snap || !restore) return
+      if (snap.organic) {
+        // Back to the Organic layout: re-apply the selection after the view switch
+        // and the viewport once the new canvas has fitted itself.
+        pendingSelRef.current = { node: snap.selectedNodeId, edge: snap.selectedEdgeId }
+        pendingViewportRef.current = snap.viewport
+        setNetLayout('organic')
+        return
+      }
+      setSelectedNodeId(snap.selectedNodeId)
+      setSelectedEdgeId(snap.selectedEdgeId)
+      setStoryActiveKey(snap.storyActiveKey)
+      if (snap.view === 'pipeline' || snap.view === 'entities') restoreViewport(rfOuterRef.current, snap.viewport)
+    }, [])
+
+    const startReplay = useCallback(async () => {
+      if (replayRef.current || replayLoading) return
+      setReplayNotice(null)
+      setReplayLoading(true)
+      let mod: ReplayModule
+      try {
+        mod = await loadReplay()
+      } catch {
+        setReplayLoading(false)
+        setReplayNotice('Could not load the replay — try again.')
+        return
+      }
+      setReplayLoading(false)
+      const view = graphView
+      let steps: ReplayStep[] = []
+      let runKey: string | null = null
+      try {
+        if (view === 'entities') {
+          steps = mod.stepsForView(mod.buildFactTrail(kgData), 'entities')
+        } else if (runMessage) {
+          const idx = msgs.findIndex(m => m.id === runMessage.id)
+          let user: Message | undefined
+          for (let i = idx - 1; i >= 0; i--) {
+            if (msgs[i].role === 'user') {
+              user = msgs[i]
+              break
+            }
+            if (msgs[i].role === 'assistant') break
+          }
+          runKey = runMessage.id
+          steps = mod.stepsForView(
+            mod.buildRunTrail({
+              runKey,
+              question: user?.content || (runQuestion !== '—' ? runQuestion : ''),
+              tiles: runMessage.meta?.tiles,
+              answer: runMessage.content,
+              meta: runMessage.meta as Record<string, unknown>,
+              attachments: (user?.meta as Record<string, unknown> | undefined)?.attachments,
+              model: runMessage.model,
+            }),
+            view,
+          )
+        }
+      } catch (err) {
+        console.error('replay: could not build the trail', err)
+        steps = []
+      }
+      if (steps.length === 0) {
+        setReplayNotice(view === 'entities' ? 'No facts to replay yet.' : 'Nothing to replay for this run.')
+        return
+      }
+      replaySnapRef.current = {
+        view,
+        viewport: view === 'pipeline' || view === 'entities' || (view === 'network' && netLayout === 'organic') ? rfOuterRef.current?.getViewport() ?? null : null,
+        selectedNodeId,
+        selectedEdgeId,
+        storyActiveKey,
+        organic: view === 'network' && netLayout === 'organic',
+      }
+      setSelectedNodeId(null)
+      setSelectedEdgeId(null)
+      setHoveredEdgeId(null)
+      setHoveredId(null)
+      if (view === 'network' && netLayout === 'organic') {
+        pendingSelRef.current = { node: null, edge: null }
+        setNetLayout('structured')
+      }
+      setReplayIndex(0)
+      setReplayDone(false)
+      setReplay({ mod, view, steps, runKey, label: view === 'entities' ? 'Fact story' : 'Run replay' })
+    }, [replayLoading, graphView, kgData, runMessage, msgs, runQuestion, netLayout, selectedNodeId, selectedEdgeId, storyActiveKey])
+
+    // A replay belongs to one view / scope / conversation / run: leaving it stops the
+    // replay (the old view is gone, so there is nothing to restore).
+    const replayContext = `${graphView}|${scope}|${currentConversationId}|${runMessage?.id ?? ''}`
+    const replayContextRef = useRef(replayContext)
+    useEffect(() => {
+      if (replayContextRef.current === replayContext) return
+      replayContextRef.current = replayContext
+      if (replayRef.current) stopReplay(false)
+      setReplayNotice(null)
+    }, [replayContext, stopReplay])
+    // The expanded modal opened over this (docked) graph: stop its replay.
+    useEffect(() => {
+      if (isCovered && replayRef.current) stopReplay(true)
+    }, [isCovered, stopReplay])
+    // Replay notice fades after a few seconds.
+    useEffect(() => {
+      if (!replayNotice) return
+      const t = setTimeout(() => setReplayNotice(null), 4000)
+      return () => clearTimeout(t)
+    }, [replayNotice])
+    // Camera (Pipeline / Entities): pan + zoom to the step's nodes.
+    useEffect(() => {
+      if (!replayFocus || !replay || (replay.view !== 'pipeline' && replay.view !== 'entities') || replay.view !== graphView) return
+      const t = setTimeout(() => {
+        const rf = rfOuterRef.current
+        const el = containerRef.current
+        if (!rf || !el) return
+        flyToNodes(
+          rf,
+          replayFocus.nodes,
+          replayFocus.prevNodes,
+          { width: el.clientWidth, height: el.clientHeight },
+          replay.view === 'pipeline' ? { minZoom: 0.5, maxZoom: 0.95 } : { minZoom: 0.55, maxZoom: 1.1 },
+        )
+      }, 40)
+      return () => clearTimeout(t)
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [replayFocus?.key, graphView])
+    // Finished (Pipeline / Entities): zoom out to the whole graph. (Network / Layers: KgRunView.)
+    useEffect(() => {
+      if (!replayDone || !replay || replay.view !== graphView || (replay.view !== 'pipeline' && replay.view !== 'entities')) return
+      const t = setTimeout(() => flyToOverview(rfOuterRef.current, replay.view === 'pipeline' ? 0.08 : 0.12), 40)
+      return () => clearTimeout(t)
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [replayDone, graphView])
+    // Player callbacks: a step starts (also "Replay again" after the end) / the last step is done.
+    const handleReplayStep = useCallback((i: number) => {
+      if (replayDoneRef.current) {
+        // Replay again: clear what the user clicked in the overview.
+        setSelectedNodeId(null)
+        setSelectedEdgeId(null)
+        setHoveredEdgeId(null)
+        setHoveredId(null)
+      }
+      setReplayDone(false)
+      setReplayIndex(i)
+    }, [])
+    const handleReplayFinish = useCallback(() => {
+      replayFitHoldRef.current = Date.now() + 1100 // let the ~800 ms zoom-out run undisturbed
+      setReplayDone(true)
+    }, [])
+    const replayAnchorIds = useCallback(
+      (step: ReplayStep) => (replay ? step.targets[REPLAY_TARGET[replay.view]]?.nodes ?? [] : []),
+      [replay],
+    )
+    const handleFlowInit = useCallback((inst: ReactFlowInstance) => {
+      rfOuterRef.current = inst
+      const vp = pendingViewportRef.current
+      if (vp) {
+        pendingViewportRef.current = null
+        // After the canvas's own initial fit.
+        setTimeout(() => restoreViewport(inst, vp), 600)
+      }
+    }, [])
+
     // Conversations feeding Network / Layers. Keyed on messagesSig, not the array,
     // so a streamed token doesn't rebuild (or relayout) the graph.
     const runConvs = useMemo(() => {
@@ -1065,16 +1351,25 @@ const KnowledgeGraphInner = memo(
       // (type, size, zIndex, handles, markers, styles) — pass them through.
       // (Cast so TS doesn't narrow graphView for the shared code below.)
       if ((graphView as string) === 'pipeline') {
+        // Replay: highlight the step's nodes, dim the rest, flow the step's edges.
+        const rp = replayFocus && replayRef.current?.view === 'pipeline' ? replayFocus : null
+        const rpNodes = rp ? new Set(rp.nodes) : null
+        const rpEdges = rp ? new Set(rp.edges) : null
+        const rpPrev = rp ? new Set(rp.prevNodes) : null
         setNodes(
           gd.nodes.map((n: any) => ({
             ...n,
             draggable: false,
-            selected: n.type !== 'pipelineGroup' && selectedNodeId != null && n.id === selectedNodeId,
+            selected: rpNodes
+              ? n.type !== 'pipelineGroup' && rpNodes.has(n.id)
+              : n.type !== 'pipelineGroup' && selectedNodeId != null && n.id === selectedNodeId,
+            ...(rpNodes ? { className: clsx(n.className, rpNodes.has(n.id) ? 'kg-rp-active' : rpPrev?.has(n.id) ? 'kg-rp-context' : 'kg-rp-dim') } : {}),
           })),
         )
         setEdges(
           gd.edges.map((e: any) => ({
             ...e,
+            ...(rpEdges ? { className: clsx(e.className, rpEdges.has(e.id) ? 'kg-rp-flow' : 'kg-rp-dim') } : {}),
             // Edge labels are SVG: text uses `fill`, the pill is the label background rect.
             labelStyle: { fontSize: 10, fill: 'var(--text-secondary)', fontFamily: 'var(--font-family-body)' },
             labelBgStyle: { fill: 'var(--bg-glass-strong)', stroke: 'var(--border-glass)', strokeWidth: 1 },
@@ -1239,7 +1534,7 @@ const KnowledgeGraphInner = memo(
 
       setNodes(xyNodes)
       setEdges(xyEdges)
-    }, [graphData, selectedNodeId, selectedKinds, setNodes, setEdges, isExpanded, graphDirection, graphView])
+    }, [graphData, selectedNodeId, selectedKinds, setNodes, setEdges, isExpanded, graphDirection, graphView, replayFocus])
 
     // ── Entities view: nodes (layout), selection flag, edges (style / labels / hover) ──
     useEffect(() => {
@@ -1263,8 +1558,20 @@ const KnowledgeGraphInner = memo(
     }, [graphView, entitiesData, setNodes])
     useEffect(() => {
       if (graphView !== 'entities') return
-      setNodes(prev => prev.map(n => (n.selected === (n.id === selectedNodeId) ? n : { ...n, selected: n.id === selectedNodeId })))
-    }, [graphView, selectedNodeId, entitiesData, setNodes])
+      // Replay: the step's entities are selected + glowing, the rest dimmed and not
+      // draggable (positions — including ones the user dragged — are never changed).
+      const rp = replayFocus && replayRef.current?.view === 'entities' ? new Set(replayFocus.nodes) : null
+      const rpPrev = new Set(replayFocus?.prevNodes ?? [])
+      setNodes(prev =>
+        prev.map(n => {
+          const selected = rp ? rp.has(n.id) : n.id === selectedNodeId
+          const className = rp ? (rp.has(n.id) ? 'kg-rp-active' : rpPrev.has(n.id) ? 'kg-rp-context' : 'kg-rp-dim') : undefined
+          const draggable = !rp
+          if (n.selected === selected && n.className === className && n.draggable === draggable) return n
+          return { ...n, selected, className, draggable }
+        }),
+      )
+    }, [graphView, selectedNodeId, entitiesData, setNodes, replayFocus])
     const selectRelation = useCallback((relationId: string) => {
       setSelectedEdgeId(relationId)
       setSelectedNodeId(null)
@@ -1273,16 +1580,18 @@ const KnowledgeGraphInner = memo(
     const selectedDrawnEdge = selectedEdgeInfo?.edgeId ?? null
     useEffect(() => {
       if (graphView !== 'entities' || !entitiesData) return
+      const rpEdges = replayFocus && replayRef.current?.view === 'entities' ? new Set(replayFocus.edges) : null
       setEdges(
         entitiesData.edges.map((e: any) => {
           const d = (e.data || {}) as EntityEdgeData
           const base = ENTITY_EDGE_STYLE[e.kind] || ENTITY_EDGE_STYLE.has_role
           const bandStroke = (e.kind === 'signed' || e.kind === 'verified_against') && d.band ? BAND_STROKE[d.band] : undefined
           const st = bandStroke ? { ...base, stroke: bandStroke } : base
-          const hover = hoveredEdgeId === e.id
-          const selected = selectedDrawnEdge === e.id
-          const touchesNode = !!selectedNodeId && (e.source === selectedNodeId || e.target === selectedNodeId)
-          const dim = (!!selectedDrawnEdge && !selected) || (!!selectedNodeId && !touchesNode)
+          const rp = rpEdges
+          const hover = !rp && hoveredEdgeId === e.id
+          const selected = rp ? rp.has(e.id) : selectedDrawnEdge === e.id
+          const touchesNode = !rp && !!selectedNodeId && (e.source === selectedNodeId || e.target === selectedNodeId)
+          const dim = rp ? !selected : (!!selectedDrawnEdge && !selected) || (!!selectedNodeId && !touchesNode)
           return {
             id: e.id,
             source: e.source,
@@ -1295,6 +1604,7 @@ const KnowledgeGraphInner = memo(
               hover && 'kg-ent-hover',
               selected && 'kg-ent-selected',
               dim && !hover && 'kg-ent-dim',
+              rp && (selected ? 'kg-rp-flow' : 'kg-rp-dim'),
             ),
             style: { ...st },
             markerEnd: { type: MarkerType.ArrowClosed, width: 16, height: 16, color: st.stroke },
@@ -1311,10 +1621,11 @@ const KnowledgeGraphInner = memo(
           }
         }),
       )
-    }, [graphView, entitiesData, entityLabelTs, hoveredEdgeId, selectedDrawnEdge, selectedNodeId, selectRelation, setEdges])
+    }, [graphView, entitiesData, entityLabelTs, hoveredEdgeId, selectedDrawnEdge, selectedNodeId, selectRelation, setEdges, replayFocus])
 
     const handleStoryChip = useCallback(
       (c: StoryChip) => {
+        if (replayRef.current && !replayDoneRef.current) return
         setStoryActiveKey(c.key)
         const sel = c.edgeId ? { node: null, edge: c.edgeId } : { node: c.nodeId ?? null, edge: null }
         if (graphView !== 'entities') {
@@ -1331,6 +1642,7 @@ const KnowledgeGraphInner = memo(
 
     const handleNodeClick = (e: React.MouseEvent, node: any) => {
       e.stopPropagation()
+      if (replayRef.current && !replayDoneRef.current) return // the replay owns selection while it runs
       if (node.type === 'pipelineGroup') return // knowledge-store band is background only
       setSelectedNodeId(node.id)
       setSelectedEdgeId(null)
@@ -1338,17 +1650,19 @@ const KnowledgeGraphInner = memo(
     }
     const handleEdgeClick = useCallback(
       (e: React.MouseEvent, edge: Edge) => {
-        if (graphView !== 'entities') return
+        if (graphView !== 'entities' || (replayRef.current && !replayDoneRef.current)) return
         e.stopPropagation()
         selectRelation(edge.id)
         setStoryActiveKey(null)
       },
       [graphView, selectRelation],
     )
-    const handleEdgeEnter = useCallback((_e: React.MouseEvent, edge: Edge) => setHoveredEdgeId(edge.id), [])
+    const handleEdgeEnter = useCallback((_e: React.MouseEvent, edge: Edge) => {
+      if (!replayRef.current || replayDoneRef.current) setHoveredEdgeId(edge.id)
+    }, [])
     const handleEdgeLeave = useCallback(() => setHoveredEdgeId(null), [])
     const handlePaneClick = useCallback(() => {
-      if (graphView !== 'entities') return
+      if (graphView !== 'entities' || (replayRef.current && !replayDoneRef.current)) return
       setSelectedEdgeId(null)
       setSelectedNodeId(null)
       setStoryActiveKey(null)
@@ -1464,12 +1778,44 @@ const KnowledgeGraphInner = memo(
             </div>
 
             <div className="ml-auto flex flex-wrap items-center justify-end gap-1.5 min-w-0">
+            {/* Replay: guided walk-through of how the run (or, in Entities, the facts) came about */}
+            <button
+              type="button"
+              onClick={replayActiveHere ? () => stopReplay(true) : () => void startReplay()}
+              disabled={!replayActiveHere && (!canReplay || replayLoading)}
+              aria-pressed={replayActiveHere}
+              className={clsx(
+                'flex-shrink-0 inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[0.7rem] font-semibold transition-all disabled:opacity-40 disabled:cursor-not-allowed',
+                replayActiveHere
+                  ? 'bg-[var(--accent)] text-white shadow-[0_0_8px_var(--accent-glow)]'
+                  : 'glass-card text-[var(--text-secondary)] hover:text-[var(--accent)]',
+              )}
+              title={
+                replayActiveHere
+                  ? replayDone
+                    ? 'Close the replay (Esc)'
+                    : 'Stop the replay (Esc)'
+                  : !canReplay
+                    ? graphView === 'entities'
+                      ? 'No facts to replay yet'
+                      : runMessage?.isStreaming
+                        ? 'Available when the run has finished'
+                        : 'No run to replay yet'
+                    : graphView === 'entities'
+                      ? 'Replay the fact story: where each fact about the person came from (Space pause · ←/→ step · Esc stop)'
+                      : 'Replay how this run was handled, step by step — which model or tool was chosen and why (Space pause · ←/→ step · Esc stop)'
+              }
+            >
+              {replayActiveHere ? <X className="w-3 h-3" /> : <Play className="w-3 h-3" />}
+              {replayActiveHere ? (replayDone ? 'Close' : 'Stop') : replayLoading ? 'Loading…' : 'Replay'}
+            </button>
+
             {/* Reset knowledge store (Entities view) */}
             {graphView === 'entities' && (
               <button
                 type="button"
                 onClick={handleResetKnowledgeStore}
-                disabled={kgResetting}
+                disabled={kgResetting || replayRunningHere}
                 className="pill-btn-outline text-[0.7rem]"
                 title="Delete everything the knowledge store has learned (documents and conversations are kept)"
               >
@@ -1485,6 +1831,7 @@ const KnowledgeGraphInner = memo(
                     key={l}
                     type="button"
                     onClick={() => setNetLayout(l)}
+                    disabled={replayActiveHere}
                     aria-pressed={netLayout === l}
                     className={clsx(
                       'px-2 py-1 rounded-md text-[0.66rem] font-semibold capitalize transition-all',
@@ -1591,17 +1938,21 @@ const KnowledgeGraphInner = memo(
             <div className="text-[0.7rem] text-[var(--text-muted)] font-medium animate-pulse">Loading knowledge store…</div>
           )}
 
+          {replayNotice && (
+            <div role="status" className="text-[0.7rem] text-[var(--text-muted)] font-medium">{replayNotice}</div>
+          )}
+
           {scope === 'all' && loadingCount > 0 && (
             <div className="text-[0.7rem] text-[var(--text-muted)] font-medium">Loading {loadingCount} conversations…</div>
           )}
         </div>
 
         {story && (
-          <KgStoryStrip story={story} activeKey={storyActiveKey} onChip={handleStoryChip} />
+          <KgStoryStrip story={story} activeKey={replayRunningHere && replay?.view === 'entities' ? replayStoryKey : storyActiveKey} onChip={handleStoryChip} />
         )}
 
         {/* Graph */}
-        <div ref={setContainerNode} className={clsx('flex-1 relative min-h-0', graphView === 'pipeline' && 'kg-pipeline', graphView === 'entities' && 'kg-entities', graphView === 'entities' && selectedEdgeId && 'kg-panel-open')}>
+        <div ref={setContainerNode} className={clsx('flex-1 relative min-h-0', graphView === 'pipeline' && 'kg-pipeline', graphView === 'entities' && 'kg-entities', graphView === 'entities' && selectedEdgeId && 'kg-panel-open', replayRunningHere && 'kg-replaying')}>
           {!isEmpty && useRunView && runConvs ? (
             <KgRunView
               key={graphView}
@@ -1611,6 +1962,8 @@ const KnowledgeGraphInner = memo(
               onSelectMessage={onSelectMessage}
               isExpanded={isExpanded}
               widthBucket={Math.round(containerSize.width / 400)}
+              replay={replayRunningHere ? replayFocus : null}
+              replayOverview={replayActiveHere && replayDone}
             />
           ) : isEmpty ? (
             <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-[var(--text-muted)] p-8">
@@ -1644,6 +1997,7 @@ const KnowledgeGraphInner = memo(
             onNodeMouseEnter={handleNodeMouseEnter}
             onNodeMouseLeave={handleNodeMouseLeave}
             onMove={handleMove}
+            onInit={handleFlowInit}
             nodeTypes={nodeTypes}
             edgeTypes={graphView === 'network' ? edgeTypesNetwork : graphView === 'entities' ? edgeTypesEntities : edgeTypesLayers}
             fitView
@@ -1659,6 +2013,8 @@ const KnowledgeGraphInner = memo(
               padding={graphView === 'pipeline' ? 0.08 : graphView === 'entities' ? 0.12 : 0.15}
               minZoom={graphView === 'pipeline' ? 0.2 : graphView === 'entities' ? 0.55 : 0.4}
               fitKey={graphView === 'entities' ? `${entitiesData?.nodes.length ?? 0}|${entitiesData?.focalId ?? ''}|${selectedEdgeId ? 'panel' : ''}` : ''}
+              suspendedRef={replaySuspendFitRef}
+              holdUntilRef={replayFitHoldRef}
             />
 
             {graphView !== 'pipeline' && graphView !== 'entities' && (
@@ -1680,7 +2036,7 @@ const KnowledgeGraphInner = memo(
           </ReactFlow>
           )}
 
-          {!useRunView && !isEmpty && selectedNode && (
+          {!useRunView && !isEmpty && selectedNode && !replayRunningHere && (
             <DetailCard
               node={selectedNode}
               onClose={() => setSelectedNodeId(null)}
@@ -1689,7 +2045,7 @@ const KnowledgeGraphInner = memo(
             />
           )}
 
-          {graphView === 'entities' && !isEmpty && selectedEdgeId && (
+          {graphView === 'entities' && !isEmpty && selectedEdgeId && !replayRunningHere && (
             <KgEvidencePanel
               key={selectedEdgeId}
               relationId={selectedEdgeId}
@@ -1703,6 +2059,20 @@ const KnowledgeGraphInner = memo(
                 setSelectedEdgeId(null)
                 setSelectedNodeId(id)
               }}
+            />
+          )}
+
+          {replay && replayActiveHere && !isEmpty && (
+            <replay.mod.ReplayPlayer
+              key={`${replay.view}|${replay.runKey ?? 'facts'}`}
+              steps={replay.steps}
+              stage={containerEl}
+              anchorIds={replayAnchorIds}
+              runKey={replay.runKey}
+              label={replay.label}
+              onStep={handleReplayStep}
+              onExit={stopReplay}
+              onFinish={handleReplayFinish}
             />
           )}
         </div>
@@ -1736,6 +2106,7 @@ export function KnowledgeGraph({
         onSelectMessage={onSelectMessage}
         isExpanded={false}
         onExpand={() => setExpandedModal(true)}
+        isCovered={expandedModal}
       />
 
       {/* Expanded modal */}
