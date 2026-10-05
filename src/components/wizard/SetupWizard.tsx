@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ChevronRight, ChevronLeft, Sparkles } from 'lucide-react'
 import { useAppStore } from '@/store/appStore'
@@ -13,6 +13,7 @@ import { SummaryStep }  from './steps/SummaryStep'
 import { LayaStep }     from './steps/LayaStep'
 import type { LayaStatus } from '@/lib/idp'
 import { themes, applyTheme } from '@/themes'
+import { pickDefaultChatModel, type InstalledModelInfo, type ChatRecommendation } from '@/lib/defaultModel'
 
 const STEPS = [
   { id: 'welcome',     label: 'Welcome'      },
@@ -65,18 +66,36 @@ export function SetupWizard() {
   const [selectedTheme, setTheme]       = useState('underworld')
   const [mcpServers, setMcpServers]     = useState<string[]>(['fetch', 'duckduckgo-search', 'time', 'sequential-thinking'])
   const [ramGb, setRamGb]               = useState(0)
+  // Set once the user picks a main model in this wizard session, so the async
+  // default never overrides their choice.
+  const userPickedMainModel = useRef(false)
+
+  function selectMainModel(id: string) {
+    userPickedMainModel.current = true
+    setActiveModel(id)
+  }
 
   useEffect(() => {
+    let cancelled = false
     fetch('/api/setup/hardware').then(r => r.json()).then(hw => setRamGb(hw.ram_gb ?? 0)).catch(() => {})
-    // Pre-fill active model from Ollama
-    fetch('/api/models').then(r => r.json()).then(d => {
-      const models = (d.models ?? []) as Array<{name: string}>
-      const chat = models.find(m =>
-        !m.name.toLowerCase().includes('embed') &&
-        !m.name.toLowerCase().includes('orpheus')
-      )
-      if (chat) setActiveModel(chat.name)
-    }).catch(() => {})
+    // Pre-fill the main model: saved active_model if still installed, else the
+    // best installed chat recommendation, else the largest general chat model.
+    // Never blocks rendering; leaves the field empty when nothing qualifies.
+    const json = (url: string) => fetch(url).then(r => (r.ok ? r.json() : null)).catch(() => null)
+    Promise.all([
+      json('/api/models'),
+      json('/api/setup/optimized-models?min_tok_per_s=20'),
+      json('/api/models/roles'),
+    ]).then(([mods, opt, roles]) => {
+      if (cancelled || userPickedMainModel.current) return
+      const pick = pickDefaultChatModel({
+        installed:       (mods?.models ?? []) as InstalledModelInfo[],
+        recommendations: (opt?.categories?.chat ?? []) as ChatRecommendation[],
+        current:         (roles?.active_model ?? '') as string,
+      })
+      if (pick) setActiveModel(prev => (userPickedMainModel.current || prev ? prev : pick))
+    })
+    return () => { cancelled = true }
   }, [])
 
   function goNext() {
@@ -232,7 +251,7 @@ export function SetupWizard() {
                   subtitle="The primary model Persephone uses for conversation and reasoning."
                   category="chat"
                   selectedId={activeModel}
-                  onSelect={setActiveModel}
+                  onSelect={selectMainModel}
                   ramGb={ramGb}
                 />
               )}

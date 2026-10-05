@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import { Search, RefreshCw, Filter, Zap } from 'lucide-react'
 import { ModelCard, type CatalogModel } from '../ModelCard'
+import { isGeneralChatModel, sameModelId, type InstalledModelInfo } from '@/lib/defaultModel'
 
 interface ModelStepProps {
   title: string
@@ -25,6 +26,7 @@ interface HardwareProfile {
 export function ModelStep({ title, subtitle, category, selectedId, onSelect, ramGb = 0 }: ModelStepProps) {
   const [models, setModels]     = useState<CatalogModel[]>([])
   const [installedModels, setInstalledModels] = useState<string[]>([])
+  const [installedInfo, setInstalledInfo] = useState<Record<string, InstalledModelInfo>>({})
   const [profile, setProfile]   = useState<HardwareProfile | null>(null)
   const [filter, setFilter]     = useState('')
   const [hideSlow, setHideSlow] = useState(true)  // default: only show models meeting the 20 tok/s target
@@ -45,6 +47,9 @@ export function ModelStep({ title, subtitle, category, selectedId, onSelect, ram
       const mods = await modRes.json()
       const installed: string[] = (mods.models ?? []).map((m: any) => m.name)
       setInstalledModels(installed)
+      const info: Record<string, InstalledModelInfo> = {}
+      for (const m of (mods.models ?? []) as InstalledModelInfo[]) if (m?.name) info[m.name] = m
+      setInstalledInfo(info)
       setProfile(opt.profile ?? null)
       setTier(opt.profile?.tier ?? '')
 
@@ -53,7 +58,9 @@ export function ModelStep({ title, subtitle, category, selectedId, onSelect, ram
       const raw = (opt.categories?.[category] ?? []) as any[]
       const list: CatalogModel[] = raw.map(m => ({
         ...m,
-        installed: installed.some(id => id === m.id || id.startsWith(m.id.split(':')[0])),
+        // Exact name match (missing tag = ':latest'), never a family prefix:
+        // llama3.2-vision must not mark llama3.2:3b as installed.
+        installed: installed.some(id => sameModelId(id, m.id)),
       }))
       setModels(list)
     } catch {
@@ -66,12 +73,12 @@ export function ModelStep({ title, subtitle, category, selectedId, onSelect, ram
   useEffect(() => { fetchData() /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [category, minTokPerS])
 
   // Also show currently installed Ollama models that match the category (but aren't in catalog)
-  // For chat: show all installed non-embed, non-orpheus models
+  // For chat: only general chat models — no OCR, embedding, TTS/speech, code
+  // specialists, vision-only families or tiny judge-size models.
   const installedNotInCatalog = installedModels.filter(id => {
     if (category !== 'chat') return false
-    const lower = id.toLowerCase()
-    return !lower.includes('embed') && !lower.includes('orpheus') &&
-           !models.some(m => m.id === id || id.startsWith(m.id.split(':')[0]))
+    return isGeneralChatModel(id, installedInfo[id]) &&
+           !models.some(m => sameModelId(id, m.id))
   })
 
   const filtered = models.filter(m => {
@@ -208,7 +215,7 @@ export function ModelStep({ title, subtitle, category, selectedId, onSelect, ram
             <ModelCard
               key={model.id}
               model={model}
-              selected={selectedId === model.id}
+              selected={sameModelId(selectedId, model.id)}
               onSelect={() => onSelect(model.id)}
               ramGb={ramGb}
             />
