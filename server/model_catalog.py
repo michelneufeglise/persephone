@@ -12,7 +12,8 @@ from __future__ import annotations
 #   "params":       Parameter count label     (e.g. "7B")
 #   "ram_min_gb":   Minimum RAM to run        (approximate)
 #   "quant":        Default quantization used by Ollama tag
-#   "category":     "chat" | "vision" | "code" | "embed"
+#   "category":     one of CATEGORIES (chat, vision, code, embed, ocr, docs,
+#                   handwriting, signature, tables, judge)
 #   "description":  One-line description
 #   "tags":         list of trait tags
 #   "hf_url":       HuggingFace model URL (for reference)
@@ -734,10 +735,63 @@ MODELS: list[dict] = [
         "hf_url": "https://huggingface.co/BAAI/bge-m3",
         "size_gb": 0.58, "tiers": ["ultra", "high", "mid", "low", "minimal"],
     },
+
+    # ── Signature verification — vision model that locates the signature ──
+    # The similarity score itself comes from the local deterministic engine
+    # (doc_signature / signature engine); this model only picks which
+    # handwritten line is the signature and explains the comparison. It must
+    # be a general vision-language model — OCR-only models can't compare.
+    # Kept at the END of MODELS: ollama_library dedups by first occurrence,
+    # so these role-specific labels must not shadow the generic entries.
+    {
+        "id": "gemma4:12b", "name": "Gemma 4 12B (Signature)", "family": "Google",
+        "params": "12B", "ram_min_gb": 8, "quant": "Q4_K_M",
+        "category": "signature",
+        "description": "Recommended — reliably finds the signature line and writes clear, grounded similarity / difference notes.",
+        "tags": ["signature", "vision", "recommended", "explanations"],
+        "hf_url": "https://huggingface.co/google/gemma-4-12b-it",
+        "size_gb": 7.6, "tiers": ["ultra", "high", "mid"],
+    },
+    {
+        "id": "qwen2.5vl:7b", "name": "Qwen 2.5 VL 7B (Signature)", "family": "Alibaba / Qwen",
+        "params": "7B", "ram_min_gb": 5, "quant": "Q4_K_M",
+        "category": "signature",
+        "description": "Strong layout grounding — good at telling the signature apart from printed names and dates.",
+        "tags": ["signature", "vision", "layout"],
+        "hf_url": "https://huggingface.co/Qwen/Qwen2.5-VL-7B-Instruct",
+        "size_gb": 5.5, "tiers": ["ultra", "high", "mid", "low"],
+    },
+    {
+        "id": "minicpm-v:latest", "name": "MiniCPM-V (Signature)", "family": "OpenBMB",
+        "params": "8B", "ram_min_gb": 6, "quant": "Q4",
+        "category": "signature",
+        "description": "Compact vision model — a solid choice on 16 GB machines.",
+        "tags": ["signature", "vision", "efficient"],
+        "hf_url": "https://huggingface.co/openbmb/MiniCPM-V-2_6",
+        "size_gb": 5.5, "tiers": ["ultra", "high", "mid", "low"],
+    },
+    {
+        "id": "llama3.2-vision:11b", "name": "Llama 3.2 Vision 11B (Signature)", "family": "Meta",
+        "params": "11B", "ram_min_gb": 8, "quant": "Q4_K_M",
+        "category": "signature",
+        "description": "Careful, verbose comparisons of stroke shape and letter forms.",
+        "tags": ["signature", "vision", "detailed"],
+        "hf_url": "https://huggingface.co/meta-llama/Llama-3.2-11B-Vision-Instruct",
+        "size_gb": 7.9, "tiers": ["ultra", "high", "mid"],
+    },
+    {
+        "id": "qwen2.5vl:32b", "name": "Qwen 2.5 VL 32B (Signature)", "family": "Alibaba / Qwen",
+        "params": "32B", "ram_min_gb": 20, "quant": "Q4_K_M",
+        "category": "signature",
+        "description": "Highest-quality explanations for difficult scans — slower, needs lots of RAM.",
+        "tags": ["signature", "vision", "high-quality", "large"],
+        "hf_url": "https://huggingface.co/Qwen/Qwen2.5-VL-32B-Instruct",
+        "size_gb": 20.0, "tiers": ["ultra", "high"],
+    },
 ]
 
 
-CATEGORIES = ("chat", "vision", "code", "embed", "ocr", "docs", "handwriting", "tables", "judge")
+CATEGORIES = ("chat", "vision", "code", "embed", "ocr", "docs", "handwriting", "signature", "tables", "judge")
 
 
 def get_recommendations(tier: str, installed_ids: set[str]) -> dict:

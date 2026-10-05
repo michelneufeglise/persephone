@@ -251,7 +251,26 @@ export interface RouteResult {
 export interface LayaStatus {
   available: boolean
   loaded: boolean
-  device?: string
+  device?: string | null
+  /** The `laya` Python package is importable (weights may still be missing). */
+  package_installed?: boolean
+  /** A one-time download (started from the wizard / Settings) is running. */
+  downloading?: boolean
+  /** Last download error, if the most recent attempt failed. */
+  error?: string | null
+  /** Bytes received so far while downloading (HF cache, incl. partial files). */
+  downloaded_bytes?: number | null
+  /** Bytes on disk when installed, else the approximate download size. */
+  size_bytes?: number | null
+  size_is_estimate?: boolean
+  /** Device Laya runs (or would run) on: 'mps' | 'cpu'. */
+  target_device?: string | null
+  params?: string
+  repo_id?: string
+}
+
+export interface LayaDownloadResult extends LayaStatus {
+  state: 'done' | 'running' | 'started' | 'unavailable'
 }
 
 export async function ingestText(text: string, title?: string, kind?: 'email' | 'text'): Promise<IDPDocument | null> {
@@ -284,5 +303,13 @@ export async function routeDocument(docId: string, opts?: { force?: boolean; ove
 export async function layaStatus(): Promise<LayaStatus> {
   const r = await fetch('/api/idp/route/status')
   if (!r.ok) return { available: false, loaded: false }
+  return await r.json()
+}
+
+/** Start the one-time Laya download from Hugging Face (idempotent; only ever
+ *  called from an explicit user click). Poll layaStatus() for progress. */
+export async function startLayaDownload(): Promise<LayaDownloadResult> {
+  const r = await fetch('/api/idp/route/download', { method: 'POST' })
+  if (!r.ok) throw new Error(`Download request failed (HTTP ${r.status})`)
   return await r.json()
 }

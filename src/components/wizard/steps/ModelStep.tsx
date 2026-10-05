@@ -6,7 +6,7 @@ import { ModelCard, type CatalogModel } from '../ModelCard'
 interface ModelStepProps {
   title: string
   subtitle: string
-  category: 'chat' | 'vision' | 'code' | 'embed' | 'ocr' | 'docs' | 'handwriting' | 'tables' | 'judge'
+  category: 'chat' | 'vision' | 'code' | 'embed' | 'ocr' | 'docs' | 'handwriting' | 'signature' | 'tables' | 'judge'
   selectedId: string
   onSelect: (id: string) => void
   ramGb?: number

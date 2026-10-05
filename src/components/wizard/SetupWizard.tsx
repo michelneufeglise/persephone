@@ -10,6 +10,8 @@ import { TTSStep }      from './steps/TTSStep'
 import { MCPStep }      from './steps/MCPStep'
 import { OllamaStep }   from './steps/OllamaStep'
 import { SummaryStep }  from './steps/SummaryStep'
+import { LayaStep }     from './steps/LayaStep'
+import type { LayaStatus } from '@/lib/idp'
 import { themes, applyTheme } from '@/themes'
 
 const STEPS = [
@@ -18,11 +20,13 @@ const STEPS = [
   { id: 'account',     label: 'Account'      },
   { id: 'main-model',  label: 'Main Model'   },
   { id: 'judge',       label: 'Auto-router'  },
+  { id: 'laya',        label: 'Decision model' },
   { id: 'vision',      label: 'Vision'       },
   { id: 'code',        label: 'Code'         },
   { id: 'ocr',         label: 'OCR'          },
   { id: 'docs',        label: 'Documents'    },
   { id: 'handwriting', label: 'Handwriting'  },
+  { id: 'signature',   label: 'Signature verification' },
   { id: 'tables',      label: 'Spreadsheets' },
   { id: 'embed',       label: 'Embeddings'   },
   { id: 'multidoc',    label: 'Multi-Doc'    },
@@ -30,7 +34,9 @@ const STEPS = [
   { id: 'mcp',         label: 'Tools'        },
   { id: 'theme',       label: 'Theme'        },
   { id: 'summary',     label: 'Launch'       },
-]
+] as const
+
+type StepId = (typeof STEPS)[number]['id']
 
 export function SetupWizard() {
   const { setWizardCompleted, setAccount, updateSettings, updateTTSSettings } = useAppStore()
@@ -48,9 +54,12 @@ export function SetupWizard() {
   const [ocrModel, setOcrModel]                 = useState('')
   const [docsModel, setDocsModel]               = useState('')
   const [handwritingModel, setHandwritingModel] = useState('')
+  const [signatureModel, setSignatureModel]     = useState('')
   const [tablesModel, setTablesModel]           = useState('')
   const [multidocModel, setMultidocModel]       = useState('')
   const [judgeModel, setJudgeModel]             = useState('qwen2.5:1.5b')
+  const [layaStatus, setLayaStatus]             = useState<LayaStatus | null>(null)
+  const [layaAsRouter, setLayaAsRouter]         = useState(false)
   const [ttsVoice, setTtsVoice]         = useState('af_heart')
   const [ttsSpeed, setTtsSpeed]         = useState(1.0)
   const [selectedTheme, setTheme]       = useState('underworld')
@@ -80,6 +89,10 @@ export function SetupWizard() {
     setStep(s => Math.max(s - 1, 0))
   }
 
+  // Laya only replaces the chat judge when it is installed AND the user
+  // opted in; the LLM judge from the Auto-router step stays its fallback.
+  const useLayaRouter = layaAsRouter && !!layaStatus?.available
+
   async function handleLaunch() {
     setSaving(true)
     try {
@@ -97,9 +110,11 @@ export function SetupWizard() {
           ocr_model:         ocrModel,
           docs_model:        docsModel,
           handwriting_model: handwritingModel,
+          signature_model:   signatureModel,
           tables_model:      tablesModel,
           multidoc_model:    multidocModel,
-          judge_model:       judgeModel,
+          judge_model:       useLayaRouter ? 'laya-builtin' : judgeModel,
+          judge_fallback_model: judgeModel,
           tts_voice:         ttsVoice,
           tts_speed:         ttsSpeed,
           theme:             selectedTheme,
@@ -123,6 +138,7 @@ export function SetupWizard() {
     }
   }
 
+  const current: StepId = STEPS[step].id
   const isLast = step === STEPS.length - 1
   const isFirst = step === 0
   const progress = ((step) / (STEPS.length - 1)) * 100
@@ -200,9 +216,9 @@ export function SetupWizard() {
               transition={{ duration: 0.25, ease: 'easeInOut' }}
               className="w-full max-w-2xl"
             >
-              {step === 0 && <WelcomeStep />}
-              {step === 1 && <OllamaStep onReady={() => { /* keep user in control of advancing */ }} />}
-              {step === 2 && (
+              {current === 'welcome' && <WelcomeStep />}
+              {current === 'ollama' && <OllamaStep onReady={() => { /* keep user in control of advancing */ }} />}
+              {current === 'account' && (
                 <AccountStep
                   name={accountName}
                   color={accountColor}
@@ -210,7 +226,7 @@ export function SetupWizard() {
                   onColorChange={setAccountColor}
                 />
               )}
-              {step === 3 && (
+              {current === 'main-model' && (
                 <ModelStep
                   title="Main Chat Model"
                   subtitle="The primary model Persephone uses for conversation and reasoning."
@@ -220,7 +236,7 @@ export function SetupWizard() {
                   ramGb={ramGb}
                 />
               )}
-              {step === 4 && (
+              {current === 'judge' && (
                 <ModelStep
                   title="Auto-router Judge"
                   subtitle="A tiny model that classifies each message so the router picks the right chat model. Runs in ~100ms, kept hot in memory. The smaller the better — accuracy vs. latency."
@@ -230,7 +246,16 @@ export function SetupWizard() {
                   ramGb={ramGb}
                 />
               )}
-              {step === 5 && (
+              {current === 'laya' && (
+                <LayaStep
+                  status={layaStatus}
+                  onStatus={setLayaStatus}
+                  useAsRouter={layaAsRouter}
+                  onUseAsRouterChange={setLayaAsRouter}
+                  fallbackJudge={judgeModel}
+                />
+              )}
+              {current === 'vision' && (
                 <ModelStep
                   title="Vision Model"
                   subtitle="For analysing images, screenshots, and documents. Optional."
@@ -240,7 +265,7 @@ export function SetupWizard() {
                   ramGb={ramGb}
                 />
               )}
-              {step === 6 && (
+              {current === 'code' && (
                 <ModelStep
                   title="Code Model"
                   subtitle="Specialised for programming assistance. Optional — your main model can also code."
@@ -250,7 +275,7 @@ export function SetupWizard() {
                   ramGb={ramGb}
                 />
               )}
-              {step === 7 && (
+              {current === 'ocr' && (
                 <ModelStep
                   title="OCR — Text Extraction"
                   subtitle="Extract text from scans, screenshots, photos of documents, and natural images. Optional."
@@ -260,7 +285,7 @@ export function SetupWizard() {
                   ramGb={ramGb}
                 />
               )}
-              {step === 8 && (
+              {current === 'docs' && (
                 <ModelStep
                   title="Documents & PDF"
                   subtitle="Read, query, and reason about PDFs, contracts, invoices, and multi-page documents. Optional."
@@ -270,7 +295,7 @@ export function SetupWizard() {
                   ramGb={ramGb}
                 />
               )}
-              {step === 9 && (
+              {current === 'handwriting' && (
                 <ModelStep
                   title="Handwriting"
                   subtitle="Read handwritten notes, cursive, signatures, and historical scripts. Optional."
@@ -280,7 +305,17 @@ export function SetupWizard() {
                   ramGb={ramGb}
                 />
               )}
-              {step === 10 && (
+              {current === 'signature' && (
+                <ModelStep
+                  title="Signature verification"
+                  subtitle="Compares a signature with reference signatures in the Documents panel. A local engine computes the similarity score; this vision model finds the signature on the page and explains the similarities and differences. Pick a vision-capable model, not an OCR-only one. If you skip this, the Handwriting model is used, then the Vision model."
+                  category="signature"
+                  selectedId={signatureModel}
+                  onSelect={setSignatureModel}
+                  ramGb={ramGb}
+                />
+              )}
+              {current === 'tables' && (
                 <ModelStep
                   title="Spreadsheets & Tables"
                   subtitle="Extract tables from PDFs, write Excel formulas, automate spreadsheet workflows. Optional."
@@ -290,7 +325,7 @@ export function SetupWizard() {
                   ramGb={ramGb}
                 />
               )}
-              {step === 11 && (
+              {current === 'embed' && (
                 <ModelStep
                   title="Embedding Model"
                   subtitle="Powers semantic search, document RAG, and long-term memory. mxbai-embed-large is a solid default."
@@ -300,7 +335,7 @@ export function SetupWizard() {
                   ramGb={ramGb}
                 />
               )}
-              {step === 12 && (
+              {current === 'multidoc' && (
                 <ModelStep
                   title="Multi-Document Query"
                   subtitle="Pick the model that answers questions across several selected documents at once. A capable long-context chat model works best."
@@ -310,7 +345,7 @@ export function SetupWizard() {
                   ramGb={ramGb}
                 />
               )}
-              {step === 13 && (
+              {current === 'tts' && (
                 <TTSStep
                   voice={ttsVoice}
                   speed={ttsSpeed}
@@ -318,18 +353,23 @@ export function SetupWizard() {
                   onSpeedChange={setTtsSpeed}
                 />
               )}
-              {step === 14 && (
+              {current === 'mcp' && (
                 <MCPStep selected={mcpServers} onChange={setMcpServers} />
               )}
-              {step === 15 && (
+              {current === 'theme' && (
                 <ThemeStep selected={selectedTheme} onSelect={t => { setTheme(t); applyTheme(t) }} />
               )}
-              {step === 16 && (
+              {current === 'summary' && (
                 <SummaryStep config={{
                   accountName, accountColor,
                   activeModel, visionModel, codeModel, embedModel,
-                  ocrModel, docsModel, handwritingModel, tablesModel,
+                  ocrModel, docsModel, handwritingModel, signatureModel, tablesModel,
                   judgeModel,
+                  laya: {
+                    installed: !!layaStatus?.available,
+                    known: layaStatus !== null,
+                    usedAsRouter: useLayaRouter,
+                  },
                   ttsVoice, ttsSpeed, theme: selectedTheme,
                   mcpCount: mcpServers.length,
                 }} />

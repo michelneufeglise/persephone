@@ -142,9 +142,12 @@ def ensure_downloaded() -> bool:
     Catches and logs errors; returns False on failure but never raises.
 
     Returns True on success (or if already cached), False on failure.
+    The failure reason is kept in `_last_download_error` for the UI.
     """
+    global _last_download_error
     if is_available():
         return True
+    _last_download_error = None
 
     try:
         from huggingface_hub import snapshot_download
@@ -164,11 +167,180 @@ def ensure_downloaded() -> bool:
         log.info("✓ Laya English model cached successfully.")
         return True
     except Exception as exc:
+        _last_download_error = f"{type(exc).__name__}: {exc}"[:400]
         log.error(
             f"Failed to download Laya English model: {exc}\n"
             f"  Ensure internet access and laya is installed: pip install laya>=0.3.20"
         )
         return False
+
+
+# ── One-click download (setup wizard / Settings → Models) ───────────────────
+# The wizard offers a "Download Laya" button. The download runs in a daemon
+# thread so the HTTP request returns at once; the UI polls download_status().
+# Nothing is fetched unless the user clicks — start_download() is the only
+# entry point and it is only called from POST /api/idp/route/download.
+
+# Approximate one-time download for the English weights (model.safetensors is
+# ~843 MB in bf16 ≈ 421M parameters, plus a few MB of tokenizer/config files).
+LAYA_APPROX_DOWNLOAD_BYTES = 846_000_000
+LAYA_APPROX_PARAMS = "~421M"
+
+_last_download_error: str | None = None
+_download_lock = threading.Lock()
+_download_thread: threading.Thread | None = None
+_download_error: str | None = None
+_cached_size_bytes: int | None = None
+
+
+def package_installed() -> bool:
+    """True when the `laya` Python package can be imported."""
+    try:
+        import laya  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+
+def is_downloading() -> bool:
+    t = _download_thread
+    return t is not None and t.is_alive()
+
+
+def _target_device() -> str:
+    """The device Laya would run on (mirrors _get_or_create_router's choice)
+    without importing torch when it is not already loaded."""
+    import sys as _sys
+    torch = _sys.modules.get("torch")
+    if torch is not None:
+        try:
+            return "mps" if torch.backends.mps.is_available() else "cpu"
+        except Exception:
+            return "cpu"
+    import platform
+    if _sys.platform == "darwin" and platform.machine() == "arm64":
+        return "mps"
+    return "cpu"
+
+
+def cache_size_bytes() -> int | None:
+    """Size of the cached Laya repo on disk (cached once found), else None."""
+    global _cached_size_bytes
+    if _cached_size_bytes is not None:
+        return _cached_size_bytes
+    try:
+        from huggingface_hub import scan_cache_dir
+        for repo in scan_cache_dir().repos:
+            if repo.repo_id == LAYA_REPO_ID and repo.size_on_disk:
+                _cached_size_bytes = int(repo.size_on_disk)
+                return _cached_size_bytes
+    except Exception:
+        pass
+    return None
+
+
+def downloaded_bytes() -> int:
+    """Bytes of the Laya repo currently in the HF cache, counting partial
+    `*.incomplete` blobs — a cheap progress signal while downloading."""
+    try:
+        from huggingface_hub import constants
+        import os
+        blobs = os.path.join(
+            constants.HF_HUB_CACHE, "models--" + LAYA_REPO_ID.replace("/", "--"), "blobs",
+        )
+        total = 0
+        with os.scandir(blobs) as it:
+            for e in it:
+                try:
+                    if e.is_file(follow_symlinks=False):
+                        total += e.stat(follow_symlinks=False).st_size
+                except OSError:
+                    pass
+        return total
+    except Exception:
+        return 0
+
+
+def _download_worker() -> None:
+    global _download_error
+    try:
+        ok = ensure_downloaded()
+        if ok and not is_available():
+            ok = False
+            _download_error = "Download finished but the weights were not found in the Hugging Face cache."
+        elif not ok:
+            _download_error = _last_download_error or "Download failed — check the network connection and retry."
+    except Exception as exc:  # ensure_downloaded never raises, but be safe
+        _download_error = f"{type(exc).__name__}: {exc}"[:400]
+
+
+def start_download() -> dict[str, Any]:
+    """Start the one-time Laya download in a background thread (idempotent).
+
+    Returns {"state": "done" | "running" | "started" | "unavailable", ...status}.
+    - done:        weights already cached — nothing to do
+    - running:     a download is already in progress
+    - started:     a new background download was started
+    - unavailable: the laya package is not installed (download would be useless)
+    """
+    global _download_thread, _download_error
+    with _download_lock:
+        if is_available():
+            return {"state": "done", **download_status()}
+        if is_downloading():
+            return {"state": "running", **download_status()}
+        if not package_installed():
+            _download_error = "The laya Python package is not installed (pip install laya>=0.3.20)."
+            return {"state": "unavailable", **download_status()}
+        _download_error = None
+        _download_thread = threading.Thread(
+            target=_download_worker, name="laya-download", daemon=True,
+        )
+        _download_thread.start()
+        return {"state": "started", **download_status()}
+
+
+def download_status() -> dict[str, Any]:
+    """status() plus download/progress info for the setup wizard and Settings."""
+    base = status()
+    available = bool(base.get("available"))
+    downloading = is_downloading()
+    size = cache_size_bytes() if available else None
+    return {
+        **base,
+        "package_installed": available or package_installed(),
+        "downloading": downloading,
+        "error": None if (available or downloading) else _download_error,
+        "downloaded_bytes": downloaded_bytes() if downloading else None,
+        "size_bytes": size if size else LAYA_APPROX_DOWNLOAD_BYTES,
+        "size_is_estimate": not size,
+        "target_device": base.get("device") or _target_device(),
+        "params": LAYA_APPROX_PARAMS,
+        "repo_id": LAYA_REPO_ID,
+    }
+
+
+def _local_snapshot_dir() -> str | None:
+    """Directory of the cached English Laya snapshot, resolved from the local
+    HF cache only (local_files_only=True — never touches the network), or
+    None when it can't be resolved. Used so loading the router stays offline;
+    start_download()/ensure_downloaded() are unaffected and still download."""
+    try:
+        import os
+        from huggingface_hub import snapshot_download
+        path = snapshot_download(
+            repo_id=LAYA_REPO_ID,
+            allow_patterns=LAYA_ENGLISH_PATTERNS,
+            local_files_only=True,
+        )
+        if path and all(
+            os.path.isfile(os.path.join(path, f))
+            for f in ("rl_agent_config.json", "model.safetensors")
+        ):
+            return str(path)
+    except Exception as exc:
+        log.debug(f"Laya local snapshot not resolvable offline: {exc}")
+    return None
 
 
 def _unload_router() -> None:
@@ -264,7 +436,13 @@ def _get_or_create_router_locked() -> Any | None:
         # standalone_repos=True uses separate HF repos (convaiinnovations/laya, not branches)
         # preload=False defers model loading until first predict() call, avoiding attempts to
         # load multilingual/typed-decisions models that aren't in our English-only cache
+        # Local-first: point "english" at the cached snapshot directory so the
+        # first predict() loads from disk. Given a hub id, laya calls
+        # snapshot_download() which queries huggingface.co for the latest
+        # revision even when the weights are already cached.
+        local_dir = _local_snapshot_dir()
         _router_instance = Router(
+            models={"english": local_dir} if local_dir else None,
             standalone_repos=True,
             device=device,
             preload=False,

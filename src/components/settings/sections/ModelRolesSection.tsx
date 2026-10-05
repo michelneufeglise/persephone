@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/Button'
 import { useAppStore } from '@/store/appStore'
 import { fetchModels } from '@/lib/ollama'
 import { layaStatus } from '@/lib/idp'
+import { LayaStatusCard } from '@/components/laya/LayaStatusCard'
 import { clsx } from 'clsx'
 
 const ROLES = [
@@ -85,11 +86,16 @@ export function ModelRolesSection() {
   const [savingKey, setSavingKey] = useState<RoleKey | null>(null)
   const [error, setError]         = useState('')
   const [layaAvailable, setLayaAvailable] = useState(false)
+  // LLM judge behind Laya (used when Laya is unsure / for LLM-only tasks).
+  const [judgeFallback, setJudgeFallback] = useState('')
+  const [savingFallback, setSavingFallback] = useState(false)
 
   const loadRoles = useCallback(async () => {
     const r = await fetch('/api/models/roles')
     if (!r.ok) throw new Error(`HTTP ${r.status}`)
-    setRoles({ ...EMPTY_ROLES, ...(await r.json()) })
+    const data = await r.json()
+    setRoles({ ...EMPTY_ROLES, ...data })
+    setJudgeFallback(data.judge_fallback_model ?? '')
   }, [])
 
   const loadLayaStatus = useCallback(async () => {
@@ -162,6 +168,8 @@ export function ModelRolesSection() {
       if (!r.ok) throw new Error(`HTTP ${r.status}`)
       // Keep the live chat header in sync with the main-chat assignment.
       if (key === 'active_model' && value) updateSettings({ activeModel: value })
+      // The server keeps judge_fallback_model = last LLM judge picked; re-read it.
+      if (key === 'judge_model') await loadRoles().catch(() => {})
     } catch (exc) {
       setError(exc instanceof Error ? exc.message : String(exc))
       setRoles(prev)
@@ -169,6 +177,33 @@ export function ModelRolesSection() {
       setSavingKey(null)
     }
   }
+
+  async function assignFallback(value: string) {
+    const prev = judgeFallback
+    setJudgeFallback(value)
+    setSavingFallback(true)
+    setError('')
+    try {
+      const r = await fetch('/api/models/roles', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ judge_fallback_model: value }),
+      })
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    } catch (exc) {
+      setError(exc instanceof Error ? exc.message : String(exc))
+      setJudgeFallback(prev)
+    } finally {
+      setSavingFallback(false)
+    }
+  }
+
+  const fallbackOptions = [
+    { value: '', label: 'None — first installed small model' },
+    ...(judgeFallback && !installedNames.includes(judgeFallback)
+      ? [{ value: judgeFallback, label: `${judgeFallback} (not installed)` }] : []),
+    ...installedNames.map(n => ({ value: n, label: n })),
+  ]
 
   return (
     <div className="space-y-6 max-w-2xl">
@@ -229,12 +264,24 @@ export function ModelRolesSection() {
                 placeholder={installedNames.length === 0 ? 'No models installed' : undefined}
               />
               {role.key === 'judge_model' && roles[role.key] === 'laya-builtin' && (
-                <Panel className="px-3 py-2.5 bg-blue-950/30 border border-blue-500/20 flex gap-2 items-start">
-                  <AlertCircle className="w-3.5 h-3.5 text-blue-400 flex-shrink-0 mt-0.5" />
-                  <p className="text-xs text-blue-300 leading-relaxed">
-                    Fast (~0.2 s), no Ollama model needed, ~1.5 GB RAM while active. Early tests showed limited accuracy on chat routing, so it only decides when confident and otherwise falls back to the LLM judge.
-                  </p>
-                </Panel>
+                <>
+                  <Panel className="px-3 py-2.5 bg-blue-950/30 border border-blue-500/20 flex gap-2 items-start">
+                    <AlertCircle className="w-3.5 h-3.5 text-blue-400 flex-shrink-0 mt-0.5" />
+                    <p className="text-xs text-blue-300 leading-relaxed">
+                      Fast (~0.2 s), no Ollama model needed, ~1.5 GB RAM while active. Early tests showed limited accuracy on chat routing, so it only decides when confident and otherwise falls back to the LLM judge below.
+                    </p>
+                  </Panel>
+                  <div className="space-y-1.5" data-testid="judge-fallback">
+                    <div className="flex items-center gap-2 text-xs text-[var(--text-secondary)]">
+                      Fallback LLM judge
+                      {savingFallback && <Loader2 className="w-3 h-3 text-[var(--accent)] animate-spin" />}
+                    </div>
+                    <Select value={judgeFallback} onChange={assignFallback} options={fallbackOptions} />
+                  </div>
+                </>
+              )}
+              {role.key === 'judge_model' && (
+                <LayaStatusCard compact onStatus={s => setLayaAvailable(s.available)} />
               )}
             </Panel>
           ))}

@@ -48,24 +48,34 @@ Persephone wraps the speed of local Ollama models in a thoughtful, beautifully d
 
 ### The setup wizard
 
-A 15-step guided onboarding that:
+A 19-step guided onboarding that:
 1. Detects your hardware (RAM, CPU, GPU, performance tier)
 2. Installs / starts Ollama if missing
 3. Recommends the right models for *your* machine
-4. Lets you pick: main chat model, **auto-router judge**, vision, code, OCR, document AI, handwriting, tables, voice, MCP tools, and theme
-5. Pulls every selected model with a live progress bar
-6. Ends with a summary you can review before launching
+4. Lets you pick: main chat model, **auto-router judge**, vision, code, OCR, document AI, handwriting, **signature verification**, tables, embeddings, multi-document query, voice, MCP tools, and theme
+5. Sets up the **Laya decision model** (optional one-click download, see below)
+6. Pulls every selected model with a live progress bar
+7. Ends with a summary you can review before launching
+
+Step order: Welcome · Ollama · Account · Main model · Auto-router · **Decision model** · Vision · Code · OCR · Documents · Handwriting · **Signature verification** · Spreadsheets · Embeddings · Multi-Doc · Voice · Tools · Theme · Launch.
+
+- **Decision model (Laya).** Explains what [Laya](https://huggingface.co/convaiinnovations/laya) does: a local, non-generative classifier (~421M parameters, ModernBERT-large encoder, English only) that decides the question type, each file's role and add-on steps such as a signature check or web lookup in the Documents panel. A status card shows *Installed · ready*, *Not downloaded* or *Unavailable — laya package missing*, with the device (Apple GPU / MPS or CPU) and size (~846 MB). **Download Laya** fetches the English weights once from Hugging Face. Nothing is downloaded until you click it, and progress, errors and retry are shown in place. Skipping is fine, because keyword rules take over. An optional toggle, *Also use Laya as the chat auto-router (experimental)*, is enabled once Laya is installed. The LLM judge picked in the previous step stays as Laya's **fallback** (`judge_fallback_model`): it decides whenever Laya is unsure and does the LLM-only jobs (fact extraction, delegate categories, skill selection, spoken summaries).
+- **Signature verification.** Picks the vision model (`signature_model`) that finds the signature on the page and explains the comparison. The score itself comes from the local signature engine. Recommendations: `gemma4:12b`, `qwen2.5vl:7b`, `minicpm-v`, `llama3.2-vision:11b`, `qwen2.5vl:32b`. If you skip it, the Handwriting model and then the Vision model are used.
+
+The same Laya card, with its Download button, also appears in **Settings → Models** under the Auto-router role. Choosing *Laya (built-in · experimental)* there adds a *Fallback LLM judge* selector.
 
 |   |   |
 |---|---|
 | ![Welcome](docs/screenshots/01-wizard-welcome.png) | ![Ollama check](docs/screenshots/02-wizard-ollama.png) |
 | **1. Welcome** — Hardware autodetection with performance tier (Ultra / High / Mid / Low / Minimal). | **2. Ollama** — Verifies installation, helps you install if missing, starts the service. |
 | ![Main model](docs/screenshots/03-wizard-main-model.png) | ![Auto-router judge](docs/screenshots/04-wizard-judge.png) |
-| **3. Main chat model** — Tier-filtered catalog. Cards show size, RAM, capabilities, one-click pull. | **4. Auto-router judge** — Pick a tiny classifier (qwen2.5:0.5b / 1.5b / llama3.2:3b) that decides which model handles each turn. |
+| **4. Main chat model** — Tier-filtered catalog. Cards show size, RAM, capabilities, one-click pull. | **5. Auto-router judge** — Pick a tiny classifier (qwen2.5:0.5b / 1.5b / llama3.2:3b) that decides which model handles each turn. |
+| ![Decision model](docs/screenshots/21-wizard-decision-model.png) | ![Signature verification](docs/screenshots/22-wizard-signature.png) |
+| **6. Decision model** — Laya status card with a one-click Hugging Face download (only on click), plus the experimental chat auto-router toggle. | **12. Signature verification** — Vision model that locates the signature and explains the local engine's score. Skipped → Handwriting → Vision. |
 | ![MCP](docs/screenshots/05-wizard-mcp.png) | ![Theme](docs/screenshots/06-wizard-theme.png) |
-| **12. MCP tools** — Curated catalog of free MCP servers. Click to enable; servers spawn automatically. | **13. Theme** — Choose from five Liquid Obsidian palettes. |
+| **17. MCP tools** — Curated catalog of free MCP servers. Click to enable; servers spawn automatically. | **18. Theme** — Choose from five Liquid Obsidian palettes. |
 | ![Summary](docs/screenshots/07-wizard-summary.png) |  |
-| **14. Launch** — Review every choice before opening the app. |  |
+| **19. Launch** — Review every choice before opening the app. |  |
 
 ### The main chat
 
@@ -319,11 +329,11 @@ Toggle **`AUTO`** in the chat header and Persephone picks the right model for ev
 
 **How it works:**
 - **Fast path** — a regex / keyword heuristic. ~0.001ms. Catches 90% of cases.
-- **Slow path** — when heuristic confidence is low, a tiny classifier (e.g. qwen2.5:1.5b) decides in ~150ms via Ollama's structured-output JSON.
+- **Slow path** — when heuristic confidence is low, a tiny classifier (e.g. qwen2.5:1.5b) decides in ~150ms via Ollama's structured-output JSON. Optionally Laya (experimental, wizard step **6 · Decision model**) can decide first; when it isn't confident, the LLM judge you picked (`judge_fallback_model`) decides.
 - **Cache** — per-conversation, with category-aware TTL (30s for low-trust picks, 5min for code/reasoning).
 - **Pre-warmed** — the judge is hot-loaded at app startup so the first ambiguous query pays no cold-load tax.
 
-Pick your judge model in the wizard step **4 · Auto-router**.
+Pick your judge model in the wizard step **5 · Auto-router**.
 
 ### 3 · Persistent memory across every model
 
@@ -387,7 +397,7 @@ Select documents in the library (or attach them with the paperclip, paste an ema
 | `verify_signature` | Compares the signature on a document with a reference signature card (see below). |
 | `graph_query` | *"What do we know about &lt;name&gt; across my documents?"* Answered from the knowledge graph alone, without reading documents. |
 
-- **Laya + keyword rules.** The intent comes from [Laya](https://huggingface.co/convaiinnovations/laya), a small, English-only, *non-generative* decision model running locally. It is combined with word-bounded keyword rules in English, Dutch and French. Clear rule matches win over a low-confidence model guess. Laya also suggests each document's role (subject / reference / signature reference) and the document kind. Every decision appears in the **Laya decisions** tile with its value, confidence and source (`laya` / `rules` / `probe` / `config`). If Laya isn't installed, the rules decide alone.
+- **Laya + keyword rules.** The intent comes from [Laya](https://huggingface.co/convaiinnovations/laya), a small, English-only, *non-generative* decision model running locally. It is combined with word-bounded keyword rules in English, Dutch and French. Clear rule matches win over a low-confidence model guess. Laya also suggests each document's role (subject / reference / signature reference) and the document kind. Every decision appears in the **Laya decisions** tile with its value, confidence and source (`laya` / `rules` / `probe` / `config`). If Laya isn't installed, the rules decide alone. Laya is a one-time ~846 MB download: from the setup wizard's **Decision model** step, from **Settings → Models**, or with `npm run setup`.
 - **Extra steps on top of the intent.** These are a **signature check**, a **table query** and a **web lookup**. A cross-reference question that also says *"verify the signature against the reference card"* therefore gets both the company check and the signature check.
 - **Handwriting.** Scanned pages are checked for handwriting (by file name, hints in your message, or a quick yes/no question to the vision model). Handwritten pages are transcribed by the **Handwriting** model instead of plain OCR. Pages with a usable text layer skip OCR entirely.
 - **Signature verification.** `server/signature_engine.py` is a **local, deterministic** engine built on OpenCV + scikit-image, with no LLM and no network. It segments the reference signatures from a signature card (3–8; **5 recommended**) and finds the questioned signature on the document. It then measures nine features: skeleton shape, stroke directions (HOG), ink distribution, projection profiles, stroke texture (LBP), Hu moments, aspect ratio, slant and stroke width. Each is compared against **the references' own natural variation**, giving a 0–100 score: **≥ 70 consistent · 40–69 inconclusive · < 40 inconsistent**. The **Signature Verification** vision model only picks the signature line when there are several candidates and writes the visual explanation; it never changes the score. The tile shows the gauge, the questioned crop next to the reference crops, and the per-feature breakdown. It is explicitly *not a forensic determination*.
@@ -803,7 +813,8 @@ persephone/
 │   │   ├── research/     ← ResearchView (run / history / KB search / detail overlay + PDF button)
 │   │   ├── memory/       ← MemoryView (facts + history)
 │   │   ├── markdown/     ← RichMarkdown (+ copy button + TOC + InlineIcons), Mermaid, SketchBorder, OrnamentalDivider, CoverArt
-│   │   ├── wizard/       ← 15-step setup wizard with tok/s badges + TTS auto-install
+│   │   ├── wizard/       ← 19-step setup wizard with tok/s badges, Laya decision-model step + TTS auto-install
+│   │   ├── laya/         ← LayaStatusCard (status + one-click download; wizard + Settings → Models)
 │   │   ├── settings/     ← display / character / models / auxiliary / skills / voice / memory / tools / theme / setup
 │   │   ├── documents/    ← Documents tab: library, agent chat, Model flow tiles, signature tile, knowledge graph (Pipeline / Network / Entities / Layers, story strip, evidence, replay)
 │   │   ├── voice/        ← VoicePanel (Kokoro voices, sphere waveform)
@@ -857,6 +868,8 @@ POST   /api/idp/redact               redact PII / categories
 POST   /api/idp/humanize             rewrite text as human-authored (tone + intensity)
 POST   /api/idp/export/{fmt}         export as md/txt/pdf/json/xlsx/csv
 POST   /api/idp/agent                SSE: Documents agent turn (intent → steps → tiles → answer)
+GET    /api/idp/route/status         Laya status (available, device, downloading, size, error)
+POST   /api/idp/route/download       start the one-time Laya download (idempotent, user click only)
 GET    /api/idp/documents/{id}/sheets  parsed spreadsheet preview
 GET    /api/kg/graph                 knowledge graph (scope: conversation or all)
 GET    /api/kg/relation-evidence     evidence for one fact (snippets, signature crops)

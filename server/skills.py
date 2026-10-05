@@ -319,6 +319,9 @@ async def select_skills(
 
     # Ask the judge to whittle it down.
     user_pref = (await db.get_config("judge_model")) or ""
+    if user_pref == "laya-builtin":
+        # Laya is a classifier, not an LLM — use the LLM judge behind it.
+        user_pref = (await db.get_config("judge_fallback_model")) or ""
     model = _pick_first([user_pref, *_JUDGE_MODEL_FALLBACKS], installed_models)
     if not model:
         # No judge available — fall back to the top heuristic hits (at most

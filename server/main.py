@@ -54,6 +54,7 @@ import doc_graph as _doc_graph
 import doc_agent_hooks as _doc_agent_hooks
 import doc_agent_service as _doc_agent_service
 import speech_summary as _speech
+import judge_pref as _judge_pref
 try:
     import laya_decider as _laya
 except (ImportError, Exception):
@@ -1173,7 +1174,9 @@ async def _llm_judge(text: str, installed: set[str]) -> str | None:
     Returns one of _VALID_CATEGORIES, or None on timeout / parse failure.
     First-pref: the user's wizard-chosen judge model (stored in the
     `judge_model` config key). Can be LAYA_JUDGE_ID (sentinel for Laya built-in).
-    Falls back to qwen2.5:1.5b if unset/missing.
+    When Laya is unsure/unavailable the LLM judge is `judge_fallback_model`
+    (the LLM judge chosen before switching to Laya). Falls back to
+    qwen2.5:1.5b etc. if unset/missing.
     """
     if not text:
         return None
@@ -1200,7 +1203,12 @@ async def _llm_judge(text: str, installed: set[str]) -> str | None:
                 pass
         # Laya unavailable or returned None — fall through to regular LLM judge
 
-    # Regular LLM judge path
+    # Regular LLM judge path. With Laya configured, the LLM judge picked
+    # before switching (wizard step / Settings) lives in judge_fallback_model.
+    if user_pref == LAYA_JUDGE_ID:
+        user_pref = _judge_pref.llm_judge_pref(
+            user_pref, await _db.get_config("judge_fallback_model") or "", LAYA_JUDGE_ID,
+        )
     judge_model = None
     if user_pref and user_pref != LAYA_JUDGE_ID and user_pref in installed:
         judge_model = user_pref
@@ -4144,7 +4152,11 @@ class WizardCompleteRequest(BaseModel):
     handwriting_model:   str = ""
     tables_model:        str = ""
     multidoc_model:      str = ""
+    signature_model:     str = ""
     judge_model:         str = ""
+    # LLM judge used when judge_model is Laya ('laya-builtin') and Laya is
+    # unsure/unavailable, and for every LLM consumer of the judge.
+    judge_fallback_model: str = ""
     tts_voice:           str = "tara"
     tts_speed:           float = 1.0
     theme:               str = "underworld"
@@ -4166,14 +4178,23 @@ async def setup_complete(req: WizardCompleteRequest):
         ("handwriting_model", req.handwriting_model),
         ("tables_model",      req.tables_model),
         ("multidoc_model",    req.multidoc_model),
+        ("signature_model",   req.signature_model),
         # judge_model drives auto-router classification + background fact
         # extraction. Stored under both keys so both subsystems pick it up,
         # EXCEPT when judge_model is LAYA_JUDGE_ID (which cannot do fact extraction).
         ("judge_model",       req.judge_model),
     ]
-    # Mirror judge_model into memory_model ONLY if not Laya (Laya cannot do background fact extraction)
-    if req.judge_model != LAYA_JUDGE_ID:
-        pairs.append(("memory_model", req.judge_model))
+    # The LLM judge behind Laya: explicit fallback, else the judge itself
+    # when it is a regular model.
+    fallback = _judge_pref.llm_judge_pref(
+        req.judge_model, req.judge_fallback_model, LAYA_JUDGE_ID,
+    )
+    pairs.append(("judge_fallback_model", fallback))
+    # Mirror judge_model into memory_model ONLY if not Laya (Laya cannot do
+    # background fact extraction) — with Laya, the LLM fallback judge is used.
+    mem = _judge_pref.memory_model_for(req.judge_model, fallback, LAYA_JUDGE_ID)
+    if mem is not None:
+        pairs.append(("memory_model", mem))
 
     pairs.extend([
         ("tts_voice",         req.tts_voice),
@@ -4283,6 +4304,8 @@ _MODEL_ROLE_KEYS = [
     "active_model", "judge_model", "vision_model", "code_model",
     "ocr_model", "docs_model", "handwriting_model", "signature_model", "tables_model",
     "multidoc_model", "web_lookup_model", "embed_model",
+    # LLM judge used behind Laya when judge_model == 'laya-builtin'
+    "judge_fallback_model",
     # Ableton composer roles: standard + deep-reasoning slots. Empty string
     # means "fall back to _PLANNER_PREF / _DEEP_PLANNER_PREF in the composer".
     "ableton_composer_model", "ableton_deep_model",
@@ -4307,6 +4330,7 @@ class ModelRolesUpdate(BaseModel):
     multidoc_model:         str | None = None
     web_lookup_model:       str | None = None
     embed_model:            str | None = None
+    judge_fallback_model:   str | None = None
     ableton_composer_model: str | None = None
     ableton_deep_model:     str | None = None
 
@@ -4314,6 +4338,17 @@ class ModelRolesUpdate(BaseModel):
 @app.post("/api/models/roles")
 async def update_model_roles(req: ModelRolesUpdate):
     updates = req.model_dump(exclude_unset=True)
+    # Keep judge_fallback_model = the last LLM judge the user picked, so
+    # switching the judge to Laya keeps that model as Laya's fallback.
+    if "judge_model" in updates and "judge_fallback_model" not in updates:
+        new_fb = _judge_pref.fallback_after_role_change(
+            updates["judge_model"],
+            await _db.get_config("judge_model") or "",
+            await _db.get_config("judge_fallback_model") or "",
+            LAYA_JUDGE_ID,
+        )
+        if new_fb is not None:
+            updates["judge_fallback_model"] = new_fb
     for k, v in updates.items():
         await _db.set_config(k, v or "")
     if "embed_model" in updates:
@@ -4322,8 +4357,23 @@ async def update_model_roles(req: ModelRolesUpdate):
     # (mirrors the wizard's own setup_complete behaviour).
     # EXCEPT when judge_model is LAYA_JUDGE_ID (which cannot do fact extraction).
     if "judge_model" in updates:
-        if updates["judge_model"] != LAYA_JUDGE_ID:
-            await _db.set_config("memory_model", updates["judge_model"] or "")
+        mem = _judge_pref.memory_model_for(
+            updates["judge_model"] or "",
+            updates.get("judge_fallback_model") or await _db.get_config("judge_fallback_model") or "",
+            LAYA_JUDGE_ID,
+        )
+        if mem is not None:
+            await _db.set_config("memory_model", mem)
+    elif "judge_fallback_model" in updates:
+        # Fallback changed on its own (Settings → Models, judge = Laya): with
+        # Laya, memory_model follows the LLM fallback judge, as in the wizard.
+        current_judge = await _db.get_config("judge_model") or ""
+        if current_judge == LAYA_JUDGE_ID:
+            mem = _judge_pref.memory_model_for(
+                current_judge, updates["judge_fallback_model"] or "", LAYA_JUDGE_ID,
+            )
+            if mem is not None:
+                await _db.set_config("memory_model", mem)
     return {"ok": True, "updated": list(updates.keys())}
 
 
@@ -4738,10 +4788,31 @@ async def idp_route(req: RouteRequest):
 
 @app.get("/api/idp/route/status")
 async def idp_route_status():
-    """Get the status of the Laya routing model."""
+    """Status of the Laya decision model: {available, loaded, device,
+    package_installed, downloading, error, size_bytes, size_is_estimate,
+    target_device, params}."""
     if _laya is None:
-        return {"available": False, "loaded": False, "device": None}
-    return _laya.status()
+        return {
+            "available": False, "loaded": False, "device": None,
+            "package_installed": False, "downloading": False,
+            "error": "laya_decider module failed to import", "size_bytes": None,
+        }
+    # download_status() may import laya / scan the HF cache — keep it off
+    # the event loop.
+    return await asyncio.to_thread(_laya.download_status)
+
+
+@app.post("/api/idp/route/download")
+async def idp_route_download():
+    """Start the one-time Laya download from Hugging Face in a background
+    thread. Idempotent: returns state 'done' when already cached, 'running'
+    when a download is in progress, 'started' when a new one began, and
+    'unavailable' when the laya package is missing. Only ever triggered by an
+    explicit user click (setup wizard / Settings → Models)."""
+    if _laya is None:
+        return {"state": "unavailable", "available": False, "downloading": False,
+                "error": "laya_decider module failed to import"}
+    return await asyncio.to_thread(_laya.start_download)
 
 
 @app.get("/api/idp/documents")
@@ -5472,9 +5543,11 @@ async def _judge_delegate_category(text: str) -> str:
         return "general"
     installed = await _installed_models()
     user_pref = (await _db.get_config("judge_model")) or ""
-    # Treat Laya sentinel as unset; delegate uses different categories
+    # Laya can't do delegate categories; use the LLM fallback judge instead
     if user_pref == LAYA_JUDGE_ID:
-        user_pref = ""
+        user_pref = _judge_pref.llm_judge_pref(
+            user_pref, await _db.get_config("judge_fallback_model") or "", LAYA_JUDGE_ID,
+        )
     prefs = [user_pref, "qwen2.5:1.5b", "qwen2.5:0.5b",
              "llama3.2:1b", "llama3.2:3b", "qwen2.5:3b", "qwen2.5:7b"]
     model = _pick_first_installed(prefs, installed)

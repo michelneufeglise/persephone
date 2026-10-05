@@ -392,12 +392,16 @@ def _match_installed(pref: list[str], installed: set[str]) -> Optional[str]:
 
 
 async def pick_model() -> Optional[str]:
-    """The configured judge model, unless it's empty / Laya / not installed;
-    then the first installed small fallback model; else None."""
+    """The configured judge model (or, when the judge is Laya, the LLM
+    fallback judge), unless it's empty / not installed; then the first
+    installed small fallback model; else None."""
     judge = ""
     if _get_config is not None:
         try:
             judge = (await _get_config("judge_model")) or ""
+            if judge == _laya_id:
+                # Laya can't write summaries — use the LLM judge behind it.
+                judge = (await _get_config("judge_fallback_model")) or ""
         except Exception:
             judge = ""
     installed: set[str] = set()

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { motion } from 'framer-motion'
 import { User, Cpu, Eye, Code2, Database, Volume2, Palette, CheckCircle,
          ScanText, FileText, PenLine, Table, Wrench, Wand2, Loader2,
-         AlertTriangle, Download } from 'lucide-react'
+         AlertTriangle, Download, Signature, BrainCircuit } from 'lucide-react'
 
 interface Config {
   accountName: string
@@ -14,8 +14,11 @@ interface Config {
   ocrModel: string
   docsModel: string
   handwritingModel: string
+  signatureModel?: string
   tablesModel: string
   judgeModel?: string
+  /** Laya decision model: installed? opted in as chat auto-router? */
+  laya?: { installed: boolean; known: boolean; usedAsRouter: boolean }
   ttsVoice: string
   ttsSpeed: number
   theme: string
@@ -77,16 +80,24 @@ export function SummaryStep({ config }: SummaryStepProps) {
     })()
   }, [loadStatus])
 
-  const rows = [
+  const rows: { icon: typeof User; label: string; value: string; wrap?: boolean }[] = [
     { icon: User,      label: 'Account',          value: config.accountName        || 'Not set'     },
     { icon: Cpu,       label: 'Main model',       value: config.activeModel        || 'Not selected'},
-    { icon: Wand2,     label: 'Auto-router',      value: config.judgeModel         || 'Skipped'     },
+    { icon: Wand2,     label: 'Auto-router',      value: config.laya?.usedAsRouter
+        ? `Laya · fallback ${config.judgeModel || 'auto'}`
+        : (config.judgeModel || 'Skipped') },
+    { icon: BrainCircuit, label: 'Decision model', value: !config.laya?.known
+        ? 'Laya · status unknown'
+        : config.laya.installed
+          ? `Laya · installed${config.laya.usedAsRouter ? ' · used as chat auto-router' : ''}`
+          : 'Laya · not installed (keyword rules)', wrap: true },
     { icon: Eye,       label: 'Vision model',     value: config.visionModel        || 'Skipped'     },
     { icon: Code2,     label: 'Code model',       value: config.codeModel          || 'Skipped'     },
     { icon: Database,  label: 'Embed model',      value: config.embedModel         || 'Skipped'     },
     { icon: ScanText,  label: 'OCR model',        value: config.ocrModel           || 'Skipped'     },
     { icon: FileText,  label: 'Docs / PDF',       value: config.docsModel          || 'Skipped'     },
     { icon: PenLine,   label: 'Handwriting',      value: config.handwritingModel   || 'Skipped'     },
+    { icon: Signature, label: 'Signature check',  value: config.signatureModel     || 'Skipped (Handwriting → Vision)' },
     { icon: Table,     label: 'Spreadsheets',     value: config.tablesModel        || 'Skipped'     },
     { icon: Volume2,   label: 'TTS voice',        value: `${config.ttsVoice} (${config.ttsSpeed.toFixed(2)}×)` },
     { icon: Wrench,    label: 'MCP tools',        value: config.mcpCount ? `${config.mcpCount} enabled` : 'None' },
@@ -116,7 +127,7 @@ export function SummaryStep({ config }: SummaryStepProps) {
 
       {/* Config summary */}
       <div className="rounded-xl glass-card overflow-hidden">
-        {rows.map(({ icon: Icon, label, value }, i) => (
+        {rows.map(({ icon: Icon, label, value, wrap }, i) => (
           <motion.div
             key={label}
             initial={{ opacity: 0, x: -8 }}
@@ -130,7 +141,7 @@ export function SummaryStep({ config }: SummaryStepProps) {
               <Icon className="w-3.5 h-3.5 text-[var(--accent)]" />
             </div>
             <span className="text-xs text-[var(--text-muted)] w-28 flex-shrink-0">{label}</span>
-            <span className="text-sm text-[var(--text-primary)] truncate font-mono">
+            <span className={`text-sm text-[var(--text-primary)] font-mono min-w-0 ${wrap ? 'break-words' : 'truncate'}`}>
               {value}
             </span>
           </motion.div>
