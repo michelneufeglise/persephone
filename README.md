@@ -34,7 +34,7 @@ Persephone wraps the speed of local Ollama models in a thoughtful, beautifully d
 - ✨ **Skills.** Reusable instruction bundles (`.md` files with YAML frontmatter) live in `server/skills/` or `~/.persephone/skills/`. Every non-trivial user turn runs a tiny **skill-selector** that picks 0..3 skills whose triggers match, injects them into the system prompt, and lets the main model execute. Ships with `weather-forecast`, `code-review`, `recipe-formatter`, `meeting-notes`, `travel-planner`, `explain-simply`.
 - 🖼 **Inline icons in replies.** Models can drop `:sun:` `:cloud-rain:` `:trend-up:` `:warning:` and ~180 more shortcodes anywhere in prose — they render as inline lucide icons colour-matched to the theme.
 - 🎙 **In-process TTS.** Kokoro-82M ONNX with 19 voices (US / UK / ES accents), auto-verified and pre-downloaded during the setup wizard so first speech is instant.
-- 📄 **Intelligent document processing.** OCR, handwriting, tables, summarise, Q&A, redact, translate, **humanise** (rewrite AI-flavoured text to sound human) — local-only.
+- 📄 **Intelligent document processing.** A Documents agent that reads handwriting, cross-checks documents against each other (e.g. a letter vs. a company registry extract), **verifies signatures** against a reference card with a local, deterministic signature engine, queries spreadsheets, and records every fact in a **knowledge graph** with evidence and a guided replay. Plus classic tools: OCR, tables, summarise, Q&A, redact, translate, **humanise** — all on local models.
 - 🔎 **Auto-OCR on file reads.** When the chat model calls a filesystem read tool on a PDF/DOCX/XLSX/image, Persephone transparently routes through the IDP engine (or your configured OCR model) so the model receives extracted text instead of raw bytes — no extra prompting needed.
 - ♿ **Display & accessibility.** A dedicated Settings tab covers text size (S → Huge), line & letter spacing, font family (incl. **dyslexia-friendly**), overall zoom, motion preference (Full / Reduced / None), high-contrast mode, bold text, underline-all-links, focus-outline visibility — all persisted per device and applied instantly.
 - 🎨 **Liquid Obsidian design system.** Five thoughtfully crafted themes (Underworld, Spring, Pomegranate, Elysian, Obsidian) with conic gradients, atmospheric grain, holographic accents, ornamental SVG dividers, and a shared **Persephone medallion** identity across the whole app.
@@ -106,6 +106,27 @@ The Memory page has two tabs:
 ![Settings — MCP tools](docs/screenshots/14-settings-tools.png)
 
 Live MCP server management. The header strip shows running servers + total tools. Click any card to toggle — the backend spawns or kills the server process immediately. Cards show capability tags, install status ("RUNNING · 14 TOOLS"), and link to docs. Sorting is **enabled first → no-setup → needs API key**.
+
+### Documents — verify a handwritten letter
+
+Three documents are selected in the Documents tab: a handwritten letter, a company registry extract and a signature card with five reference signatures. *All three are fictitious demo documents, watermarked DEMO.* The question:
+
+> *"Read this handwritten letter, check whether the writer really owns the company in the registry, and verify the signature against the reference card with a confidence score"*
+
+![Documents — answer with company check and signature verification](docs/screenshots/15-documents-signature-answer.png)
+
+Laya (a small non-generative decision model) and keyword rules pick the intent (`cross_reference`) and add a **signature check**. The letter is recognised as handwritten and transcribed by the Handwriting vision model (`gemma4:12b`). The registry extract is read straight from its text layer. The answer has a field-by-field company check table, the signature result and a conclusion. The **Model flow** column on the right shows every decision and step with its model and timing. This run took about 75 s end to end on a local machine.
+
+| | |
+|---|---|
+| ![Signature verification tile](docs/screenshots/16-documents-signature-tile.png) | ![Knowledge graph — pipeline](docs/screenshots/17-documents-graph-pipeline.png) |
+| **Signature verification.** A local OpenCV + scikit-image engine compares the questioned signature with the 5 references cut from the card. It scores nine features against the writer's own natural variation: **96 % · consistent**. The vision model only locates the signature line and explains the result. | **Graph → Pipeline.** How this run was handled: question → Laya → tool selection → documents / signature tools → context → answer model → knowledge store. |
+| ![Knowledge graph — entities](docs/screenshots/18-documents-graph-entities.png) | ![Knowledge graph — evidence](docs/screenshots/19-documents-graph-evidence.png) |
+| **Graph → Entities.** The person-centred entity graph, with a **story strip** built only from stored facts: *owns Neuféglise Digital Solutions (registry ✓) → signed Handwritten letter (96 % · consistent, 5 references)*. | **Evidence on click.** Clicking a fact or edge opens its evidence: here the questioned signature above the five reference crops, the score, both source documents and when it was recorded. |
+
+![Knowledge graph — guided replay](docs/screenshots/20-documents-graph-replay.png)
+
+**▶ Replay** walks through the run step by step, with a callout explaining which model or tool was chosen and why. This is step 7/12, the signature engine. The replay can be paused, stepped with ←/→ and optionally **narrated** aloud with Kokoro TTS. No LLM is involved, because the steps are built from the recorded run.
 
 ---
 
@@ -184,7 +205,7 @@ graph TB
     Main -.spawns.-> Chat
 ```
 
-**No data ever leaves your machine.** Every request to Ollama is `127.0.0.1`. Every MCP server runs as a local subprocess. Every embedding stays in your SQLite file.
+**Your data stays on your machine.** Every request to Ollama is `127.0.0.1`. Every MCP server runs as a local subprocess. Every embedding stays in your SQLite file. The exceptions are web lookups, which only happen when you ask for them, and the **Settings → Download** tab, which fetches the public model list from `ollama.com/library` (it falls back to the built-in catalogue when offline). Deep research and web-enabled chat send **search queries** to the web search MCP (DuckDuckGo, or Brave if enabled) and fetch the public pages they find. The Documents agent's web lookup runs only when your message explicitly asks for it (e.g. *"check LinkedIn"*). It sends only the person's name and role or company as search terms, never document text, and the Model flow marks it as "leaves this machine".
 
 ---
 
@@ -352,20 +373,55 @@ For chat models that *can't* natively call tools, set a **tool_model** override 
 
 ### 6 · Intelligent Document Processing (IDP)
 
-The right panel hosts a document viewer with:
-- Upload any PDF, image, scan
-- **OCR** with your chosen vision/OCR model (MiniCPM-V, Qwen 2.5 VL, Granite Vision, **DeepSeek-OCR** via `frob/unlimited-ocr:q8_0`)
-- **Summarize** (brief / detailed)
-- **Q&A** — ask questions about a document's contents
-- **Tables** — extract tables as JSON
-- **Entities** — pull named entities
-- **Classify** — categorize the document
-- **Translate** to a target language
-- **Redact** specified categories
-- **Humanise** — rewrite AI-flavoured text into natural, varied human prose. Picks a tone (natural / casual / professional / academic) and a rewrite strength (light / medium / heavy). Anti-tell blocklist (no more "delve", "furthermore", "tapestry"), preserves facts/quotes/language/structure.
-- **Export** as Markdown / TXT / PDF / JSON / XLSX / CSV
+The **Documents** tab has a document **library** (upload by click or drag-and-drop: PDF, DOCX, spreadsheets, PPTX, ODT, RTF, HTML, EML, images incl. HEIC, …), a conversation list, and three modes: **Chat**, **Tools** and **Graph**. A **Model flow** column on the right shows every decision and step of the current answer as it streams in, with the model, its size and the timing.
 
-All processing is local. Each operation routes to the model you configured during the wizard for that category.
+#### Chat — the Documents agent
+
+Select documents in the library (or attach them with the paperclip, paste an email, or drop files) and ask a question. The agent (`server/doc_agent.py`, `POST /api/idp/agent`, SSE) first decides **what kind of question** it is:
+
+| Intent | What it does |
+|---|---|
+| `summarize` · `general_question` · `extract_data` · `translate` · `redact` | Answer from the document text. For long documents, question-type intents use retrieval (top passages instead of the whole text); summaries, translations and redactions use an excerpt of the beginning, middle and end. |
+| `identify_person` | Who the document is about: name, role, organisation. |
+| `cross_reference` | Compares two or more documents field by field (✅ / ⚠️ / ❌ table) and ends with caveats and a conclusion. |
+| `verify_signature` | Compares the signature on a document with a reference signature card (see below). |
+| `graph_query` | *"What do we know about &lt;name&gt; across my documents?"* Answered from the knowledge graph alone, without reading documents. |
+
+- **Laya + keyword rules.** The intent comes from [Laya](https://huggingface.co/convaiinnovations/laya), a small, English-only, *non-generative* decision model running locally. It is combined with word-bounded keyword rules in English, Dutch and French. Clear rule matches win over a low-confidence model guess. Laya also suggests each document's role (subject / reference / signature reference) and the document kind. Every decision appears in the **Laya decisions** tile with its value, confidence and source (`laya` / `rules` / `probe` / `config`). If Laya isn't installed, the rules decide alone.
+- **Extra steps on top of the intent.** These are a **signature check**, a **table query** and a **web lookup**. A cross-reference question that also says *"verify the signature against the reference card"* therefore gets both the company check and the signature check.
+- **Handwriting.** Scanned pages are checked for handwriting (by file name, hints in your message, or a quick yes/no question to the vision model). Handwritten pages are transcribed by the **Handwriting** model instead of plain OCR. Pages with a usable text layer skip OCR entirely.
+- **Signature verification.** `server/signature_engine.py` is a **local, deterministic** engine built on OpenCV + scikit-image, with no LLM and no network. It segments the reference signatures from a signature card (3–8; **5 recommended**) and finds the questioned signature on the document. It then measures nine features: skeleton shape, stroke directions (HOG), ink distribution, projection profiles, stroke texture (LBP), Hu moments, aspect ratio, slant and stroke width. Each is compared against **the references' own natural variation**, giving a 0–100 score: **≥ 70 consistent · 40–69 inconclusive · < 40 inconsistent**. The **Signature Verification** vision model only picks the signature line when there are several candidates and writes the visual explanation; it never changes the score. The tile shows the gauge, the questioned crop next to the reference crops, and the per-feature breakdown. It is explicitly *not a forensic determination*.
+- **Spreadsheets.** `.xlsx`, `.xlsm`, `.xls`, `.ods`, `.csv` and `.tsv` are parsed by `server/sheets.py`: header detection, merged cells, cached formula values, ISO dates, and hidden sheets kept out. They get a read-only preview with sheet tabs. For table questions (*"total revenue per region"*) the model only writes a small JSON query spec (filters, derived columns, group-by, aggregates, sort, limit), and pandas executes it (`server/table_query.py`). Model-written code is never run, and large sheets are never sent to the model whole.
+- **Web lookup (opt-in).** If you explicitly ask (*"check LinkedIn whether this person exists"*, *"search the web"*), the agent searches through the **DuckDuckGo MCP** (Brave as optional fallback) using only the person's name plus role or company. It may open public pages from the results, but for LinkedIn, Facebook, Instagram and X it only reads search snippets and never logs in to fetch profiles. The verdict is *likely match*, *possible match* or *no match*, and a search that gets rate-limited is reported as "search unavailable", never as "no match". This is **the one Documents step that leaves the machine**, and the Model flow says so.
+- **Knowledge store.** Every run writes entities (person, organisation, role, document, profile, location) and relations (`owns`, `works_at`, `has_role`, `signed`, `verified_against`, `likely_profile`, …) with confidence, source and run id into SQLite (`server/kg_store.py`). Company registry extracts are parsed into *person owns company* facts without an LLM.
+
+#### Graph — the knowledge graph
+
+Four views: **Pipeline** (how a run was handled, from question to answer), **Network** (documents → question → Laya decisions → models → results), **Entities** (the person-centred entity graph) and **Layers** (one swimlane per run). The scope can be this conversation or all conversations.
+
+- **Story strip.** A one-line summary of the main person, built only from stored facts and never from model text. Example: *owns X (registry ✓) → signed Letter (96 % · consistent, 5 references)*.
+- **Evidence on click.** Click any fact or edge to see its confidence, its source (document agent, signature engine or web lookup), the source document, a highlighted snippet (contact details redacted), and for signatures the crops with score and band.
+- **Guided replay.** **▶ Replay** steps through a run with callouts explaining which model or tool was chosen and why. In Entities it becomes a *fact story* showing where each fact came from. Space pauses, ←/→ step, Esc stops, and the speed is adjustable. Steps can be **narrated** with Kokoro TTS. The replay is built from the recorded run, so no LLM is involved.
+- **Reset knowledge store** wipes entities and relations. Documents and conversations are kept.
+
+#### Tools — single-document operations
+
+Overview (document facts, routing trace and a per-document model override), **OCR**, **Summary**, **Q & A**, **Tables** (extract as JSON), **Entities**, **Translate**, **Redact**, **Humanise** (rewrites AI-flavoured text into natural human prose, with a tone and a strength setting and an anti-"delve" blocklist; facts and quotes are preserved), and **Export** (Markdown / TXT / PDF / JSON / XLSX / CSV). With several documents selected, a tool runs on each of them side by side.
+
+#### Model roles
+
+Each step uses the model you set in **Settings → Models** (Model Roles). Empty roles fall back along a chain (e.g. Signature → Handwriting → Vision):
+
+| Role | Used for |
+|---|---|
+| OCR — Text Extraction | text from scans and photos (pages without a usable text layer) |
+| Documents & PDF · Multi-Document Query | reasoning over one or several documents |
+| **Handwriting** | transcribing handwritten pages (unreadable words marked `[?]`) |
+| **Signature Verification** | locating the signature line + visual explanation (empty = Handwriting → Vision) |
+| Web Lookup (tools) | tool-calling model for the opt-in web lookup (empty = auto-select) |
+| Embeddings | document RAG and semantic search |
+
+All document processing runs on local Ollama models. The only exception is the opt-in web lookup described above.
 
 **Auto-OCR bridge for the chat model.** When the main chat model calls a filesystem MCP tool (`filesystem__read_file`, `persephone-fs__read_file`, `_read_media_file`, `_read_multiple_files`) on a **non-text** file, Persephone intercepts BEFORE the MCP call and routes through the IDP engine:
 
@@ -387,7 +443,9 @@ Built-in **Kokoro-82M** ONNX TTS at 24 kHz, loaded once at startup, ≈10× real
 
 Speed control, auto-play, sentence-streaming (audio starts as soon as the first sentence is generated), per-conversation mute. The **setup wizard verifies + downloads** the Kokoro ONNX model + voice pack automatically at the end of onboarding so your very first spoken sentence is instant — no surprise 360 MB download later. Live status card on the summary step: *"Voice engine — downloading Kokoro model (~360 MB)…"* → *"ready (310 MB model + 30 MB voices, warmed up)"*.
 
-Endpoints: `GET /api/setup/tts-status`, `POST /api/setup/tts-install`, `POST /api/tts`, `GET /api/tts/voices`.
+**Spoken summaries.** Everything that is read aloud goes through one endpoint (`POST /api/tts/speech-text`, `server/speech_summary.py`): main-chat auto-speak, the *Read aloud* button and the Documents agent. The knowledge-graph replay narration is separate: it speaks its own step text directly. Thinking blocks, code, URLs, emoji and markdown are stripped, and tables become "table on screen". Under **Settings → Voice → Spoken responses** you choose **Summary** (the default) or **Full text**. In Summary mode, short answers (about 40 words or fewer) are spoken as written. Longer answers are condensed to 2–3 sentences by a small local model. If that model times out, Persephone reads the cleaned first paragraph instead.
+
+Endpoints: `GET /api/setup/tts-status`, `POST /api/setup/tts-install`, `POST /api/tts`, `POST /api/tts/speech-text`, `GET /api/tts/voices`.
 
 ### 8 · Editorial rich-markdown rendering
 
@@ -692,7 +750,16 @@ persephone/
 │   ├── embeddings.py       ← Ollama /api/embed wrapper
 │   ├── db.py               ← aiosqlite layer (convs / messages / facts / config / delegated_tasks / planned_tasks)
 │   ├── mcp_*.py            ← MCP catalog + client + manager (JSON-RPC over stdio)
-│   ├── idp_engine.py       ← document processing
+│   ├── idp_engine.py       ← document processing (OCR / summarise / tables / redact / …)
+│   ├── doc_agent.py        ← Documents agent: Laya + rules intent, handwriting, cross-reference, tiles
+│   ├── laya_decider.py     ← Laya decision model wrapper (lazy-loaded, idle unload)
+│   ├── signature_engine.py ← local deterministic signature comparison (OpenCV + scikit-image)
+│   ├── doc_signature.py    ← signature-check step (segment → locate → score → vision explanation)
+│   ├── sheets.py           ← xlsx / xlsm / xls / ods / csv / tsv parsing
+│   ├── table_query.py      ← JSON query spec → pandas (no model-written code is executed)
+│   ├── doc_web.py          ← opt-in web / LinkedIn lookup via the DuckDuckGo MCP
+│   ├── kg_store.py         ← knowledge store (entities, relations, evidence) in SQLite
+│   ├── speech_summary.py   ← what to read aloud (cleaned text or short spoken summary)
 │   ├── tts_engine.py       ← Kokoro ONNX runtime
 │   ├── reels_render.py     ← Reels: scene renderers, Ken Burns, effects, concat
 │   ├── ffmpeg_helper.py    ← thin ffmpeg-python wrapper (probe / concat / mix)
@@ -738,7 +805,7 @@ persephone/
 │   │   ├── markdown/     ← RichMarkdown (+ copy button + TOC + InlineIcons), Mermaid, SketchBorder, OrnamentalDivider, CoverArt
 │   │   ├── wizard/       ← 15-step setup wizard with tok/s badges + TTS auto-install
 │   │   ├── settings/     ← display / character / models / auxiliary / skills / voice / memory / tools / theme / setup
-│   │   ├── documents/    ← IDP panel
+│   │   ├── documents/    ← Documents tab: library, agent chat, Model flow tiles, signature tile, knowledge graph (Pipeline / Network / Entities / Layers, story strip, evidence, replay)
 │   │   ├── voice/        ← VoicePanel (Kokoro voices, sphere waveform)
 │   │   ├── layout/       ← AppLayout, Sidebar, RightPanel (Voice · Auxiliary tabs)
 │   │   └── ui/           ← Button, Input, Slider, Toggle, Panel, Badge, Select
@@ -789,9 +856,15 @@ POST   /api/idp/translate            translate
 POST   /api/idp/redact               redact PII / categories
 POST   /api/idp/humanize             rewrite text as human-authored (tone + intensity)
 POST   /api/idp/export/{fmt}         export as md/txt/pdf/json/xlsx/csv
+POST   /api/idp/agent                SSE: Documents agent turn (intent → steps → tiles → answer)
+GET    /api/idp/documents/{id}/sheets  parsed spreadsheet preview
+GET    /api/kg/graph                 knowledge graph (scope: conversation or all)
+GET    /api/kg/relation-evidence     evidence for one fact (snippets, signature crops)
+DELETE /api/kg                       reset the knowledge store (documents are kept)
 
 POST   /api/tts                      synthesize speech (WAV)
-GET    /api/tts/voices               list Orpheus voices
+POST   /api/tts/speech-text          cleaned text / short spoken summary to read aloud
+GET    /api/tts/voices               list Kokoro voices
 
 POST   /api/reels/plan               SSE stream of scene plan (LLM decomposition)
 POST   /api/reels/image              PNG bytes for one scene via ComfyUI
@@ -916,7 +989,7 @@ The env vars are persisted per-platform: `launchctl setenv` on macOS, a systemd 
 
 ### TTS install verification
 
-The wizard's Voice step calls `/setup/tts-install` which downloads the Kokoro-82M ONNX model + voices bundle (~350 MB) into `~/.persephone/tts/`. `/setup/tts-status` reports readiness. Once installed, TTS runs in-process — no network round-trip.
+The wizard's Voice step calls `/setup/tts-install` which downloads the Kokoro-82M ONNX model + voices bundle (~350 MB) into the data directory (`<data_dir>/kokoro/`). `/setup/tts-status` reports readiness. Once installed, TTS runs in-process — no network round-trip.
 
 ### Auxiliary workers
 
