@@ -911,9 +911,17 @@ def reextract_if_empty(doc: Document) -> Document:
 
 
 def get_document_fresh(doc_id: str) -> Document | None:
-    """Get a document, re-extracting if its text is empty."""
+    """Get a document, re-extracting if its text is empty and restoring a
+    PDF text layer an older OCR pass replaced (one-time, idempotent)."""
     doc = get_document(doc_id)
-    return reextract_if_empty(doc) if doc else None
+    if not doc:
+        return None
+    try:
+        if restore_text_layer(doc):
+            _save_registry()
+    except Exception as exc:  # pragma: no cover - never block a read
+        log.warning("text-layer repair failed for %s: %s", doc_id, exc)
+    return reextract_if_empty(doc)
 
 
 def reextract_empty_documents() -> int:
@@ -1270,16 +1278,144 @@ _OCR_PROMPT = (
 )
 
 
+# ── Native text layer vs. OCR ─────────────────────────────────────────────────
+# A digital PDF's own text layer is exact; OCR of its page renders is not (a
+# small OCR model produced typos and repeated table cells that then fed every
+# downstream op). OCR therefore only fills pages WITHOUT a usable text layer;
+# the OCR output for the other pages is kept in a sidecar (ocr_pages.json).
+TEXT_LAYER_MIN_CHARS = 40
+TEXT_LAYER_MARK = "text_layer_v"        # meta marker: OCR merge follows the rule above
+OCR_SIDECAR = "ocr_pages.json"
+_NATIVE_CACHE: dict[tuple[str, float], list[str]] = {}
+
+
+def usable_text_layer(text: str | None) -> bool:
+    """≥ TEXT_LAYER_MIN_CHARS meaningful (alphanumeric) characters."""
+    return sum(1 for ch in (text or "") if ch.isalnum()) >= TEXT_LAYER_MIN_CHARS
+
+
+def _is_pdf(doc: "Document") -> bool:
+    return doc.mime == "application/pdf" or (doc.filename or "").lower().endswith(".pdf")
+
+
+def native_page_texts(doc: "Document") -> list[str] | None:
+    """Per-page text layer re-extracted from the original PDF (cached by
+    file mtime), or None when the document is not a PDF / the file is gone."""
+    if not _is_pdf(doc):
+        return None
+    raw = STORAGE_DIR / doc.id / doc.filename
+    try:
+        key = (str(raw), raw.stat().st_mtime)
+    except OSError:
+        return None
+    if key in _NATIVE_CACHE:
+        return list(_NATIVE_CACHE[key])
+    try:
+        import fitz   # type: ignore[import-not-found]
+        with fitz.open(raw) as pdf:
+            pages = [p.get_text("text") for p in pdf]
+    except Exception as exc:
+        log.warning("text-layer extraction failed for %s: %s", doc.id, exc)
+        return None
+    if len(_NATIVE_CACHE) > 64:
+        _NATIVE_CACHE.clear()
+    _NATIVE_CACHE[key] = pages
+    return list(pages)
+
+
+def _write_ocr_sidecar(doc: "Document", pages: list[str], *, overwrite: bool = True) -> None:
+    p = STORAGE_DIR / doc.id / OCR_SIDECAR
+    try:
+        if not p.parent.exists() or (p.exists() and not overwrite):
+            return
+        p.write_text(json.dumps({"pages": pages, "saved_at": int(time.time() * 1000)},
+                                ensure_ascii=False), encoding="utf-8")
+    except Exception as exc:
+        log.warning("could not write OCR sidecar for %s: %s", doc.id, exc)
+
+
+def ocr_page_texts(doc: "Document") -> list[str]:
+    """OCR output per page kept beside a preserved text layer ([] if none)."""
+    p = STORAGE_DIR / doc.id / OCR_SIDECAR
+    try:
+        return list(json.loads(p.read_text(encoding="utf-8")).get("pages") or [])
+    except Exception:
+        return []
+
+
+def restore_text_layer(doc: "Document") -> bool:
+    """One-time repair for PDFs OCR'd before OCR respected the text layer:
+    put the native text back on pages that have a usable one (the OCR text
+    moves to the sidecar). Idempotent via meta[TEXT_LAYER_MARK]; handwriting
+    transcriptions and image documents are never touched. Returns True when
+    the document's meta/text changed (caller persists the registry)."""
+    meta = doc.meta if isinstance(doc.meta, dict) else {}
+    if meta.get(TEXT_LAYER_MARK) or not meta.get("last_ocr_at") or meta.get("handwritten"):
+        return False
+    if not _is_pdf(doc):
+        return False
+    native = native_page_texts(doc)
+    if native is None:
+        return False
+    page_texts = list(doc.page_texts)
+    if len(page_texts) < len(native):
+        page_texts.extend([""] * (len(native) - len(page_texts)))
+    moved = [""] * len(page_texts)
+    restored: list[int] = []
+    for i, nat in enumerate(native):
+        if usable_text_layer(nat) and (page_texts[i] or "").strip() != nat.strip():
+            moved[i] = page_texts[i]
+            page_texts[i] = nat
+            restored.append(i + 1)
+    meta[TEXT_LAYER_MARK] = 1
+    doc.meta = meta
+    if restored:
+        _write_ocr_sidecar(doc, moved, overwrite=False)
+        doc.page_texts = page_texts
+        doc.text = "\n\n".join(page_texts).strip()
+        meta["ocr_text_layer_pages"] = restored
+        meta["text_layer_restored_at"] = int(time.time() * 1000)
+        log.info("Restored native text layer of %s (%s) on page(s) %s", doc.id, doc.filename, restored)
+    return True
+
+
+def repair_ocr_overwrites() -> int:
+    """Run restore_text_layer over the whole library (startup). Returns the
+    number of documents whose text was restored."""
+    changed = restored = 0
+    for doc in list(REGISTRY.values()):
+        try:
+            if restore_text_layer(doc):
+                changed += 1
+                if doc.meta.get("text_layer_restored_at"):
+                    restored += 1
+        except Exception as exc:
+            log.warning("text-layer repair failed for %s: %s", doc.id, exc)
+    if changed:
+        _save_registry()
+    return restored
+
+
 async def run_ocr(doc: Document, model: str, page_range: tuple[int, int] | None = None) -> str:
     """Run OCR on all (or a slice of) the document's page images.
 
     One vision call per page (so long scans are neither truncated by
-    num_predict nor capped at 16 images); each result fills
-    ``doc.page_texts[i]`` and ``doc.text`` is rebuilt from the pages. At most
-    OCR_MAX_PAGES pages are processed per call. Returns the joined OCR text.
+    num_predict nor capped at 16 images). OCR fills ``doc.page_texts[i]``
+    only for pages WITHOUT a usable native text layer; for pages that have
+    one the native text is kept (restored, if an older OCR pass replaced it)
+    and the OCR output goes to the ocr_pages.json sidecar. ``doc.text`` is
+    rebuilt from the pages. At most OCR_MAX_PAGES pages are processed per
+    call. Returns the joined OCR text.
     """
     if not doc.page_images:
         return doc.text or "(no images available for OCR)"
+
+    # Repair an older OCR pass that replaced the text layer before OCRing a
+    # page range (pages outside the range would otherwise stay garbled).
+    try:
+        restore_text_layer(doc)
+    except Exception as exc:  # pragma: no cover - never block OCR
+        log.debug("text-layer repair before OCR failed for %s: %s", doc.id, exc)
 
     n_images = len(doc.page_images)
     indices = list(range(n_images))
@@ -1296,6 +1432,23 @@ async def run_ocr(doc: Document, model: str, page_range: tuple[int, int] | None 
     if len(page_texts) < n_images:
         page_texts.extend([""] * (n_images - len(page_texts)))
 
+    # The native text layer per page: re-extracted from the PDF when possible
+    # (an earlier OCR pass may have replaced page_texts); otherwise the
+    # current page text counts as native only if no OCR/transcription ran yet.
+    native = native_page_texts(doc)
+    meta0 = doc.meta if isinstance(doc.meta, dict) else {}
+    never_ocrd = not meta0.get("last_ocr_at")
+
+    def _native(i: int) -> str:
+        if native is not None:
+            return native[i] if i < len(native) else ""
+        return (page_texts[i] or "") if never_ocrd else ""
+
+    sidecar = ocr_page_texts(doc)
+    if len(sidecar) < n_images:
+        sidecar.extend([""] * (n_images - len(sidecar)))
+    kept_layer: list[int] = []
+
     ocr_parts: list[str] = []
     for pos, i in enumerate(indices):
         try:
@@ -1310,13 +1463,22 @@ async def run_ocr(doc: Document, model: str, page_range: tuple[int, int] | None 
             continue
         text = (text or "").strip()
         ocr_parts.append(text)
-        # Keep native text when the OCR pass produced less (digital PDFs).
-        if text and len(text) > len((page_texts[i] or "").strip()):
+        nat = _native(i)
+        if usable_text_layer(nat):
+            # Digital page: the text layer wins; OCR output is kept aside.
+            page_texts[i] = nat
+            sidecar[i] = text
+            kept_layer.append(i + 1)
+        elif text and len(text) > len((page_texts[i] or "").strip()):
             page_texts[i] = text
 
     doc.page_texts = page_texts
     doc.pages = max(doc.pages, len(page_texts))
     doc.text = "\n\n".join(page_texts).strip()
+    if kept_layer:
+        _write_ocr_sidecar(doc, sidecar)
+        doc.meta["ocr_text_layer_pages"] = kept_layer
+    doc.meta[TEXT_LAYER_MARK] = 1
     doc.meta["last_ocr_at"] = int(time.time() * 1000)
     doc.meta["ocr_model"]   = model
     doc.meta["ocr_pages"]   = len(indices)
@@ -1452,7 +1614,7 @@ def build_prompt(op: str, doc: "Document", options: dict) -> str:
         intensity_hint = {
             "light":  "Keep most of the wording. Only smooth out the most obvious AI tics (repetitive transitions, over-hedging, empty filler).",
             "medium": "Substantially rework sentences so the rhythm varies. Break up parallel structures. Cut hollow phrases. Prefer concrete verbs and specific nouns.",
-            "heavy":  "Rewrite freely. Vary sentence length dramatically (some short, some long). Use idioms where natural. Add small imperfections a real writer would leave (a hedge, a slight tangent, an aside). Never sound formulaic.",
+            "heavy":  "Rewrite freely, in your own words and rhythm, but stay correct and completely faithful to the content. Never sound formulaic.",
         }.get(intensity, "Substantially rework sentences so the rhythm varies. Break up parallel structures. Cut hollow phrases. Prefer concrete verbs and specific nouns.")
         text_for_humanize = (doc.text or "")[:24000]
         return (
@@ -1583,57 +1745,28 @@ async def classify(doc: Document, model: str) -> dict:
 
 
 async def translate(doc: Document, model: str, target_lang: str) -> str:
-    prompt = (
-        f"Translate the following document into {target_lang}. Preserve formatting and structure. "
-        "Output ONLY the translation.\n\n"
-        f"--- DOCUMENT ---\n{doc.text[:24000]}\n--- END ---"
-    )
-    return await _ollama_text_call(model, prompt, num_predict=4096)
+    """Whole-document translation, chunk by chunk (structure kept, no length
+    cap, sized num_predict + continuation, thinking off) — see humanize.py."""
+    import humanize as _hz
+    model = await _prepare_text_model(model)
+    res = await _hz.collect(_hz.stream_grouped(doc, model, "translate", {"target": target_lang}))
+    return res["text"]
 
 
 async def redact(doc: Document, model: str, categories: list[str]) -> str:
-    cats = ", ".join(categories) if categories else "personal names, addresses, phone numbers, emails, IDs"
-    prompt = (
-        f"Redact the following from the document by replacing each occurrence with [REDACTED]: {cats}.\n"
-        "Output the full document with redactions applied.\n\n"
-        f"--- DOCUMENT ---\n{doc.text[:24000]}\n--- END ---"
-    )
-    return await _ollama_text_call(model, prompt, num_predict=4096)
+    """Whole-document redaction, chunk by chunk — see humanize.py."""
+    import humanize as _hz
+    model = await _prepare_text_model(model)
+    res = await _hz.collect(_hz.stream_grouped(doc, model, "redact", {"categories": categories}))
+    return res["text"]
 
 
 async def humanize(doc: Document, model: str, tone: str = "natural", intensity: str = "medium") -> str:
-    tone_hint = {
-        "natural":       "warm, conversational, but still polished",
-        "casual":        "relaxed and informal, like a friendly email",
-        "professional":  "clear and confident, like a well-written business memo",
-        "academic":      "considered and precise, but without stiff or robotic phrasing",
-    }.get(tone, "warm, conversational, but still polished")
-
-    intensity_hint = {
-        "light":  "Keep most of the wording. Only smooth out the most obvious AI tics (repetitive transitions, over-hedging, empty filler).",
-        "medium": "Substantially rework sentences so the rhythm varies. Break up parallel structures. Cut hollow phrases. Prefer concrete verbs and specific nouns.",
-        "heavy":  "Rewrite freely. Vary sentence length dramatically (some short, some long). Use idioms where natural. Add small imperfections a real writer would leave (a hedge, a slight tangent, an aside). Never sound formulaic.",
-    }.get(intensity, "Substantially rework sentences so the rhythm varies. Break up parallel structures. Cut hollow phrases. Prefer concrete verbs and specific nouns.")
-
-    prompt = (
-        "You are rewriting a passage so it reads as if a real human wrote it — not an AI. "
-        f"Target tone: {tone_hint}.\n\n"
-        f"{intensity_hint}\n\n"
-        "Specifically:\n"
-        "- Avoid AI tells: 'delve', 'furthermore', 'moreover', 'in conclusion', 'it is important to note', "
-        "'navigate the landscape', 'a testament to', 'in today's fast-paced world', 'tapestry', 'realm', "
-        "'crucial', 'pivotal', 'multifaceted', 'holistic'.\n"
-        "- Do not open with 'In today's', 'In the world of', 'It is important', 'Let's explore', or 'This article'.\n"
-        "- Vary sentence length. Include at least one short sentence per paragraph.\n"
-        "- Prefer active voice. Use contractions where natural (it's, don't, we're).\n"
-        "- Cut redundant qualifiers (very, really, quite, extremely) unless they add real meaning.\n"
-        "- Keep every fact, number, name, and quote intact. Do not invent details.\n"
-        "- Preserve the original language of the document. Do not translate.\n"
-        "- Preserve headings, lists, and paragraph breaks.\n\n"
-        "Output ONLY the rewritten text — no preamble, no explanation, no markdown fences.\n\n"
-        f"--- DOCUMENT ---\n{doc.text[:24000]}\n--- END ---"
-    )
-    return await _ollama_text_call(model, prompt, num_predict=4096)
+    """Section-wise humanize (block pipeline with quality guard) — see humanize.py."""
+    import humanize as _hz
+    model = await _prepare_text_model(model)
+    res = await _hz.collect(_hz.stream_humanize(doc, model, {"tone": tone, "intensity": intensity}))
+    return res["text"]
 
 
 # ── Exports ────────────────────────────────────────────────────────────────────

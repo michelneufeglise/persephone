@@ -32,6 +32,7 @@ import tts_engine as _tts
 import hardware as _hw
 import model_catalog as _catalog
 import idp_engine as _idp
+import humanize as _humanize
 import mcp_catalog as _mcp
 import mcp_manager as _mcp_mgr
 import ollama_setup as _ollama
@@ -322,6 +323,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         log.info("Task planner scheduler started")
     except Exception as exc:
         log.warning("Planner startup failed: %s", exc)
+
+    # One-time repair: PDFs whose text layer an older OCR pass overwrote get
+    # their native text back (OCR text moves to a sidecar). Idempotent.
+    try:
+        restored = await asyncio.to_thread(_idp.repair_ocr_overwrites)
+        if restored:
+            log.info("Restored the native text layer of %d OCR'd PDF(s)", restored)
+    except Exception as exc:
+        log.warning("Text-layer repair on startup failed: %s", exc)
 
     # Re-extract empty documents (documents whose text extraction failed)
     # Run in a thread to avoid blocking startup
@@ -4304,6 +4314,8 @@ _MODEL_ROLE_KEYS = [
     "active_model", "judge_model", "vision_model", "code_model",
     "ocr_model", "docs_model", "handwriting_model", "signature_model", "tables_model",
     "multidoc_model", "web_lookup_model", "embed_model",
+    # Humanize / Translate / Redact (falls back to docs_model → active_model)
+    "writing_model",
     # LLM judge used behind Laya when judge_model == 'laya-builtin'
     "judge_fallback_model",
     # Ableton composer roles: standard + deep-reasoning slots. Empty string
@@ -4329,6 +4341,7 @@ class ModelRolesUpdate(BaseModel):
     tables_model:           str | None = None
     multidoc_model:         str | None = None
     web_lookup_model:       str | None = None
+    writing_model:          str | None = None
     embed_model:            str | None = None
     judge_fallback_model:   str | None = None
     ableton_composer_model: str | None = None
@@ -4671,6 +4684,7 @@ async def _resolve_doc_model(category: str = "docs") -> str:
         "signature":   ["signature_model", "handwriting_model", "vision_model"],
         "tables":      ["tables_model", "code_model", "active_model"],
         "multidoc":    ["multidoc_model", "docs_model", "active_model"],
+        "writing":     ["writing_model", "docs_model", "active_model"],
         "text":        ["active_model"],
     }
     keys = preferred_keys.get(category, ["active_model"])
@@ -4717,6 +4731,26 @@ async def _resolve_doc_model_for(doc: "_idp.Document", category: str) -> str:
 
     # Default: use standard resolution
     return await _resolve_doc_model(category)
+
+
+_WRITING_OPS = {"humanize", "translate", "redact"}
+
+
+async def _resolve_writing_model(doc: "_idp.Document") -> str:
+    """Model for the writing ops (Humanize / Translate / Redact).
+
+    The Writing role wins. Without one, a per-document route OVERRIDE is
+    honoured only when it is not a reasoning model; the cached auto-route
+    (which may pick a reasoning model such as deepseek-r1 for "text") is
+    ignored — these ops run with thinking off and need a fluent writer.
+    Then docs_model → active_model."""
+    v = (await _db.get_config("writing_model")) or ""
+    if v:
+        return v
+    ov = (doc.meta or {}).get("route_override") if isinstance(doc.meta, dict) else None
+    if isinstance(ov, str) and ov and not _supports_native_thinking(ov):
+        return ov
+    return await _resolve_doc_model("writing")
 
 
 @app.post("/api/idp/ingest-text")
@@ -5013,6 +5047,28 @@ async def idp_stream(op: str, req: IDPRequest):
     doc = _idp_guard(req.doc_id)
     if op == "qa" and not (req.options.get("question") or "").strip():
         raise HTTPException(400, "question required")
+    if op in _WRITING_OPS:
+        model = await _resolve_writing_model(doc)
+
+        async def gen_writing():
+            try:
+                chosen = await _idp._prepare_text_model(model)  # noqa: SLF001
+                yield _sse({"phase": "start", "model": chosen})
+                pipe = (_humanize.stream_humanize(doc, chosen, req.options) if op == "humanize"
+                        else _humanize.stream_grouped(doc, chosen, op, req.options))
+                async for ev in pipe:
+                    yield _sse(ev)
+            except RuntimeError as exc:
+                yield _sse({"error": str(exc)})
+            except Exception as exc:  # never leave the client hanging
+                log.exception("idp %s stream failed", op)
+                yield _sse({"error": f"{op} failed: {exc}"})
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(
+            gen_writing(), media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
     model = await _resolve_doc_model_for(doc, "docs" if op == "qa" else "text")
     prompt = _idp.build_prompt(op, doc, req.options)
     think = _supports_native_thinking(model)
@@ -5116,32 +5172,64 @@ async def idp_classify(req: IDPRequest):
     return {"classification": await _run_idp(_idp.classify(doc, model)), "model": model}
 
 
+async def _run_writing(doc: "_idp.Document", op: str, options: dict) -> dict:
+    model = await _run_idp(_idp._prepare_text_model(await _resolve_writing_model(doc)))  # noqa: SLF001
+    pipe = (_humanize.stream_humanize(doc, model, options) if op == "humanize"
+            else _humanize.stream_grouped(doc, model, op, options))
+    res = await _run_idp(_humanize.collect(pipe))
+    return {**res, "model": model}
+
+
 @app.post("/api/idp/translate")
 async def idp_translate(req: IDPRequest):
-    doc    = _idp_guard(req.doc_id)
-    model  = await _resolve_doc_model_for(doc, "text")
-    target = req.options.get("target", "French")
-    return {"text": await _run_idp(_idp.translate(doc, model, target)), "model": model}
+    doc = _idp_guard(req.doc_id)
+    opts = {"target": req.options.get("target", "French")}
+    return await _run_writing(doc, "translate", opts)
 
 
 @app.post("/api/idp/redact")
 async def idp_redact(req: IDPRequest):
-    doc   = _idp_guard(req.doc_id)
-    model = await _resolve_doc_model_for(doc, "text")
-    cats  = req.options.get("categories", [])
-    return {"text": await _run_idp(_idp.redact(doc, model, cats)), "model": model}
+    doc = _idp_guard(req.doc_id)
+    return await _run_writing(doc, "redact", {"categories": req.options.get("categories", [])})
 
 
 @app.post("/api/idp/humanize")
 async def idp_humanize(req: IDPRequest):
-    doc       = _idp_guard(req.doc_id)
-    model     = await _resolve_doc_model_for(doc, "text")
-    tone      = req.options.get("tone", "natural")
-    intensity = req.options.get("intensity", "medium")
-    return {
-        "text":  await _run_idp(_idp.humanize(doc, model, tone, intensity)),
-        "model": model,
-    }
+    doc = _idp_guard(req.doc_id)
+    opts = {"tone": req.options.get("tone", "natural"),
+            "intensity": req.options.get("intensity", "medium")}
+    return await _run_writing(doc, "humanize", opts)
+
+
+class HumanizeDocxRequest(BaseModel):
+    doc_id: str
+    run_id: str
+
+
+@app.post("/api/idp/humanize/docx")
+async def idp_humanize_docx(req: HumanizeDocxRequest):
+    """The humanized text written back into a copy of the original .docx
+    (same paragraphs, styles and tables) — from the cached run, no model call."""
+    from fastapi.responses import Response
+    from urllib.parse import quote
+    doc = _idp_guard(req.doc_id)
+    if not (doc.filename or "").lower().endswith(".docx"):
+        raise HTTPException(422, "Download as Word is only available for .docx documents")
+    run = _humanize.load_run(doc.id, req.run_id)
+    if not run or run.get("op") != "humanize":
+        raise HTTPException(404, "Humanize result not found — run Humanize again")
+    try:
+        data = await asyncio.to_thread(_humanize.docx_for_run, doc, run)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc))
+    stem = doc.filename.rsplit(".", 1)[0]
+    name = f"{stem} (humanized).docx"
+    ascii_name = re.sub(r'[^A-Za-z0-9 ._()-]+', "_", name)
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={"Content-Disposition": f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(name)}"},
+    )
 
 
 @app.post("/api/idp/export/{fmt}")

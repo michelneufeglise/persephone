@@ -1,5 +1,7 @@
 import { useEffect, useState, useRef, useCallback, useMemo } from 'react'
 import { motion } from 'framer-motion'
+import ReactMarkdown, { type Components } from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import {
   Upload, FileText, Trash2, FileScan, Languages, Sparkles,
   Table as TableIcon, Tags, MessageCircle, Eye, Shield, Download,
@@ -13,10 +15,10 @@ import { ModelActivity } from '@/components/ui/ModelActivity'
 import {
   listDocuments, uploadDocument, deleteDocument, getDocument,
   idp, exportDoc, pageImageUrl, multiQa, streamIdp, streamMultiQa,
-  layaStatus,
+  layaStatus, downloadHumanizedDocx,
 } from '@/lib/idp'
 import type { IDPDocument, Message } from '@/types'
-import type { IDPMultiResult, StreamDone } from '@/lib/idp'
+import type { IDPMultiResult, StreamDone, StreamFlag } from '@/lib/idp'
 import { RoutingGraph } from './RoutingGraph'
 import { DocChat } from './DocChat'
 import { RightPanel } from './RightPanel'
@@ -50,10 +52,17 @@ interface StreamState {
   usedOcr: string[]
   sources: string[]
   chunksUsed: number
+  /** Block-wise writing ops: live tokens of the block in progress. */
+  draft: string
+  progress: { i: number; of: number } | null
+  flagged: StreamFlag[]
+  runId: string
+  docx: boolean
 }
 const EMPTY_STREAM: StreamState = {
   running: false, phase: '', content: '', thinking: '', tokPerSec: 0,
   error: '', model: '', usedOcr: [], sources: [], chunksUsed: 0,
+  draft: '', progress: null, flagged: [], runId: '', docx: false,
 }
 
 function useModelStream() {
@@ -71,19 +80,30 @@ function useModelStream() {
       await starter({
         onPhase: p => setS(prev => ({
           ...prev,
-          phase: p.phase,
+          phase: p.phase === 'block' && p.detail ? p.detail : p.phase === 'segmented' ? 'preparing' : p.phase,
+          progress: p.phase === 'block' && p.i && p.of ? { i: p.i, of: p.of } : prev.progress,
           model: p.model ?? prev.model,
           usedOcr: p.used_ocr ?? prev.usedOcr,
           sources: p.sources ?? prev.sources,
           chunksUsed: p.chunks_used ?? prev.chunksUsed,
         })),
         onThinking: d => setS(prev => ({ ...prev, thinking: prev.thinking + d })),
-        onContent: d => setS(prev => ({ ...prev, content: prev.content + d, phase: prev.phase === 'done' ? prev.phase : 'generating' })),
+        onContent: d => setS(prev => ({
+          ...prev, content: prev.content + d,
+          phase: prev.phase === 'done' || prev.progress ? prev.phase : 'generating',
+        })),
+        onDraft: d => setS(prev => ({ ...prev, draft: prev.draft + d })),
+        onDraftReset: () => setS(prev => (prev.draft ? { ...prev, draft: '' } : prev)),
+        onFlag: f => setS(prev => ({ ...prev, flagged: [...prev.flagged, f] })),
         onError: m => setS(prev => ({ ...prev, error: m, running: false })),
         onDone: (d: StreamDone) => setS(prev => ({
           ...prev,
           running: false,
           phase: 'done',
+          draft: '',
+          runId: d.run_id ?? prev.runId,
+          docx: d.docx ?? prev.docx,
+          flagged: d.flagged ?? prev.flagged,
           tokPerSec: d.stats?.tok_per_s ?? prev.tokPerSec,
           usedOcr: d.used_ocr ?? prev.usedOcr,
           sources: d.sources ?? prev.sources,
@@ -1542,6 +1562,53 @@ function EntitiesTab({ doc, runSignal, onRunComplete }: { doc: IDPDocument; runS
   )
 }
 
+// ── Writing ops (Translate / Redact / Humanize): shared result view ──
+// The backend works block by block: `content` is the validated text in
+// document order (markdown: headings, lists, tables); `draft` is the block
+// being written right now; `flagged` lists blocks kept in their original form.
+const DOC_MD_COMPONENTS: Components = {
+  h1: ({ children }) => <h3 className="text-base font-semibold text-[var(--text-primary)] mt-4 mb-2 first:mt-0">{children}</h3>,
+  h2: ({ children }) => <h3 className="text-[15px] font-semibold text-[var(--text-primary)] mt-4 mb-2 first:mt-0">{children}</h3>,
+  h3: ({ children }) => <h4 className="text-sm font-semibold text-[var(--text-primary)] mt-3 mb-1.5 first:mt-0">{children}</h4>,
+  h4: ({ children }) => <h4 className="text-sm font-semibold text-[var(--text-primary)] mt-3 mb-1.5 first:mt-0">{children}</h4>,
+  p: ({ children }) => <p className="mb-3 leading-relaxed">{children}</p>,
+  ul: ({ children }) => <ul className="list-disc pl-5 mb-3 space-y-2">{children}</ul>,
+  ol: ({ children }) => <ol className="list-decimal pl-5 mb-3 space-y-2">{children}</ol>,
+  li: ({ children }) => <li className="leading-relaxed">{children}</li>,
+  table: ({ children }) => (
+    <div className="overflow-x-auto my-3"><table className="w-full text-xs border-collapse">{children}</table></div>
+  ),
+  th: ({ children }) => <th className="border border-[var(--glass-stroke)] px-2 py-1.5 text-left font-semibold align-top">{children}</th>,
+  td: ({ children }) => <td className="border border-[var(--glass-stroke)] px-2 py-1.5 align-top leading-relaxed">{children}</td>,
+}
+
+function WritingOutput({ text, draft }: { text: string; draft: string }) {
+  return (
+    <div className="text-sm text-[var(--text-primary)] max-h-[32rem] overflow-y-auto">
+      {text && <ReactMarkdown remarkPlugins={[remarkGfm]} components={DOC_MD_COMPONENTS}>{text}</ReactMarkdown>}
+      {draft && (
+        <p className="whitespace-pre-wrap leading-relaxed text-[var(--text-muted)] italic opacity-80">{draft}</p>
+      )}
+    </div>
+  )
+}
+
+function FlaggedNote({ flagged, unit = 'block' }: { flagged: StreamFlag[]; unit?: string }) {
+  if (!flagged.length) return null
+  return (
+    <div className="mt-3 text-[11px] text-[var(--text-muted)] border-t border-[var(--glass-stroke)] pt-2"
+      title={flagged.map(f => `${unit} ${f.i}: ${f.issues.join('; ')}`).join('\n')}>
+      {flagged.length} {unit}{flagged.length === 1 ? '' : 's'} kept as in the original (the rewrite did not pass the quality check):{' '}
+      {flagged.map(f => `${unit} ${f.i}`).join(', ')}
+    </div>
+  )
+}
+
+function progressPercent(p: { i: number; of: number } | null, running: boolean): number | undefined {
+  if (!p || !running || !p.of) return undefined
+  return Math.max(2, Math.round((100 * (p.i - 1)) / p.of))
+}
+
 // ── Translate ───────────────────────────────────────────────────────
 function TranslateTab({ doc, runSignal, onRunComplete, target: overrideTarget }: { doc: IDPDocument; runSignal?: number; onRunComplete?: () => void; target?: string }) {
   const [lang, setLang] = useState('French')
@@ -1589,13 +1656,14 @@ function TranslateTab({ doc, runSignal, onRunComplete, target: overrideTarget }:
         className="w-full px-4 py-2.5 rounded-lg bg-[var(--accent)] text-white text-sm font-medium hover:bg-[var(--accent-hover)] transition-colors flex items-center justify-center gap-2">
         {st.running ? <><StopCircle className="w-4 h-4" /> Cancel</> : <>Translate to {overrideTarget ?? lang}</>}
       </button>
-      <ModelActivity running={st.running} phase={st.phase} tokPerSec={st.tokPerSec} />
+      <ModelActivity running={st.running} phase={st.phase} tokPerSec={st.tokPerSec} percent={progressPercent(st.progress, st.running)} />
       <ThinkingBlock text={st.thinking} />
       {st.error && <ErrorBox text={st.error} />}
-      {st.content && (
+      {(st.content || st.draft) && (
         <div className="rounded-xl glass-card p-5">
           {st.model && <div className="text-xs text-[var(--text-muted)] mb-2 font-mono">via {st.model}</div>}
-          <pre className="text-sm text-[var(--text-primary)] whitespace-pre-wrap font-sans leading-relaxed max-h-[32rem] overflow-y-auto">{st.content}</pre>
+          <WritingOutput text={st.content} draft={st.draft} />
+          <FlaggedNote flagged={st.flagged} unit="part" />
         </div>
       )}
     </div>
@@ -1664,13 +1732,14 @@ function RedactTab({ doc, runSignal, onRunComplete, categories: overrideCategori
         className="w-full px-4 py-2.5 rounded-lg bg-[var(--accent)] text-white text-sm font-medium hover:bg-[var(--accent-hover)] transition-colors flex items-center justify-center gap-2">
         {st.running ? <><StopCircle className="w-4 h-4" /> Cancel</> : <>Apply Redaction</>}
       </button>
-      <ModelActivity running={st.running} phase={st.phase} tokPerSec={st.tokPerSec} />
+      <ModelActivity running={st.running} phase={st.phase} tokPerSec={st.tokPerSec} percent={progressPercent(st.progress, st.running)} />
       <ThinkingBlock text={st.thinking} />
       {st.error && <ErrorBox text={st.error} />}
-      {st.content && (
+      {(st.content || st.draft) && (
         <div className="rounded-xl glass-card p-5">
           {st.model && <div className="text-xs text-[var(--text-muted)] mb-2 font-mono">via {st.model}</div>}
-          <pre className="text-sm text-[var(--text-primary)] whitespace-pre-wrap font-sans leading-relaxed max-h-[32rem] overflow-y-auto">{st.content}</pre>
+          <WritingOutput text={st.content} draft={st.draft} />
+          <FlaggedNote flagged={st.flagged} unit="part" />
         </div>
       )}
     </div>
@@ -1685,9 +1754,33 @@ function HumanizeTab({ doc, runSignal, onRunComplete, tone: overrideTone, intens
   const [intensity, setIntensity] = useState<Intensity>('medium')
   const st = useModelStream()
   const [copied, setCopied] = useState(false)
+  const [dlBusy, setDlBusy] = useState(false)
+  const [dlError, setDlError] = useState('')
   const lastSignalRef = useRef<number>(0)
+  const isDocx = /\.docx$/i.test(doc.filename || '')
+  const canDocx = isDocx && st.docx && !!st.runId && !st.running
+
+  async function downloadDocx() {
+    if (!st.runId) return
+    setDlBusy(true)
+    setDlError('')
+    try {
+      const { blob, filename } = await downloadHumanizedDocx(doc.id, st.runId)
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = filename
+      a.click()
+      setTimeout(() => URL.revokeObjectURL(url), 2000)
+    } catch (e: any) {
+      setDlError(e?.message ?? 'Download failed')
+    } finally {
+      setDlBusy(false)
+    }
+  }
 
   function go() {
+    setDlError('')
     const toneToUse = overrideTone !== undefined ? overrideTone : tone
     const intensityToUse = overrideIntensity !== undefined ? overrideIntensity : intensity
     st.run((h, signal) => streamIdp('humanize', doc.id, { tone: toneToUse, intensity: intensityToUse }, h, signal))
@@ -1737,7 +1830,8 @@ function HumanizeTab({ doc, runSignal, onRunComplete, tone: overrideTone, intens
       <div>
         <p className="text-sm text-[var(--text-secondary)] leading-relaxed">
           Rewrite this document so it reads like a human wrote it — varied rhythm, natural phrasing, no telltale AI tics.
-          Facts, numbers and quotes are preserved.
+          It works section by section: headings, labels and table headers stay as they are; facts, names, numbers and quotes are preserved.
+          {isDocx && ' The result can be downloaded as Word with the original layout.'}
         </p>
       </div>
 
@@ -1806,22 +1900,32 @@ function HumanizeTab({ doc, runSignal, onRunComplete, tone: overrideTone, intens
         )}
       </button>
 
-      <ModelActivity running={st.running} phase={st.phase} tokPerSec={st.tokPerSec} />
+      <ModelActivity running={st.running} phase={st.phase} tokPerSec={st.tokPerSec} percent={progressPercent(st.progress, st.running)} />
       <ThinkingBlock text={st.thinking} />
       {st.error && <ErrorBox text={st.error} />}
-      {st.content && (
+      {(st.content || st.draft) && (
         <div className="rounded-xl glass-card p-5">
-          <div className="flex items-center justify-between mb-2">
-            <div className="text-xs text-[var(--text-muted)] font-mono">via {st.model}</div>
-            <button onClick={copy}
-              className="flex items-center gap-1.5 text-xs text-[var(--text-muted)] hover:text-[var(--accent)] px-2.5 py-1 rounded-md hover:bg-[var(--glass-fill-hover)] transition-colors">
-              {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-              {copied ? 'Copied' : 'Copy'}
-            </button>
+          <div className="flex items-center justify-between mb-2 gap-2">
+            <div className="text-xs text-[var(--text-muted)] font-mono truncate">via {st.model}</div>
+            <div className="flex items-center gap-1 shrink-0">
+              {canDocx && (
+                <button onClick={downloadDocx} disabled={dlBusy}
+                  title="The humanized text in a copy of the original Word file (same styles and table)"
+                  className="flex items-center gap-1.5 text-xs text-[var(--text-muted)] hover:text-[var(--accent)] px-2.5 py-1 rounded-md hover:bg-[var(--glass-fill-hover)] transition-colors disabled:opacity-50">
+                  {dlBusy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+                  Download .docx
+                </button>
+              )}
+              <button onClick={copy} disabled={!st.content}
+                className="flex items-center gap-1.5 text-xs text-[var(--text-muted)] hover:text-[var(--accent)] px-2.5 py-1 rounded-md hover:bg-[var(--glass-fill-hover)] transition-colors disabled:opacity-50">
+                {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+                {copied ? 'Copied' : 'Copy'}
+              </button>
+            </div>
           </div>
-          <pre className="text-sm text-[var(--text-primary)] whitespace-pre-wrap font-sans leading-relaxed max-h-[32rem] overflow-y-auto">
-            {st.content}
-          </pre>
+          <WritingOutput text={st.content} draft={st.draft} />
+          <FlaggedNote flagged={st.flagged} />
+          {dlError && <div className="mt-2 text-xs text-red-500">{dlError}</div>}
         </div>
       )}
     </div>

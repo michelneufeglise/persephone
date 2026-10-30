@@ -51,6 +51,10 @@ const ROLES = [
     description: 'Reasons across several selected documents at once (RAG). Used by the Documents panel\'s multi-doc chat. Falls back to Documents/Main Chat.',
   },
   {
+    key: 'writing_model', label: 'Writing — Humanize, Translate, Redact', required: false,
+    description: 'Rewrites documents section by section in the Documents panel (Humanize, Translate, Redact), with thinking turned off. A fluent, non-reasoning model works best (e.g. gemma4:26b). Falls back to Documents & PDF, then Main Chat.',
+  },
+  {
     key: 'web_lookup_model', label: 'Web Lookup (tools)', required: false,
     description: 'Tool-calling model the Documents agent uses to search the web / LinkedIn when you ask it to verify a person online. Needs tool support — small instruct models work best (e.g. qwen3:4b-instruct-2507, qwen2.5:7b-instruct). Empty = auto-select.',
   },
@@ -74,7 +78,7 @@ type RoleValues = Record<RoleKey, string>
 const EMPTY_ROLES: RoleValues = {
   active_model: '', judge_model: '', vision_model: '', code_model: '',
   ocr_model: '', docs_model: '', handwriting_model: '', signature_model: '', tables_model: '',
-  multidoc_model: '', web_lookup_model: '', embed_model: '',
+  multidoc_model: '', writing_model: '', web_lookup_model: '', embed_model: '',
   ableton_composer_model: '', ableton_deep_model: '',
 }
 

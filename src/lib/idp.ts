@@ -102,17 +102,39 @@ export interface StreamPhase {
   chunks_used?: number
   used_ocr?: string[]
   sources?: string[]
+  /** Block-wise writing ops (humanize / translate / redact): current block k of N. */
+  i?: number
+  of?: number
+  language?: string
+}
+/** A block the writing pipeline kept in its original form (quality guard). */
+export interface StreamFlag {
+  i: number
+  idx?: number
+  issues: string[]
+  preview?: string
 }
 export interface StreamDone {
   stats?: { eval_count?: number; tok_per_s?: number; total_duration_ms?: number }
   used_ocr?: string[]
   sources?: string[]
   chunks_used?: number
+  /** Humanize: id of the cached result (used for the .docx download). */
+  run_id?: string
+  flagged?: StreamFlag[]
+  blocks?: number
+  /** Humanize: the source is a .docx, so a Word download is available. */
+  docx?: boolean
+  language?: string
 }
 export interface StreamHandlers {
   onPhase?: (p: StreamPhase) => void
   onThinking?: (delta: string) => void
   onContent?: (delta: string) => void
+  /** Live, not-yet-validated tokens of the block being written. */
+  onDraft?: (delta: string) => void
+  onDraftReset?: () => void
+  onFlag?: (f: StreamFlag) => void
   onDone?: (d: StreamDone) => void
   onError?: (msg: string) => void
 }
@@ -125,7 +147,7 @@ function makeThinkSplitter(onThinking: (s: string) => void, onContent: (s: strin
   let buf = ''
   const OPEN = '<think>'
   const CLOSE = '</think>'
-  return (delta: string) => {
+  const push = (delta: string) => {
     buf += delta
     // Emit as much as is unambiguous; keep a tail that might be a partial tag.
     while (buf.length) {
@@ -147,6 +169,12 @@ function makeThinkSplitter(onThinking: (s: string) => void, onContent: (s: strin
       inThink = !inThink
     }
   }
+  // End of stream: emit the held-back tail (otherwise the last few
+  // characters of every answer were never shown).
+  const flush = () => {
+    if (buf) { inThink ? onThinking(buf) : onContent(buf); buf = '' }
+  }
+  return Object.assign(push, { flush })
 }
 
 async function consumeSSE(res: Response, h: StreamHandlers): Promise<void> {
@@ -164,19 +192,22 @@ async function consumeSSE(res: Response, h: StreamHandlers): Promise<void> {
   let buf = ''
   while (true) {
     const { done, value } = await reader.read()
-    if (done) break
+    if (done) { split.flush(); break }
     buf += dec.decode(value, { stream: true })
     const lines = buf.split('\n')
     buf = lines.pop() ?? ''
     for (const line of lines) {
       if (!line.startsWith('data: ')) continue
       const payload = line.slice(6).trim()
-      if (payload === '[DONE]') return
+      if (payload === '[DONE]') { split.flush(); return }
       try {
         const ev = JSON.parse(payload)
-        if (ev.error) { h.onError?.(ev.error); continue }
-        if (ev.done) { h.onDone?.(ev as StreamDone); continue }
+        if (ev.error) { split.flush(); h.onError?.(ev.error); continue }
+        if (ev.done) { split.flush(); h.onDone?.(ev as StreamDone); continue }
         if (ev.phase) { h.onPhase?.(ev as StreamPhase); continue }
+        if (typeof ev.draft === 'string') { h.onDraft?.(ev.draft); continue }
+        if (ev.draft_reset) { h.onDraftReset?.(); continue }
+        if (ev.flag) { h.onFlag?.(ev.flag as StreamFlag); continue }
         if (typeof ev.thinking === 'string') { h.onThinking?.(ev.thinking); continue }
         if (typeof ev.content === 'string') { split(ev.content); continue }
       } catch { /* skip malformed */ }
@@ -195,6 +226,27 @@ export async function streamIdp(
     signal,
   })
   await consumeSSE(res, h)
+}
+
+/** Download the humanized text written back into the original .docx layout. */
+export async function downloadHumanizedDocx(docId: string, runId: string): Promise<{ blob: Blob; filename: string }> {
+  const r = await fetch('/api/idp/humanize/docx', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ doc_id: docId, run_id: runId }),
+  })
+  if (!r.ok) {
+    let msg = `Download failed (HTTP ${r.status})`
+    try { const b = await r.json(); if (typeof b?.detail === 'string') msg = b.detail } catch { /* not json */ }
+    throw new Error(msg)
+  }
+  const cd = r.headers.get('Content-Disposition') || ''
+  let filename = 'humanized.docx'
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(cd)
+  const plain = /filename="([^"]+)"/i.exec(cd)
+  if (star) { try { filename = decodeURIComponent(star[1]) } catch { /* keep default */ } }
+  else if (plain) filename = plain[1]
+  return { blob: await r.blob(), filename }
 }
 
 export async function streamMultiQa(
